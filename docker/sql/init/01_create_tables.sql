@@ -1,6 +1,7 @@
 -- =========================================================
 -- Payment System - Table Definitions
 -- Idempotent: safe to re-run (checks existence before create)
+-- No foreign keys - tables and columns only
 -- =========================================================
 
 IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = 'PaymentSystem')
@@ -38,9 +39,7 @@ BEGIN
         LastTransactionDate     DATETIME2       NULL,
         LastTransactionAmount   DECIMAL(18,2)   NULL,
         ContactlessAllowed      BIT             NOT NULL DEFAULT 0,
-        ContactlessLimit        DECIMAL(18,2)   NULL,
-        CONSTRAINT FK_Card_BankAccount FOREIGN KEY (AccountNo)
-            REFERENCES dbo.BankAccount (AccountNo)
+        ContactlessLimit        DECIMAL(18,2)   NULL
     );
 END
 GO
@@ -67,27 +66,21 @@ BEGIN
         CreatedAt               DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME(),
         UpdatedAt               DATETIME2       NULL,
         Mti                     CHAR(4)         NOT NULL,
-        CardNumber              VARCHAR(19)     NOT NULL,       -- f2
-        ProcessingCode          CHAR(6)         NULL,           -- f3 (raw)
+        F2_CardNo               VARCHAR(19)     NOT NULL,
+        F3_ProcessingCode       CHAR(6)         NULL,
         Otc                     CHAR(2)         NOT NULL,
         Ots                     CHAR(2)         NOT NULL,
-        Amount                  DECIMAL(18,2)   NOT NULL,       -- f4
-        CurrencyCode            CHAR(3)         NULL,           -- f49
+        F4_Amount               DECIMAL(18,2)   NOT NULL,
+        F49_CurrencyCode        CHAR(3)         NULL,
         LocalTxnAmount          DECIMAL(18,2)   NULL,           -- currency x amount
-        TransactionTime         CHAR(6)         NULL,           -- f12 hhmmss
-        TransactionDate         CHAR(8)         NULL,           -- f13 yyyymmdd
-        CardExpiryFromTxn       CHAR(4)         NULL,           -- f14
-        MerchantCode            VARCHAR(15)     NULL,           -- f18
-        EntryMode               CHAR(3)         NULL,           -- f22
-        ResponseCode            CHAR(2)         NULL,           -- f39
-        Description             VARCHAR(100)    NULL,           -- f43
-        RecipientCardNumber     VARCHAR(19)     NULL,           -- only for money transfer
-        CONSTRAINT FK_DebitTransaction_Card FOREIGN KEY (CardNumber)
-            REFERENCES dbo.Card (CardNumber),
-        CONSTRAINT FK_DebitTransaction_RecipientCard FOREIGN KEY (RecipientCardNumber)
-            REFERENCES dbo.Card (CardNumber),
-        CONSTRAINT FK_DebitTransaction_TransactionType FOREIGN KEY (Otc, Ots)
-            REFERENCES dbo.TransactionType (Otc, Ots)
+        F12_TransactionTime     CHAR(6)         NULL,           -- hhmmss
+        F13_TransactionDate     CHAR(8)         NULL,           -- yyyymmdd
+        F14_CardExpiry          CHAR(4)         NULL,
+        F18_MerchantCode        VARCHAR(15)     NULL,
+        F22_EntryMode           CHAR(3)         NULL,
+        F39_ResponseCode        CHAR(2)         NULL,
+        F43_Description         VARCHAR(100)    NULL,
+        RecipientCardNumber     VARCHAR(19)     NULL            -- only for money transfer (kkpt)
     );
 END
 GO

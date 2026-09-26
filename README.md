@@ -42,7 +42,9 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 | `BankAccount` | Hesap no, hesap durumu, bakiye |
 | `Card` | Kart bilgileri, ilişkili hesap |
 | `TransactionType` | (Otc, Ots) kombinasyonundan işlem tipine lookup (Sale, MoneyTransfer, BalanceInquiry) |
-| `DebitTransaction` | ISO8583 alanlarından (f2, f3, f4, f12, f13, f14, f18, f22, f39, f43, f49) türetilen işlem kayıtları |
+| `DebitTransaction` | ISO8583 alanlarını taşıyan işlem kayıtları — kolon adları `F2_CardNo`, `F3_ProcessingCode`, `F4_Amount`, `F49_CurrencyCode`, `F12_TransactionTime`, `F13_TransactionDate`, `F14_CardExpiry`, `F18_MerchantCode`, `F22_EntryMode`, `F39_ResponseCode`, `F43_Description` şeklinde ISO8583 field numarasını koruyor |
+
+**Not:** Tablolar arasında foreign key yok — sadece database, tablo ve kolonlar oluşturuluyor. Sadece her tabloda kendi `PRIMARY KEY`'i var.
 
 ## Sıradaki Adımlar
 - .NET tabanlı TCP sunucusu (ISO8583 parser, iş mantığı)
