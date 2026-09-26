@@ -3,6 +3,15 @@
 -- Idempotent: safe to re-run (checks existence before create)
 -- =========================================================
 
+IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = 'PaymentSystem')
+BEGIN
+    CREATE DATABASE PaymentSystem;
+END
+GO
+
+USE PaymentSystem;
+GO
+
 -- 1) BankAccount
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'BankAccount')
 BEGIN

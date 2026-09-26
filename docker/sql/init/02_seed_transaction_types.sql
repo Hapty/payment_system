@@ -3,6 +3,9 @@
 -- Idempotent: only inserts rows that don't already exist
 -- =========================================================
 
+USE PaymentSystem;
+GO
+
 MERGE INTO dbo.TransactionType AS target
 USING (VALUES
     ('10', '11', 'Sale'),

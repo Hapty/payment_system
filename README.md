@@ -11,7 +11,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-`db` servisi ayağa kalkıp sağlıklı (healthy) olduğunda, `db-init` servisi `docker/sql/init/` altındaki script'leri sırayla çalıştırıp tabloları oluşturur:
+`db` servisi ayağa kalkıp sağlıklı (healthy) olduğunda, `db-init` servisi `docker/sql/init/` altındaki script'leri sırayla çalıştırıp `PaymentSystem` adlı veritabanını ve içindeki tabloları oluşturur (sistem `master` DB'si yerine ayrı bir DB kullanılır):
 
 - `BankAccount`
 - `Card`
@@ -29,8 +29,11 @@ docker compose down -v
 ### Doğrulama
 ```bash
 docker compose ps
-docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<şifreniz>' -C -Q "SELECT name FROM sys.tables"
+docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<şifreniz>' -C -d PaymentSystem -Q "SELECT name FROM sys.tables"
 ```
+
+### DBeaver / diğer istemciler
+Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil) — tablolar orada.
 
 ## Tablo Şeması
 
