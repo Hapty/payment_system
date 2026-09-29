@@ -1,13 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using PaymentSystem.Management.Data;
-using PaymentSystem.Management.Models;
+using PaymentSystem.Api.Data;
+using PaymentSystem.Api.Models;
 
-namespace PaymentSystem.Management.Controllers;
+namespace PaymentSystem.Api.Controllers;
 
 [ApiController]
 [Route("api/bank-accounts")]
-public class BankAccountsController(ManagementDbContext db) : ControllerBase
+public class BankAccountsController(PaymentDbContext db) : ControllerBase
 {
     [HttpGet]
     public async Task<List<BankAccount>> GetAll() =>
@@ -28,7 +28,7 @@ public class BankAccountsController(ManagementDbContext db) : ControllerBase
         return CreatedAtAction(nameof(Get), new { accountNo = account.AccountNo }, account);
     }
 
-    // Balance is only set on create; afterwards it changes through transactions (Transaction service), not here.
+    // Balance is only set on create; afterwards it changes through transactions (ISO8583 flow), not via this endpoint.
     [HttpPut("{accountNo}")]
     public async Task<IActionResult> Update(string accountNo, BankAccount input)
     {

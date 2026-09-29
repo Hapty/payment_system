@@ -1,11 +1,11 @@
 using Microsoft.EntityFrameworkCore;
-using PaymentSystem.Management.Models;
+using PaymentSystem.Api.Models;
 
-namespace PaymentSystem.Management.Data;
+namespace PaymentSystem.Api.Data;
 
 // Mirrors docker/sql/init/01_create_tables.sql - the schema is owned by those scripts, not by EF migrations.
-// Only the tables this service manages are mapped; DebitTransaction belongs to the Transaction service.
-public class ManagementDbContext(DbContextOptions<ManagementDbContext> options) : DbContext(options)
+// DebitTransaction is not mapped yet; it will be added with the ISO8583 transaction flow.
+public class PaymentDbContext(DbContextOptions<PaymentDbContext> options) : DbContext(options)
 {
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
     public DbSet<Card> Cards => Set<Card>();

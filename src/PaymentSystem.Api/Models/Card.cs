@@ -1,6 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 
-namespace PaymentSystem.Management.Models;
+namespace PaymentSystem.Api.Models;
 
 public class Card
 {

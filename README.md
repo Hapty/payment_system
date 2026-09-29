@@ -48,19 +48,19 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 
 **Not:** Tablolar arasında foreign key yok — sadece database, tablo ve kolonlar oluşturuluyor. Sadece her tabloda kendi `PRIMARY KEY`'i var.
 
-## Management Servisi (CRUD API)
+## Payment System Servisi (PaymentSystem.Api)
 
-`src/PaymentSystem.Management` — `BankAccount`, `Card`, `TransactionType` (Otc-Ots) ve `MtiProcessingCode` (Mti-F3) tablolarını yöneten mikroservis (.NET 9 Web API + EF Core). `DebitTransaction` bu servisin değil, ileride yazılacak Transaction servisinin tablosu. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
+`src/PaymentSystem.Api` — ödeme sisteminin servisi (.NET 9 Web API + EF Core). `BankAccount`, `Card`, `TransactionType` (Otc-Ots) ve `MtiProcessingCode` (Mti-F3) için CRUD endpoint'lerini sunar; ISO8583 işlem akışı (ve `DebitTransaction`) da ileride bu servise eklenecek. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
 
 ### Çalıştırma
 `docker compose up -d --build` ile DB'yle birlikte container olarak kalkar: `http://localhost:5001`.
 
-Lokal geliştirme için (DB container'ı ayaktayken, management-api container'ı durdurulmuş olmalı — ikisi de 5001 portunu kullanır):
+Lokal geliştirme için (DB container'ı ayaktayken, payment-api container'ı durdurulmuş olmalı — ikisi de 5001 portunu kullanır):
 ```powershell
 $env:MSSQL_SA_PASSWORD = "<şifreniz>"
-dotnet run --project src/PaymentSystem.Management --launch-profile http
+dotnet run --project src/PaymentSystem.Api --launch-profile http
 ```
-Örnek istekler: `src/PaymentSystem.Management/PaymentSystem.Management.http`.
+Örnek istekler: `src/PaymentSystem.Api/PaymentSystem.Api.http`.
 
 ### Endpoint'ler
 | Kaynak | Route |
@@ -75,7 +75,7 @@ Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `PO
 Kurallar:
 - Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır).
 - `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` bakiyeyi değiştirmez — bakiye işlemlerle değişecek.
-- `Card.LastTransactionDate` / `LastTransactionAmount` bu servisten yazılamaz — Transaction servisinin alanları.
+- `Card.LastTransactionDate` / `LastTransactionAmount` CRUD endpoint'inden yazılamaz — işlem akışının alanları.
 
 ## Sıradaki Adımlar
-- Transaction servisi: .NET tabanlı TCP sunucusu (ISO8583 parser, iş mantığı)
+- Aynı servise ISO8583 işlem akışı (TCP sunucusu, parser, iş mantığı, `DebitTransaction`)

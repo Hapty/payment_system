@@ -1,13 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using PaymentSystem.Management.Data;
-using PaymentSystem.Management.Models;
+using PaymentSystem.Api.Data;
+using PaymentSystem.Api.Models;
 
-namespace PaymentSystem.Management.Controllers;
+namespace PaymentSystem.Api.Controllers;
 
 [ApiController]
 [Route("api/cards")]
-public class CardsController(ManagementDbContext db) : ControllerBase
+public class CardsController(PaymentDbContext db) : ControllerBase
 {
     [HttpGet]
     public async Task<List<Card>> GetAll() =>
@@ -37,7 +37,7 @@ public class CardsController(ManagementDbContext db) : ControllerBase
         return CreatedAtAction(nameof(Get), new { id = card.Id }, card);
     }
 
-    // LastTransactionDate/Amount are written by the Transaction service, so they are not editable here.
+    // LastTransactionDate/Amount are written by the transaction (ISO8583) flow, so they are not editable via this endpoint.
     [HttpPut("{id:int}")]
     public async Task<IActionResult> Update(int id, Card input)
     {
