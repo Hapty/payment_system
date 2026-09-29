@@ -1,13 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using PaymentSystem.Management.Data;
-using PaymentSystem.Management.Models;
+using PaymentSystem.Api.Data;
+using PaymentSystem.Api.Models;
 
-namespace PaymentSystem.Management.Controllers;
+namespace PaymentSystem.Api.Controllers;
 
 [ApiController]
 [Route("api/mti-processing-codes")]
-public class MtiProcessingCodesController(ManagementDbContext db) : ControllerBase
+public class MtiProcessingCodesController(PaymentDbContext db) : ControllerBase
 {
     [HttpGet]
     public async Task<List<MtiProcessingCode>> GetAll() =>
