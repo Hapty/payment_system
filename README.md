@@ -77,5 +77,16 @@ Kurallar:
 - `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` bakiyeyi değiştirmez — bakiye işlemlerle değişecek.
 - `Card.LastTransactionDate` / `LastTransactionAmount` CRUD endpoint'inden yazılamaz — işlem akışının alanları.
 
+## Testler ve CI
+
+Unit testler `tests/PaymentSystem.Api.Tests` altında (xUnit). Controller'lar in-memory SQLite ile test edilir, Docker/SQL Server gerekmez.
+
+```bash
+dotnet test -p:CollectCoverage=true
+```
+Line coverage %80'in altındaysa komut hata verir (ayarlar test `.csproj`'unda; `Program.cs` coverage dışı). Rapor: `tests/PaymentSystem.Api.Tests/TestResults/coverage.cobertura.xml`.
+
+GitHub Actions (`.github/workflows/ci.yml`) `master`'a açılan her pull request'te ve `master`'a her push'ta restore → build → test + coverage kapısı çalıştırır; coverage özeti job summary'de görünür. `master` üzerindeki ruleset `build-and-test` check'i geçmeden merge'e izin vermez.
+
 ## Sıradaki Adımlar
 - Aynı servise ISO8583 işlem akışı (TCP sunucusu, parser, iş mantığı, `DebitTransaction`)
