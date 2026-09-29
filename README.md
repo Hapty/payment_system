@@ -48,6 +48,45 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 
 **Not:** Tablolar arasında foreign key yok — sadece database, tablo ve kolonlar oluşturuluyor. Sadece her tabloda kendi `PRIMARY KEY`'i var.
 
+## Payment System Servisi (PaymentSystem.Api)
+
+`src/PaymentSystem.Api` — ödeme sisteminin servisi (.NET 9 Web API + EF Core). `BankAccount`, `Card`, `TransactionType` (Otc-Ots) ve `MtiProcessingCode` (Mti-F3) için CRUD endpoint'lerini sunar; ISO8583 işlem akışı (ve `DebitTransaction`) da ileride bu servise eklenecek. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
+
+### Çalıştırma
+`docker compose up -d --build` ile DB'yle birlikte container olarak kalkar: `http://localhost:5001`.
+
+Lokal geliştirme için (DB container'ı ayaktayken, payment-api container'ı durdurulmuş olmalı — ikisi de 5001 portunu kullanır):
+```powershell
+$env:MSSQL_SA_PASSWORD = "<şifreniz>"
+dotnet run --project src/PaymentSystem.Api --launch-profile http
+```
+Örnek istekler: `src/PaymentSystem.Api/PaymentSystem.Api.http`.
+
+### Endpoint'ler
+| Kaynak | Route |
+|---|---|
+| BankAccount | `/api/bank-accounts`, `/api/bank-accounts/{accountNo}` |
+| Card | `/api/cards`, `/api/cards/{id}`, `/api/cards/by-number/{cardNumber}` |
+| TransactionType | `/api/transaction-types`, `/api/transaction-types/{otc}/{ots}` |
+| MtiProcessingCode | `/api/mti-processing-codes`, `/api/mti-processing-codes/{mti}/{f3}` |
+
+Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `POST` → `409`, geçersiz alan → `400`, bulunamayan kayıt → `404`.
+
+Kurallar:
+- Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır).
+- `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` bakiyeyi değiştirmez — bakiye işlemlerle değişecek.
+- `Card.LastTransactionDate` / `LastTransactionAmount` CRUD endpoint'inden yazılamaz — işlem akışının alanları.
+
+## Testler ve CI
+
+Unit testler `tests/PaymentSystem.Api.Tests` altında (xUnit). Controller'lar in-memory SQLite ile test edilir, Docker/SQL Server gerekmez.
+
+```bash
+dotnet test -p:CollectCoverage=true
+```
+Line coverage %80'in altındaysa komut hata verir (ayarlar test `.csproj`'unda; `Program.cs` coverage dışı). Rapor: `tests/PaymentSystem.Api.Tests/TestResults/coverage.cobertura.xml`.
+
+GitHub Actions (`.github/workflows/ci.yml`) `master`'a açılan her pull request'te ve `master`'a her push'ta restore → build → test + coverage kapısı çalıştırır; coverage özeti job summary'de görünür. `master` üzerindeki ruleset `build-and-test` check'i geçmeden merge'e izin vermez.
+
 ## Sıradaki Adımlar
-- .NET tabanlı TCP sunucusu (ISO8583 parser, iş mantığı)
-- EF Core ile bu şemaya bağlanma
+- Aynı servise ISO8583 işlem akışı (TCP sunucusu, parser, iş mantığı, `DebitTransaction`)
