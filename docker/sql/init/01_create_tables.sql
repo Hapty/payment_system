@@ -84,3 +84,17 @@ BEGIN
     );
 END
 GO
+
+-- 5) MtiProcessingCode (lookup: MTI + F3 -> otc/ots)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'MtiProcessingCode')
+BEGIN
+    CREATE TABLE dbo.MtiProcessingCode
+    (
+        Mti                 CHAR(4)     NOT NULL,
+        F3_ProcessingCode   CHAR(6)     NOT NULL,
+        Otc                 CHAR(2)     NOT NULL,
+        Ots                 CHAR(2)     NOT NULL,
+        CONSTRAINT PK_MtiProcessingCode PRIMARY KEY (Mti, F3_ProcessingCode)
+    );
+END
+GO
