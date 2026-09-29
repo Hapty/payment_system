@@ -31,6 +31,19 @@ services:
       - ./docker/sql/run-init.sh:/run-init.sh:ro
     entrypoint: ["/bin/bash", "/run-init.sh"]
 
+  management-api:
+    build: ./src/PaymentSystem.Management
+    container_name: payment_system_management_api
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      ConnectionStrings__Management: "Server=db,1433;Database=PaymentSystem;User Id=sa;TrustServerCertificate=True"
+    ports:
+      - "5001:8080"
+    restart: unless-stopped
+
 volumes:
   mssql_data:
     name: payment_system_mssql_data

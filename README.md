@@ -48,6 +48,34 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 
 **Not:** Tablolar arasında foreign key yok — sadece database, tablo ve kolonlar oluşturuluyor. Sadece her tabloda kendi `PRIMARY KEY`'i var.
 
+## Management Servisi (CRUD API)
+
+`src/PaymentSystem.Management` — `BankAccount`, `Card`, `TransactionType` (Otc-Ots) ve `MtiProcessingCode` (Mti-F3) tablolarını yöneten mikroservis (.NET 9 Web API + EF Core). `DebitTransaction` bu servisin değil, ileride yazılacak Transaction servisinin tablosu. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
+
+### Çalıştırma
+`docker compose up -d --build` ile DB'yle birlikte container olarak kalkar: `http://localhost:5001`.
+
+Lokal geliştirme için (DB container'ı ayaktayken, management-api container'ı durdurulmuş olmalı — ikisi de 5001 portunu kullanır):
+```powershell
+$env:MSSQL_SA_PASSWORD = "<şifreniz>"
+dotnet run --project src/PaymentSystem.Management --launch-profile http
+```
+Örnek istekler: `src/PaymentSystem.Management/PaymentSystem.Management.http`.
+
+### Endpoint'ler
+| Kaynak | Route |
+|---|---|
+| BankAccount | `/api/bank-accounts`, `/api/bank-accounts/{accountNo}` |
+| Card | `/api/cards`, `/api/cards/{id}`, `/api/cards/by-number/{cardNumber}` |
+| TransactionType | `/api/transaction-types`, `/api/transaction-types/{otc}/{ots}` |
+| MtiProcessingCode | `/api/mti-processing-codes`, `/api/mti-processing-codes/{mti}/{f3}` |
+
+Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `POST` → `409`, geçersiz alan → `400`, bulunamayan kayıt → `404`.
+
+Kurallar:
+- Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır).
+- `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` bakiyeyi değiştirmez — bakiye işlemlerle değişecek.
+- `Card.LastTransactionDate` / `LastTransactionAmount` bu servisten yazılamaz — Transaction servisinin alanları.
+
 ## Sıradaki Adımlar
-- .NET tabanlı TCP sunucusu (ISO8583 parser, iş mantığı)
-- EF Core ile bu şemaya bağlanma
+- Transaction servisi: .NET tabanlı TCP sunucusu (ISO8583 parser, iş mantığı)
