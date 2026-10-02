@@ -53,7 +53,7 @@ internal sealed class StubHttpHandler(Func<HttpRequestMessage, CancellationToken
     }
 }
 
-// Hands out at most one byte per read, like a slow network splitting a message into many TCP segments.
+// Her okumada en fazla 1 bayt verir; mesajı birçok TCP parçasına bölen yavaş bir ağı taklit eder.
 internal sealed class OneByteAtATimeStream(byte[] data) : MemoryStream(data)
 {
     public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>

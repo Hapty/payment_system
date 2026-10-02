@@ -4,7 +4,7 @@ using PaymentSystem.Iso8583;
 
 namespace PaymentSystem.Gate;
 
-// The Gate's core, independent of sockets: request bytes in, response bytes out.
+// Gate'in çekirdeği, soketlerden bağımsız: istek baytları girer, cevap baytları çıkar.
 public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<TransactionHandler> logger)
 {
     private static readonly int[] RequiredFinancialFields = [2, 3, 4, 7, 11, 12, 13, 41, 49];
@@ -13,7 +13,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
 
     private readonly IsoMessagePacker _packer = IsoMessagePacker.Default;
 
-    // Returns the response to send back, or null when the message is unusable and the connection should be closed.
+    // Geri gönderilecek cevabı döner; mesaj kullanılamaz durumdaysa ve bağlantı kapatılmalıysa null döner.
     public async Task<byte[]?> HandleAsync(byte[] data, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -24,7 +24,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         }
         catch (IsoFormatException ex) when (ex.Mti is { } mti && new IsoMessage(mti).IsRequest)
         {
-            // The MTI was readable, so the POS can still be told its message was malformed.
+            // MTI okunabildi, yani POS'a mesajının bozuk olduğu yine de söylenebilir.
             logger.LogWarning("Format error in {Mti} message, field {Field}: {Reason}", mti, ex.FieldNumber, ex.Reason);
             return _packer.Pack(new IsoMessage(new IsoMessage(mti).ToResponseMti()).Set(39, ResponseCodes.FormatError));
         }
@@ -42,7 +42,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
 
         var response = request.Mti switch
         {
-            // Network management (echo test, sign-on): the Gate answers itself to show the link is alive.
+            // Network yönetimi (echo testi, sign-on): hattın çalıştığını göstermek için Gate kendisi cevaplar.
             "0800" => Echo(request, EchoedNetworkFields).Set(39, ResponseCodes.Approved),
             "0200" => await AuthorizeAsync(request, cancellationToken),
             _ => new IsoMessage(request.ToResponseMti()).Set(39, ResponseCodes.InvalidTransaction)
@@ -66,7 +66,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         return Echo(request, EchoedFinancialFields).Set(39, result.ResponseCode);
     }
 
-    // Starts the response with the request fields the POS uses to match the answer to its request.
+    // Cevabı, POS'un cevabı kendi isteğiyle eşleştirmek için kullandığı istek alanlarıyla başlatır.
     private static IsoMessage Echo(IsoMessage request, int[] fields)
     {
         var response = new IsoMessage(request.ToResponseMti());
@@ -78,7 +78,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         return response;
     }
 
-    // Only called after the required fields were checked, so the ! below are safe.
+    // Sadece zorunlu alanlar kontrol edildikten sonra çağrılır; bu yüzden aşağıdaki ! işaretleri güvenlidir.
     private static PaymentRequest ToPaymentRequest(IsoMessage m) => new(
         Mti: m.Mti,
         CardNumber: m[2]!,

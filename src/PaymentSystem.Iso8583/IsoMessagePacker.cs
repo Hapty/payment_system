@@ -2,9 +2,9 @@ using System.Text;
 
 namespace PaymentSystem.Iso8583;
 
-// Converts between IsoMessage and its wire bytes:
-//   [MTI: 4 ASCII digits][primary bitmap: 8 bytes][secondary bitmap: 8 bytes, only if bit 1 is set][fields, ASCII, in field order]
-// Bit n of the bitmap (1-based, most significant bit of the first byte = bit 1) says whether field n is present.
+// IsoMessage ile ağdan giden/gelen baytlar arasında çeviri yapar:
+//   [MTI: 4 ASCII rakam][birincil bitmap: 8 bayt][ikincil bitmap: 8 bayt, sadece bit 1 set ise][alanlar, ASCII, alan sırasıyla]
+// Bitmap'in n. biti (1'den başlar; ilk baytın en soldaki biti = bit 1) n numaralı alanın mesajda olup olmadığını söyler.
 public sealed class IsoMessagePacker(IReadOnlyDictionary<int, IsoFieldDefinition> definitions)
 {
     private const int BitmapSize = 8;
@@ -41,7 +41,7 @@ public sealed class IsoMessagePacker(IReadOnlyDictionary<int, IsoFieldDefinition
         if (data.Length < 4)
             throw new IsoFormatException(0, $"Message is {data.Length} bytes, too short to hold an MTI.");
 
-        // Latin1 maps every byte to one char, so non-ASCII bytes survive decoding and are rejected by validation.
+        // Latin1 her baytı tek bir karaktere çevirir; böylece ASCII dışı baytlar kaybolmaz ve doğrulamada reddedilir.
         var mti = Encoding.Latin1.GetString(data, 0, 4);
         if (!IsoMessage.IsValidMti(mti))
             throw new IsoFormatException(0, $"MTI must be 4 digits, but was '{mti}'.");

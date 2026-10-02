@@ -1,13 +1,13 @@
 namespace PaymentSystem.Gate.Payment;
 
-// What the Gate sends to the Payment service: the ISO8583 fields of a financial request under readable names.
-// The Gate does not interpret ProcessingCode (sale, balance inquiry, transfer...) - that is the Payment service's job.
+// Gate'in Payment servisine gönderdiği veri: bir finansal isteğin ISO8583 alanları, okunabilir isimlerle.
+// Gate ProcessingCode'u (satış, bakiye sorgu, transfer...) yorumlamaz; bu Payment servisinin işidir.
 public sealed record PaymentRequest(
     string Mti,
     string CardNumber,              // F2
     string ProcessingCode,          // F3
-    long AmountMinor,               // F4, e.g. 15000 = 150.00
-    string CurrencyCode,            // F49, e.g. 949 = TRY
+    long AmountMinor,               // F4, kuruş cinsinden: 15000 = 150,00
+    string CurrencyCode,            // F49, örn. 949 = TRY
     string TransmissionDateTime,    // F7  MMDDhhmmss
     string Stan,                    // F11
     string LocalTime,               // F12 hhmmss

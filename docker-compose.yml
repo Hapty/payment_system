@@ -33,12 +33,12 @@ services:
 
   gate:
     build:
-      context: .                                  # repo root: the Gate also needs src/PaymentSystem.Iso8583
+      context: .                                  # repo kökü: Gate src/PaymentSystem.Iso8583'e de ihtiyaç duyar
       dockerfile: src/PaymentSystem.Gate/Dockerfile
     container_name: payment_system_gate
     environment:
       Gate__Port: "8583"
-      # The Payment service does not exist yet, so every financial request is answered with F39=91.
+      # Payment servisi henüz yok, bu yüzden her finansal istek F39=91 ile cevaplanır.
       Gate__PaymentBaseUrl: "http://payment:8080"
     ports:
       - "8583:8583"

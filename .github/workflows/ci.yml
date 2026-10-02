@@ -22,8 +22,8 @@ jobs:
       - name: Build
         run: dotnet build -c Release --no-restore
 
-      # Coverage gate settings (80% line, Program.cs excluded) live in the test csproj.
-      # The step fails if line coverage drops below the threshold.
+      # Coverage kapısı ayarları (%80 satır, Program.cs hariç) test csproj'unda durur.
+      # Satır coverage'ı eşiğin altına düşerse bu adım başarısız olur.
       - name: Test with coverage gate
         run: dotnet test -c Release --no-build -p:CollectCoverage=true
 

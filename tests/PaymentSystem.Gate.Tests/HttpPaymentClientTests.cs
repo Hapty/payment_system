@@ -47,8 +47,8 @@ public class HttpPaymentClientTests
     }
 
     [Theory]
-    [InlineData("0")]       // too short for F39
-    [InlineData("ABC")]     // too long for F39
+    [InlineData("0")]       // F39 için çok kısa
+    [InlineData("ABC")]     // F39 için çok uzun
     public async Task InvalidResponseCode_Returns91(string code)
     {
         var (client, _) = Create((_, _) => Json(new { responseCode = code }));

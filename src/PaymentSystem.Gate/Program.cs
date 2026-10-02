@@ -13,8 +13,8 @@ builder.Services
         client.BaseAddress = new Uri(options.PaymentBaseUrl.TrimEnd('/') + "/");
         client.Timeout = TimeSpan.FromSeconds(options.PaymentTimeoutSeconds);
     })
-    // The client lives as long as the singleton TransactionHandler, so let the handler recycle
-    // connections itself (picks up DNS changes) instead of relying on HttpClientFactory rotation.
+    // Bu client, singleton TransactionHandler yaşadığı sürece yaşar. Bu yüzden HttpClientFactory'nin handler
+    // yenilemesine güvenmek yerine bağlantıları handler'ın kendisi yeniler (DNS değişikliklerini de böyle yakalar).
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) })
     .SetHandlerLifetime(Timeout.InfiniteTimeSpan);
 

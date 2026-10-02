@@ -2,19 +2,19 @@ namespace PaymentSystem.Iso8583;
 
 public enum IsoLengthType
 {
-    Fixed,      // always exactly Length characters
-    LLVar,      // 2-digit length prefix, then up to Length characters
-    LLLVar      // 3-digit length prefix, then up to Length characters
+    Fixed,      // her zaman tam olarak Length karakter
+    LLVar,      // önce 2 haneli uzunluk, sonra en fazla Length karakter
+    LLLVar      // önce 3 haneli uzunluk, sonra en fazla Length karakter
 }
 
 public enum IsoCharset
 {
-    Numeric,        // n   : digits only
-    AlphaNumeric,   // an  : letters and digits
-    Any             // ans : any printable ASCII (letters, digits, space, symbols)
+    Numeric,        // n   : sadece rakam
+    AlphaNumeric,   // an  : harf ve rakam
+    Any             // ans : yazdırılabilir her ASCII karakter (harf, rakam, boşluk, sembol)
 }
 
-// Describes how one ISO8583 data element is laid out on the wire.
+// Bir ISO8583 alanının mesaj içinde nasıl yer aldığını tarif eder.
 public sealed record IsoFieldDefinition(int Number, string Name, IsoLengthType LengthType, int Length, IsoCharset Charset)
 {
     public int PrefixDigits => LengthType switch
@@ -24,7 +24,7 @@ public sealed record IsoFieldDefinition(int Number, string Name, IsoLengthType L
         _ => 0
     };
 
-    // Returns why the value does not fit this field, or null when it is valid.
+    // Değer bu alana uymuyorsa nedenini, geçerliyse null döner.
     public string? Validate(string value)
     {
         if (LengthType == IsoLengthType.Fixed && value.Length != Length)

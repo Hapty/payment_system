@@ -5,14 +5,14 @@ using PaymentSystem.Iso8583;
 
 namespace PaymentSystem.Gate;
 
-// Accepts POS connections and runs a read-frame -> handle -> write-frame loop for each one.
-// A POS may keep its connection open and send many messages over it.
+// POS bağlantılarını kabul eder ve her biri için "çerçeve oku -> işle -> çerçeve yaz" döngüsünü çalıştırır.
+// Bir POS bağlantısını açık tutup üzerinden birçok mesaj gönderebilir.
 public sealed class TcpGateServer(TransactionHandler handler, IOptions<GateOptions> options, ILogger<TcpGateServer> logger)
     : BackgroundService
 {
     private readonly TaskCompletionSource<int> _boundPort = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    // Completes once the listener is up; with Port = 0 this is how callers learn which port was picked.
+    // Dinleyici açıldığında tamamlanır; Port = 0 iken çağıran taraf hangi portun seçildiğini buradan öğrenir.
     public Task<int> BoundPort => _boundPort.Task;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -37,7 +37,7 @@ public sealed class TcpGateServer(TransactionHandler handler, IOptions<GateOptio
             while (true)
             {
                 var client = await listener.AcceptTcpClientAsync(stoppingToken);
-                // Each connection is served on its own task so one slow POS does not block the others.
+                // Her bağlantı kendi görevinde (task) işlenir; böylece yavaş bir POS diğerlerini bekletmez.
                 _ = HandleConnectionAsync(client, stoppingToken);
             }
         }

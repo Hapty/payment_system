@@ -2,14 +2,14 @@ using System.Buffers.Binary;
 
 namespace PaymentSystem.Iso8583;
 
-// TCP is a byte stream with no message boundaries, so every message is sent as a frame:
-//   [length: 2 bytes, big-endian, not counting itself][message bytes]
+// TCP, mesaj sınırı olmayan bir bayt akışıdır; bu yüzden her mesaj bir çerçeve (frame) içinde gönderilir:
+//   [uzunluk: 2 bayt, big-endian, kendisini saymaz][mesaj baytları]
 public static class IsoFraming
 {
     public const int HeaderSize = 2;
     public const int MaxMessageLength = 8192;
 
-    // Returns null when the peer closed the connection cleanly between messages.
+    // Karşı taraf bağlantıyı iki mesajın arasında düzgünce kapattıysa null döner.
     public static async Task<byte[]?> ReadAsync(Stream stream, CancellationToken cancellationToken = default)
     {
         var header = new byte[HeaderSize];
@@ -22,7 +22,7 @@ public static class IsoFraming
             throw new InvalidDataException($"Frame length {length} is outside 1..{MaxMessageLength}.");
 
         var message = new byte[length];
-        // TCP may deliver the message in several pieces; keep reading until all of it has arrived.
+        // TCP mesajı birkaç parça halinde getirebilir; mesajın tamamı gelene kadar okumaya devam et.
         await stream.ReadExactlyAsync(message, cancellationToken);
         return message;
     }

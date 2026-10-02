@@ -1,7 +1,7 @@
 -- =========================================================
--- Payment System - Table Definitions
--- Idempotent: safe to re-run (checks existence before create)
--- No foreign keys - tables and columns only
+-- Payment System - Tablo tanımları
+-- Idempotent: tekrar çalıştırmak güvenli (oluşturmadan önce var mı diye bakar)
+-- Foreign key yok - sadece tablolar ve kolonlar
 -- =========================================================
 
 IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = 'PaymentSystem')
@@ -44,7 +44,7 @@ BEGIN
 END
 GO
 
--- 3) TransactionType (lookup: otc/ots combination -> meaning)
+-- 3) TransactionType (sözlük: otc/ots kombinasyonu -> işlem adı)
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'TransactionType')
 BEGIN
     CREATE TABLE dbo.TransactionType
@@ -72,7 +72,7 @@ BEGIN
         Ots                     CHAR(2)         NOT NULL,
         F4_Amount               DECIMAL(18,2)   NOT NULL,
         F49_CurrencyCode        CHAR(3)         NULL,
-        LocalTxnAmount          DECIMAL(18,2)   NULL,           -- currency x amount
+        LocalTxnAmount          DECIMAL(18,2)   NULL,           -- kur x tutar
         F12_TransactionTime     CHAR(6)         NULL,           -- hhmmss
         F13_TransactionDate     CHAR(8)         NULL,           -- yyyymmdd
         F14_CardExpiry          CHAR(4)         NULL,
@@ -80,12 +80,12 @@ BEGIN
         F22_EntryMode           CHAR(3)         NULL,
         F39_ResponseCode        CHAR(2)         NULL,
         F43_Description         VARCHAR(100)    NULL,
-        RecipientCardNumber     VARCHAR(19)     NULL            -- only for money transfer (kkpt)
+        RecipientCardNumber     VARCHAR(19)     NULL            -- sadece para transferinde (kkpt)
     );
 END
 GO
 
--- 5) MtiProcessingCode (lookup: MTI + F3 -> otc/ots)
+-- 5) MtiProcessingCode (eşleme: MTI + F3 -> otc/ots)
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'MtiProcessingCode')
 BEGIN
     CREATE TABLE dbo.MtiProcessingCode

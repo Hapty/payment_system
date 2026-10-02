@@ -24,9 +24,9 @@ public class IsoMessagePackerTests
         var bytes = Packer.Pack(new IsoMessage("0200").Set(2, "4111111111111111").Set(3, "000000"));
 
         Assert.Equal("0200", Encoding.ASCII.GetString(bytes, 0, 4));
-        // Fields 2 and 3 -> bits 2 and 3 of the first bitmap byte: 0110 0000
+        // Alan 2 ve 3 -> bitmap'in ilk baytındaki 2. ve 3. bitler: 0110 0000
         Assert.Equal(new byte[] { 0x60, 0, 0, 0, 0, 0, 0, 0 }, bytes[4..12]);
-        // LLVAR: "16" length prefix, then the PAN, then the fixed 6-digit processing code
+        // LLVAR: önce "16" uzunluk öneki, sonra kart numarası, sonra sabit 6 haneli işlem kodu
         Assert.Equal("164111111111111111000000", Encoding.ASCII.GetString(bytes, 12, bytes.Length - 12));
     }
 
@@ -35,14 +35,14 @@ public class IsoMessagePackerTests
     {
         var bytes = Packer.Pack(TestMessages.Echo());
 
-        Assert.Equal(0x80, bytes[4] & 0x80);   // bit 1 = secondary bitmap present
+        Assert.Equal(0x80, bytes[4] & 0x80);   // bit 1 = ikincil bitmap var
         Assert.Equal(4 + 16 + 10 + 6 + 3, bytes.Length);
         Assert.Equal("301", Packer.Unpack(bytes)[70]);
     }
 
     [Theory]
-    [InlineData(4, "15000", "exactly 12")]          // fixed field with wrong length
-    [InlineData(4, "00000001500A", "Numeric")]      // letter in a numeric field
+    [InlineData(4, "15000", "exactly 12")]          // sabit uzunluklu alan, yanlış uzunluk
+    [InlineData(4, "00000001500A", "Numeric")]      // sayısal alanda harf
     [InlineData(2, "41111111111111111111", "between 1 and 19")]
     public void Pack_InvalidField_Throws(int field, string value, string reasonPart)
     {
@@ -114,7 +114,7 @@ public class IsoMessagePackerTests
     [Fact]
     public void Unpack_UnsupportedFieldInBitmap_Throws()
     {
-        // Bit 5 (field 5) is not in Iso87Fields, so its length is unknown.
+        // Bit 5 (alan 5) Iso87Fields'ta yok, bu yüzden uzunluğu bilinmiyor.
         byte[] data = [.. "0200"u8, 0x08, 0, 0, 0, 0, 0, 0, 0, .. "000000000000"u8];
 
         Assert.Equal(5, Assert.Throws<IsoFormatException>(() => Packer.Unpack(data)).FieldNumber);
@@ -123,7 +123,7 @@ public class IsoMessagePackerTests
     [Fact]
     public void Unpack_InvalidFieldContent_Throws()
     {
-        // Field 3 present with a letter in it.
+        // Alan 3 var ama içinde harf geçiyor.
         byte[] data = [.. "0200"u8, 0x20, 0, 0, 0, 0, 0, 0, 0, .. "00A000"u8];
 
         Assert.Equal(3, Assert.Throws<IsoFormatException>(() => Packer.Unpack(data)).FieldNumber);

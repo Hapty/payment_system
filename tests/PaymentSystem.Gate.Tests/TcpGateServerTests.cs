@@ -6,7 +6,7 @@ using PaymentSystem.Iso8583;
 
 namespace PaymentSystem.Gate.Tests;
 
-// Runs the real TCP server on a free port and talks to it through a real socket, like a POS would.
+// Gerçek TCP sunucusunu boş bir portta çalıştırır ve onunla bir POS gibi gerçek bir soket üzerinden konuşur.
 public class TcpGateServerTests : IAsyncLifetime
 {
     private readonly FakePaymentClient _payment = new("00");
@@ -31,7 +31,7 @@ public class TcpGateServerTests : IAsyncLifetime
     {
         var client = new TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, _port);
-        return client.GetStream();   // disposing the stream also closes the socket
+        return client.GetStream();   // stream dispose edilince soket de kapanır
     }
 
     private static async Task<IsoMessage> RoundTripAsync(NetworkStream stream, IsoMessage request)
@@ -70,7 +70,7 @@ public class TcpGateServerTests : IAsyncLifetime
     {
         await using (var bad = await ConnectAsync())
         {
-            await bad.WriteAsync(new byte[] { 0, 0 });   // zero-length frame
+            await bad.WriteAsync(new byte[] { 0, 0 });   // uzunluğu sıfır olan çerçeve
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             Assert.Null(await IsoFraming.ReadAsync(bad, timeout.Token));
         }
@@ -87,7 +87,7 @@ public class TcpGateServerTests : IAsyncLifetime
             Options.Create(new GateOptions { Port = _port }),
             NullLogger<TcpGateServer>.Instance);
 
-        // ExecuteAsync fails before its first await, so the failure surfaces from StartAsync itself.
+        // ExecuteAsync ilk await'inden önce hata verdiği için hata doğrudan StartAsync'ten gelir.
         await Assert.ThrowsAsync<SocketException>(() => other.StartAsync(CancellationToken.None));
         await Assert.ThrowsAsync<SocketException>(() => other.BoundPort);
         other.Dispose();

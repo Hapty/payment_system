@@ -1,6 +1,6 @@
 namespace PaymentSystem.Iso8583;
 
-// An ISO8583 message in memory: the MTI plus the data elements that are present, keyed by field number.
+// Bellekteki bir ISO8583 mesajı: MTI ve mesajda bulunan alanlar (alan numarasına göre).
 public sealed class IsoMessage(string mti)
 {
     private readonly SortedDictionary<int, string> _fields = new();
@@ -13,10 +13,10 @@ public sealed class IsoMessage(string mti)
 
     public bool Has(int field) => _fields.ContainsKey(field);
 
-    // Returns the message itself so fields can be chained: new IsoMessage("0800").Set(11, "000001").Set(70, "301")
+    // Mesajın kendisini döner, böylece alanlar zincirleme eklenebilir: new IsoMessage("0800").Set(11, "000001").Set(70, "301")
     public IsoMessage Set(int field, string value)
     {
-        // Field 1 is the secondary bitmap; the packer manages it.
+        // Alan 1 ikincil bitmap'tir; onu packer yönetir.
         ArgumentOutOfRangeException.ThrowIfLessThan(field, 2);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(field, 128);
         _fields[field] = value;
@@ -25,7 +25,7 @@ public sealed class IsoMessage(string mti)
 
     public static bool IsValidMti(string mti) => mti.Length == 4 && mti.All(char.IsAsciiDigit);
 
-    // The third MTI digit is the message function: even = request/advice/notification, odd = the matching response.
+    // MTI'nın 3. hanesi mesajın işlevidir: çift = istek/bildirim, tek = o isteğin cevabı.
     public bool IsRequest => IsValidMti(Mti) && (Mti[2] - '0') % 2 == 0;
 
     // 0200 -> 0210, 0800 -> 0810, 0400 -> 0410

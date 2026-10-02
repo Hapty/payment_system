@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Net.Sockets;
 using PaymentSystem.Iso8583;
 
-// A tiny POS terminal: builds one ISO8583 request, sends it to the Gate over TCP and prints the answer.
+// Küçük bir POS terminali: bir ISO8583 isteği oluşturur, TCP ile Gate'e gönderir ve cevabı ekrana yazar.
 //   dotnet run --project tools/PosSimulator -- sale 4111111111111111 150.00 [--host localhost] [--port 8583] [--expiry 2812]
 
 var positional = new List<string>();
@@ -25,7 +25,7 @@ try
         ["transfer", var pan, var amount] => FinancialMessage("400000", pan, ParseAmount(amount)),
         _ => throw new ArgumentException("Unknown command.")
     };
-    bytes = IsoMessagePacker.Default.Pack(request);   // also validates the values, e.g. a PAN with letters
+    bytes = IsoMessagePacker.Default.Pack(request);   // değerleri de doğrular, örn. harf içeren bir kart numarası
 }
 catch (Exception ex) when (ex is ArgumentException or IsoFormatException)
 {
@@ -77,7 +77,7 @@ IsoMessage NetworkMessage()
     return new IsoMessage("0800")
         .Set(7, now.ToString("MMddHHmmss"))
         .Set(11, NewStan())
-        .Set(70, "301");    // 301 = echo test
+        .Set(70, "301");    // 301 = echo testi
 }
 
 IsoMessage FinancialMessage(string processingCode, string pan, long amountMinor)
@@ -94,7 +94,7 @@ IsoMessage FinancialMessage(string processingCode, string pan, long amountMinor)
         .Set(13, now.ToString("MMdd"))
         .Set(14, options["expiry"])
         .Set(18, "5999")
-        .Set(22, "051")                 // 05 = chip, 1 = PIN entry capability
+        .Set(22, "051")                 // 05 = çip, 1 = PIN girilebiliyor
         .Set(37, now.ToString("yyMMdd") + stan)
         .Set(41, "TERM0001")
         .Set(42, "MERCHANT0000001")
@@ -106,7 +106,7 @@ static string NewStan() => Random.Shared.Next(1, 1_000_000).ToString("D6");
 
 static long ParseAmount(string text)
 {
-    // Accept both 150.00 and 150,00.
+    // Hem 150.00 hem 150,00 yazımını kabul et.
     if (!decimal.TryParse(text.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var amount)
         || amount < 0 || decimal.Round(amount, 2) != amount)
         throw new ArgumentException($"'{text}' is not a valid amount such as 150.00.");
