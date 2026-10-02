@@ -31,6 +31,21 @@ services:
       - ./docker/sql/run-init.sh:/run-init.sh:ro
     entrypoint: ["/bin/bash", "/run-init.sh"]
 
+  payment:
+    build:
+      context: .
+      dockerfile: src/PaymentSystem.Payment/Dockerfile
+    container_name: payment_system_payment
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      ConnectionStrings__PaymentSystem: "Server=db,1433;Database=PaymentSystem;User Id=sa;TrustServerCertificate=True"
+    ports:
+      - "5002:8080"                               # CRUD endpoint'leri: http://localhost:5002/api/...
+    restart: unless-stopped
+
   gate:
     build:
       context: .                                  # repo kökü: Gate src/PaymentSystem.Iso8583'e de ihtiyaç duyar
@@ -38,7 +53,7 @@ services:
     container_name: payment_system_gate
     environment:
       Gate__Port: "8583"
-      # Payment servisi henüz yok, bu yüzden her finansal istek F39=91 ile cevaplanır.
+      # Payment'ta henüz /api/transactions yok (sadece CRUD var), bu yüzden her finansal istek F39=91 ile cevaplanır.
       Gate__PaymentBaseUrl: "http://payment:8080"
     ports:
       - "8583:8583"
