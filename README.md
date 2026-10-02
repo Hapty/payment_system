@@ -131,7 +131,14 @@ dotnet run --project src/PaymentSystem.Gate
 
 # ya da Docker (DB ile birlikte)
 docker compose up -d --build
+
+# sadece Gate (DB'siz)
+docker compose up -d --build gate
+docker logs -f payment_system_gate
 ```
+Eski `payment-api` servisiyle çalışmış bir makinede ilk seferde `--remove-orphans` ekle: `docker compose up -d --build --remove-orphans`. Böylece artık compose dosyasında olmayan `payment_system_api` container'ı silinir.
+
+Docker'da Gate, Payment'ı `http://payment:8080` adresinde arar. Bu servis henüz olmadığı için logda `Name or service not known (payment:8080)` uyarısı görünür ve `0200` mesajları `91` alır. Bu beklenen bir durum.
 
 ### POS simülatörü
 Gate çalışırken ayrı bir terminalde:
