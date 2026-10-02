@@ -1,6 +1,19 @@
 # Payment System
 
-TCP üzerinden ISO8583 benzeri kart işlem mesajlarını alacak ödeme sisteminin veritabanı katmanı.
+POS terminallerinden TCP üzerinden ISO8583 kart işlem mesajlarını alan ödeme sistemi.
+
+```
+POS ──TCP / ISO8583──► Gate ──HTTP / JSON──► Payment (henüz yok) ──► SQL Server
+                       :8583                 POST /api/transactions
+```
+
+| Parça | Konum | Durum |
+|---|---|---|
+| Gate | `src/PaymentSystem.Gate` | TCP'den mesajı okur, ISO8583'ü çözer, format kontrolü yapar, Payment'a iletir, cevabı (F39) ISO8583 olarak POS'a döner |
+| ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli, alan tanımları, pack/unpack, TCP framing (Gate ve simülatör ortak) |
+| POS simülatörü | `tools/PosSimulator` | Gate'i denemek için mesaj üretip gönderen konsol uygulaması |
+| Payment | — | Sonraki adım; DB şeması (`docker/sql`) onun için hazır |
+| Veritabanı | `docker/sql` | Tablolar + seed |
 
 ## Veritabanı (MS SQL Server, Docker)
 
@@ -48,45 +61,108 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 
 **Not:** Tablolar arasında foreign key yok — sadece database, tablo ve kolonlar oluşturuluyor. Sadece her tabloda kendi `PRIMARY KEY`'i var.
 
-## Payment System Servisi (PaymentSystem.Api)
+## Gate (PaymentSystem.Gate)
 
-`src/PaymentSystem.Api` — ödeme sisteminin servisi (.NET 9 Web API + EF Core). `BankAccount`, `Card`, `TransactionType` (Otc-Ots) ve `MtiProcessingCode` (Mti-F3) için CRUD endpoint'lerini sunar; ISO8583 işlem akışı (ve `DebitTransaction`) da ileride bu servise eklenecek. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
+.NET 9 worker servisi. TCP `8583` portunu dinler; bir POS bağlantıyı açık tutup art arda birçok mesaj gönderebilir.
+
+Her mesaj için:
+1. TCP'den çerçeveyi (frame) okur.
+2. ISO8583'ü çözer ve alanların formatını kontrol eder.
+3. MTI'ya göre karar verir:
+   - `0800` (network / echo): Gate kendisi `0810`, F39=`00` döner; Payment'a gitmez.
+   - `0200` (finansal): zorunlu alanlar (2, 3, 4, 7, 11, 12, 13, 41, 49) kontrol edilir, mesaj JSON'a çevrilip `POST {PaymentBaseUrl}/api/transactions` ile Payment'a gönderilir. Payment'ın `responseCode` değeri F39'a yazılır.
+   - Diğer MTI'lar: F39=`12`.
+4. Cevabı (`0210` / `0810` …) ISO8583 olarak POS'a geri yazar. POS'un cevabı isteğiyle eşleştirebilmesi için 2, 3, 4, 7, 11, 12, 13, 37, 41, 42, 49 alanları geri gönderilir.
+
+Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi (`MtiProcessingCode` tablosu). Loglarda kart numarası maskelenir (`411111******1111`).
+
+### F39 (cevap kodu)
+| Kod | Kim üretir | Anlamı |
+|---|---|---|
+| `00` | Gate (0800) / Payment | Onay |
+| `12` | Gate | Desteklenmeyen MTI |
+| `30` | Gate | Format hatası: bozuk ya da eksik alan |
+| `91` | Gate | Payment'a ulaşılamadı: bağlantı hatası, timeout, 2xx olmayan ya da geçersiz cevap |
+| diğer | Payment | Olduğu gibi POS'a iletilir (örn. `51` yetersiz bakiye) |
+
+Payment servisi henüz olmadığı için **her `0200` şu an `91` döner**.
+
+### Mesaj formatı (wire format)
+```
+[uzunluk: 2 bayt, big-endian][MTI: 4 ASCII][primary bitmap: 8 bayt][secondary bitmap: 8 bayt, bit 1 set ise][alanlar: ASCII, alan sırasıyla]
+```
+Uzunluk başlığı kendisini saymaz, en fazla 8192 bayt olabilir. Bitmap'te bit n (ilk baytın en soldaki biti = bit 1) "alan n mesajda var" demektir.
+
+| F | Ad | Format |
+|---|---|---|
+| 2 | PAN | LLVAR n..19 (2 haneli uzunluk öneki) |
+| 3 | Processing code | n6 |
+| 4 | Tutar (kuruş: 150.00 → `000000015000`) | n12 |
+| 7 | Transmission date/time MMDDhhmmss | n10 |
+| 11 | STAN | n6 |
+| 12 | Yerel saat hhmmss | n6 |
+| 13 | Yerel tarih MMDD | n4 |
+| 14 | Son kullanma YYMM | n4 |
+| 18 | Merchant type | n4 |
+| 22 | POS entry mode | n3 |
+| 37 | RRN | an12 |
+| 39 | Response code | an2 |
+| 41 | Terminal ID | ans8 |
+| 42 | Merchant ID | ans15 |
+| 43 | İşyeri adı/konumu | ans40 |
+| 49 | Para birimi (949 = TRY) | n3 |
+| 70 | Network management code (secondary bitmap) | n3 |
+
+Listede olmayan bir alan bitmap'te işaretliyse uzunluğu bilinemeyeceği için mesaj format hatası sayılır. Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir.
+
+### Ayarlar
+`src/PaymentSystem.Gate/appsettings.json` içindeki `Gate` bölümü, ya da `Gate__Port` gibi env var'lar:
+
+| Ayar | Varsayılan | |
+|---|---|---|
+| `Port` | `8583` | POS'ların bağlandığı TCP portu |
+| `PaymentBaseUrl` | `http://localhost:5002` | Payment servisinin adresi |
+| `PaymentTimeoutSeconds` | `10` | Bu süre içinde cevap gelmezse F39=`91` |
 
 ### Çalıştırma
-`docker compose up -d --build` ile DB'yle birlikte container olarak kalkar: `http://localhost:5001`.
+```bash
+# lokal
+dotnet run --project src/PaymentSystem.Gate
 
-Lokal geliştirme için (DB container'ı ayaktayken, payment-api container'ı durdurulmuş olmalı — ikisi de 5001 portunu kullanır):
-```powershell
-$env:MSSQL_SA_PASSWORD = "<şifreniz>"
-dotnet run --project src/PaymentSystem.Api --launch-profile http
+# ya da Docker (DB ile birlikte)
+docker compose up -d --build
+
+# sadece Gate (DB'siz)
+docker compose up -d --build gate
+docker logs -f payment_system_gate
 ```
-Örnek istekler: `src/PaymentSystem.Api/PaymentSystem.Api.http`.
+Eski `payment-api` servisiyle çalışmış bir makinede ilk seferde `--remove-orphans` ekle: `docker compose up -d --build --remove-orphans`. Böylece artık compose dosyasında olmayan `payment_system_api` container'ı silinir.
 
-### Endpoint'ler
-| Kaynak | Route |
-|---|---|
-| BankAccount | `/api/bank-accounts`, `/api/bank-accounts/{accountNo}` |
-| Card | `/api/cards`, `/api/cards/{id}`, `/api/cards/by-number/{cardNumber}` |
-| TransactionType | `/api/transaction-types`, `/api/transaction-types/{otc}/{ots}` |
-| MtiProcessingCode | `/api/mti-processing-codes`, `/api/mti-processing-codes/{mti}/{f3}` |
+Docker'da Gate, Payment'ı `http://payment:8080` adresinde arar. Bu servis henüz olmadığı için logda `Name or service not known (payment:8080)` uyarısı görünür ve `0200` mesajları `91` alır. Bu beklenen bir durum.
 
-Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `POST` → `409`, geçersiz alan → `400`, bulunamayan kayıt → `404`.
-
-Kurallar:
-- Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır).
-- `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` bakiyeyi değiştirmez — bakiye işlemlerle değişecek.
-- `Card.LastTransactionDate` / `LastTransactionAmount` CRUD endpoint'inden yazılamaz — işlem akışının alanları.
+### POS simülatörü
+Gate çalışırken ayrı bir terminalde:
+```bash
+dotnet run --project tools/PosSimulator -- echo                          # 0800 → 0810 / 00
+dotnet run --project tools/PosSimulator -- sale 4111111111111111 150.00  # 0200 → 0210 / 91 (Payment yok)
+dotnet run --project tools/PosSimulator -- balance 4111111111111111
+dotnet run --project tools/PosSimulator -- transfer 4111111111111111 25,50
+# seçenekler: --host localhost --port 8583 --expiry 2812
+```
+Simülatör gönderdiği alanları, ham baytların hex dökümünü ve gelen cevabı alan alan yazdırır.
 
 ## Testler ve CI
 
-Unit testler `tests/PaymentSystem.Api.Tests` altında (xUnit). Controller'lar in-memory SQLite ile test edilir, Docker/SQL Server gerekmez.
+Testler `tests/PaymentSystem.Gate.Tests` altında (xUnit): ISO8583 pack/unpack, TCP framing, Gate'in karar mantığı (sahte Payment ile), HTTP Payment client'ı (sahte HTTP handler ile) ve gerçek soket üzerinden TCP sunucusu. Docker gerekmez.
 
 ```bash
 dotnet test -p:CollectCoverage=true
 ```
-Line coverage %80'in altındaysa komut hata verir (ayarlar test `.csproj`'unda; `Program.cs` coverage dışı). Rapor: `tests/PaymentSystem.Api.Tests/TestResults/coverage.cobertura.xml`.
+Line coverage %80'in altındaysa komut hata verir (ayarlar test `.csproj`'unda; `Program.cs` coverage dışı). Rapor: `tests/PaymentSystem.Gate.Tests/TestResults/coverage.cobertura.xml`.
 
-GitHub Actions (`.github/workflows/ci.yml`) `master`'a açılan her pull request'te ve `master`'a her push'ta restore → build → test + coverage kapısı çalıştırır; coverage özeti job summary'de görünür. `master` üzerindeki ruleset `build-and-test` check'i geçmeden merge'e izin vermez.
+GitHub Actions (`.github/workflows/ci.yml`), `master`'a açılan her pull request'te ve `master`'a yapılan her push'ta restore → build → test + coverage kapısını çalıştırır; coverage özeti job summary'de görünür. `master` üzerindeki ruleset, `build-and-test` check'i geçmeden merge'e izin vermez.
 
 ## Sıradaki Adımlar
-- Aynı servise ISO8583 işlem akışı (TCP sunucusu, parser, iş mantığı, `DebitTransaction`)
+- Payment servisi: `POST /api/transactions` (Gate'in gönderdiği `PaymentRequest`'i alır, `{ "responseCode": "00" }` döner), `MtiProcessingCode` / `TransactionType` ile işlem tipini çözer, bakiye/kart kontrolleri, `DebitTransaction` kaydı.
+- DB şemasını ISO formatına uydurmak: `DebitTransaction.F13_TransactionDate` şu an `CHAR(8)` yyyymmdd (ISO: MMDD), `Card.ExpiryDate` MMYY (ISO F14: YYMM).
+- Para transferi için alıcı kart alanı ve bakiye sorgusu cevabı için F54 (additional amounts) henüz desteklenmiyor.
