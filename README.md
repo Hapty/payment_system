@@ -3,7 +3,7 @@
 POS terminallerinden TCP üzerinden ISO8583 kart işlem mesajlarını alan ödeme sistemi.
 
 ```
-POS ──TCP / ISO8583──► Gate ──HTTP / JSON──► Payment (henüz yok) ──► SQL Server
+POS ──TCP / ISO8583──► Gate ──HTTP / JSON──► Payment ──► SQL Server
                        :8583                 POST /api/transactions
 ```
 
@@ -12,7 +12,7 @@ POS ──TCP / ISO8583──► Gate ──HTTP / JSON──► Payment (henüz
 | Gate | `src/PaymentSystem.Gate` | TCP'den mesajı okur, ISO8583'ü çözer, format kontrolü yapar, Payment'a iletir, cevabı (F39) ISO8583 olarak POS'a döner |
 | ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli, alan tanımları, pack/unpack, TCP framing (Gate ve simülatör ortak) |
 | POS simülatörü | `tools/PosSimulator` | Gate'i denemek için mesaj üretip gönderen konsol uygulaması |
-| Payment | — | Sonraki adım; DB şeması (`docker/sql`) onun için hazır |
+| Payment | `src/PaymentSystem.Payment` | Web API + Dapper. Şu an 4 tablonun CRUD'u var; işlem akışı (`POST /api/transactions`) sonraki adım |
 | Veritabanı | `docker/sql` | Tablolar + seed |
 
 ## Veritabanı (MS SQL Server, Docker)
@@ -85,7 +85,7 @@ Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi
 | `91` | Gate | Payment'a ulaşılamadı: bağlantı hatası, timeout, 2xx olmayan ya da geçersiz cevap |
 | diğer | Payment | Olduğu gibi POS'a iletilir (örn. `51` yetersiz bakiye) |
 
-Payment servisi henüz olmadığı için **her `0200` şu an `91` döner**.
+Payment'ta işlem akışı (`POST /api/transactions`) henüz olmadığı için **her `0200` şu an `91` döner**.
 
 ### Mesaj formatı (wire format)
 ```
@@ -151,18 +151,55 @@ dotnet run --project tools/PosSimulator -- transfer 4111111111111111 25,50
 ```
 Simülatör gönderdiği alanları, ham baytların hex dökümünü ve gelen cevabı alan alan yazdırır.
 
+## Payment (PaymentSystem.Payment)
+
+.NET 9 Web API; veritabanına **Dapper** (düz SQL) ile erişir. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
+Şu an 4 tablonun CRUD endpoint'leri var; Gate'in çağıracağı işlem akışı (`POST /api/transactions`) sonraki adım.
+
+| Kaynak | Route |
+|---|---|
+| BankAccount | `/api/bank-accounts`, `/api/bank-accounts/{accountNo}` |
+| Card | `/api/cards`, `/api/cards/{id}`, `/api/cards/by-number/{cardNumber}` |
+| TransactionType | `/api/transaction-types`, `/api/transaction-types/{otc}/{ots}` |
+| MtiProcessingCode | `/api/mti-processing-codes`, `/api/mti-processing-codes/{mti}/{f3}` |
+
+Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `POST` → `409`, geçersiz alan → `400`, bulunamayan kayıt → `404`.
+
+Kurallar:
+- Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır). Card'ın anahtarı `Id` olduğu için kart numarası değiştirilebilir (başka kartta varsa `409`).
+- `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus`'u değiştirir.
+- `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
+- `Card.Cvv` kolonu API'de hiç yok (PCI DSS: CVV saklanmamalı).
+- Aynı anahtar kontrolü önce "var mı?" diye sorarak değil, DB'nin unique hatası (2627/2601) yakalanarak yapılır; eşzamanlı isteklerde de doğru `409` döner.
+
+### Çalıştırma
+```bash
+# Docker (DB ile birlikte): http://localhost:5002
+docker compose up -d --build
+
+# lokal (DB container'ı ayaktayken; payment container'ı durdurulmuş olmalı — ikisi de 5002'yi kullanır)
+$env:MSSQL_SA_PASSWORD = "<şifreniz>"
+dotnet run --project src/PaymentSystem.Payment --launch-profile http
+```
+Örnek istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http`.
+
 ## Testler ve CI
 
-Testler `tests/PaymentSystem.Gate.Tests` altında (xUnit): ISO8583 pack/unpack, TCP framing, Gate'in karar mantığı (sahte Payment ile), HTTP Payment client'ı (sahte HTTP handler ile) ve gerçek soket üzerinden TCP sunucusu. Docker gerekmez.
+| Test projesi | Kapsam | Gereken |
+|---|---|---|
+| `tests/PaymentSystem.Gate.Tests` | ISO8583 pack/unpack, TCP framing, Gate'in karar mantığı (sahte Payment ile), HTTP Payment client'ı, gerçek soket üzerinden TCP sunucusu | — |
+| `tests/PaymentSystem.Payment.Tests` | 4 controller + Dapper repository'leri, model doğrulama | **Docker** |
+
+Payment testleri [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek bir SQL Server container'ı başlatır ve içinde `docker/sql/init/*.sql` script'lerini çalıştırır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
 
 ```bash
 dotnet test -p:CollectCoverage=true
 ```
-Line coverage %80'in altındaysa komut hata verir (ayarlar test `.csproj`'unda; `Program.cs` coverage dışı). Rapor: `tests/PaymentSystem.Gate.Tests/TestResults/coverage.cobertura.xml`.
+Line coverage her test projesi için ayrı ayrı %80'in altındaysa komut hata verir (ayarlar test `.csproj`'larında; `Program.cs` coverage dışı). Rapor: `tests/*/TestResults/coverage.cobertura.xml`.
 
 GitHub Actions (`.github/workflows/ci.yml`), `master`'a açılan her pull request'te ve `master`'a yapılan her push'ta restore → build → test + coverage kapısını çalıştırır; coverage özeti job summary'de görünür. `master` üzerindeki ruleset, `build-and-test` check'i geçmeden merge'e izin vermez.
 
 ## Sıradaki Adımlar
-- Payment servisi: `POST /api/transactions` (Gate'in gönderdiği `PaymentRequest`'i alır, `{ "responseCode": "00" }` döner), `MtiProcessingCode` / `TransactionType` ile işlem tipini çözer, bakiye/kart kontrolleri, `DebitTransaction` kaydı.
+- Payment işlem akışı: `POST /api/transactions` (Gate'in gönderdiği `PaymentRequest`'i alır, `{ "responseCode": "00" }` döner), `MtiProcessingCode` / `TransactionType` ile işlem tipini çözer, bakiye/kart kontrolleri, `DebitTransaction` kaydı.
 - DB şemasını ISO formatına uydurmak: `DebitTransaction.F13_TransactionDate` şu an `CHAR(8)` yyyymmdd (ISO: MMDD), `Card.ExpiryDate` MMYY (ISO F14: YYMM).
 - Para transferi için alıcı kart alanı ve bakiye sorgusu cevabı için F54 (additional amounts) henüz desteklenmiyor.
