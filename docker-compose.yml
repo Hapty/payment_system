@@ -31,17 +31,17 @@ services:
       - ./docker/sql/run-init.sh:/run-init.sh:ro
     entrypoint: ["/bin/bash", "/run-init.sh"]
 
-  payment-api:
-    build: ./src/PaymentSystem.Api
-    container_name: payment_system_api
-    depends_on:
-      db-init:
-        condition: service_completed_successfully
+  gate:
+    build:
+      context: .                                  # repo root: the Gate also needs src/PaymentSystem.Iso8583
+      dockerfile: src/PaymentSystem.Gate/Dockerfile
+    container_name: payment_system_gate
     environment:
-      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
-      ConnectionStrings__PaymentSystem: "Server=db,1433;Database=PaymentSystem;User Id=sa;TrustServerCertificate=True"
+      Gate__Port: "8583"
+      # The Payment service does not exist yet, so every financial request is answered with F39=91.
+      Gate__PaymentBaseUrl: "http://payment:8080"
     ports:
-      - "5001:8080"
+      - "8583:8583"
     restart: unless-stopped
 
 volumes:
