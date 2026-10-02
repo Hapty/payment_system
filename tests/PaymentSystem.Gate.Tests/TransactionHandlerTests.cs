@@ -40,12 +40,12 @@ public class TransactionHandlerTests
         Assert.Equal("123456", forwarded.Stan);
         Assert.Equal("TERM0001", forwarded.TerminalId);
         Assert.Equal("2812", forwarded.CardExpiry);
-        Assert.Null(forwarded.CardAcceptor);   // F43 was not sent
+        Assert.Null(forwarded.CardAcceptor);   // F43 gönderilmedi
     }
 
     [Theory]
     [InlineData("00")]
-    [InlineData("51")]   // e.g. insufficient funds, decided by Payment
+    [InlineData("51")]   // örn. yetersiz bakiye; kararı Payment verir
     [InlineData("91")]
     public async Task Sale_ResponseCarriesPaymentCodeAndEchoesMatchingFields(string paymentCode)
     {
@@ -59,7 +59,7 @@ public class TransactionHandlerTests
         Assert.Equal(paymentCode, response[39]);
         foreach (var field in new[] { 2, 3, 4, 7, 11, 12, 13, 37, 41, 42, 49 })
             Assert.Equal(request[field], response[field]);
-        Assert.False(response.Has(14));   // card expiry is not echoed back
+        Assert.False(response.Has(14));   // son kullanma tarihi cevapta geri gönderilmez
     }
 
     [Fact]

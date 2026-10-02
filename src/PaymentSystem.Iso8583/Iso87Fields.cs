@@ -3,8 +3,8 @@ using static PaymentSystem.Iso8583.IsoLengthType;
 
 namespace PaymentSystem.Iso8583;
 
-// The ISO 8583:1987 data elements this system understands. A field that is not listed here cannot be
-// parsed, because its length on the wire is unknown.
+// Bu sistemin anladığı ISO 8583:1987 alanları. Burada listelenmeyen bir alan çözülemez,
+// çünkü mesaj içinde kaç bayt kapladığı bilinmez.
 public static class Iso87Fields
 {
     public static IReadOnlyDictionary<int, IsoFieldDefinition> Default { get; } = new IsoFieldDefinition[]

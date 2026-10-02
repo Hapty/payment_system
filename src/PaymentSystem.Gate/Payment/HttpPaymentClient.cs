@@ -4,7 +4,7 @@ using PaymentSystem.Iso8583;
 
 namespace PaymentSystem.Gate.Payment;
 
-// Forwards financial requests to the Payment service: POST {PaymentBaseUrl}/api/transactions with a JSON body.
+// Finansal istekleri Payment servisine iletir: JSON gövdeli POST {PaymentBaseUrl}/api/transactions.
 public sealed class HttpPaymentClient(HttpClient http, ILogger<HttpPaymentClient> logger) : IPaymentClient
 {
     private static readonly PaymentResponse Unavailable = new(ResponseCodes.PaymentUnavailable);
@@ -21,7 +21,7 @@ public sealed class HttpPaymentClient(HttpClient http, ILogger<HttpPaymentClient
             }
 
             var body = await response.Content.ReadFromJsonAsync<PaymentResponse>(cancellationToken);
-            // The code goes straight into F39, so it must fit that field (2 letters/digits).
+            // Bu kod doğrudan F39'a yazılır, bu yüzden o alana uymalı (2 harf/rakam).
             if (body?.ResponseCode is { } code && Iso87Fields.Default[39].Validate(code) is null)
                 return body;
 
@@ -31,7 +31,7 @@ public sealed class HttpPaymentClient(HttpClient http, ILogger<HttpPaymentClient
         catch (Exception ex) when (ex is HttpRequestException or JsonException or NotSupportedException
                                    || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
         {
-            // TaskCanceledException without our own cancellation means HttpClient.Timeout elapsed.
+            // Biz iptal etmediğimiz halde TaskCanceledException geldiyse HttpClient.Timeout süresi dolmuştur.
             logger.LogWarning("Payment service unreachable for STAN {Stan} ({Error}: {Message}) - responding 91",
                 request.Stan, ex.GetType().Name, ex.Message);
             return Unavailable;

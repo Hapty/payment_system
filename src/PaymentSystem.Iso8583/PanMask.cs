@@ -1,6 +1,6 @@
 namespace PaymentSystem.Iso8583;
 
-// Card numbers must never be written to logs in full (PCI DSS): keep the first 6 and last 4 digits.
+// Kart numaraları loglara asla tam olarak yazılmamalı (PCI DSS): sadece ilk 6 ve son 4 hane bırakılır.
 public static class PanMask
 {
     public static string Mask(string? pan) => pan switch
