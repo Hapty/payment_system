@@ -137,7 +137,7 @@ static void PrintHexDump(byte[] bytes)
 static string Describe(string? code) => code switch
 {
     "00" => "Approved",
-    "12" => "Invalid transaction (the Gate does not support this MTI)",
+    "12" => "Invalid transaction (unsupported MTI or transaction type)",
     "30" => "Format error (missing or malformed field)",
     "91" => "Payment service unavailable",
     _ => "Declined by the Payment service"

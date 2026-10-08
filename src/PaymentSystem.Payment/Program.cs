@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Transactions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,6 +16,8 @@ builder.Services.AddSingleton<BankAccountRepository>();
 builder.Services.AddSingleton<CardRepository>();
 builder.Services.AddSingleton<TransactionTypeRepository>();
 builder.Services.AddSingleton<MtiProcessingCodeRepository>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<TransactionProcessor>();
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
