@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using PaymentSystem.Payment.Data;
@@ -11,6 +13,9 @@ public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider c
 {
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
+
+    // UUID v5 için bu sisteme ait sabit namespace. Değiştirilirse eski kayıtların anahtarı yeniden hesaplanamaz.
+    private static readonly Guid IdempotencyNamespace = new("6f1c2a7e-3b8d-4c5f-9a0e-2d7b8c1e4f35");
 
     private sealed record RoutedType(string Otc, string Ots, string Name);
 
@@ -37,40 +42,36 @@ public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider c
 
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
 
-        // Önce kaydı açıyoruz: aynı (F41, F11, F7) ile ikinci istek unique index'e takılır. Aynı anda gelirse ilk transaction
-        // bitene kadar bekler, sonra hata alır; böylece aynı işlem asla iki kez karara bağlanmaz.
-        Guid id;
+        // Kaydın Guid'i isteğin kendisinden türetilir (bkz. IdempotencyKey): tekrar gelen istek aynı Guid'i üretir ve PK'ya takılır.
+        // Aynı anda gelirse ilk transaction bitene kadar bekler, sonra hata alır; böylece aynı işlem asla iki kez karara bağlanmaz.
+        var id = IdempotencyKey(request);
         try
         {
-            id = await connection.ExecuteScalarAsync<Guid>(
+            await connection.ExecuteAsync(
                 """
                 INSERT INTO dbo.DebitTransaction
-                    (Mti, F2_CardNo, F3_ProcessingCode, Otc, Ots, F4_Amount, F49_CurrencyCode, LocalTxnAmount,
-                     F7_TransmissionDateTime, F11_Stan, F12_TransactionTime, F13_TransactionDate, F14_CardExpiry,
-                     F18_MerchantCode, F22_EntryMode, F37_Rrn, F41_TerminalId, F42_MerchantId, F43_Description)
-                OUTPUT INSERTED.Guid
+                    (Guid, Mti, F2_CardNo, F3_ProcessingCode, Otc, Ots, F4_Amount, F49_CurrencyCode, LocalTxnAmount,
+                     F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F43_Description)
                 VALUES
-                    (@Mti, @CardNumber, @ProcessingCode, @Otc, @Ots, @Amount, @CurrencyCode, @LocalAmount,
-                     @TransmissionDateTime, @Stan, @LocalTime, @TransactionDate, @CardExpiry,
-                     @MerchantType, @EntryMode, @Rrn, @TerminalId, @MerchantId, @CardAcceptor)
+                    (@id, @Mti, @CardNumber, @ProcessingCode, @Otc, @Ots, @Amount, @CurrencyCode, @LocalAmount,
+                     @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @CardAcceptor)
                 """,
                 new
                 {
-                    request.Mti, request.CardNumber, request.ProcessingCode, type.Otc, type.Ots,
+                    id, request.Mti, request.CardNumber, request.ProcessingCode, type.Otc, type.Ots,
                     Amount = ToAmount(request),
                     request.CurrencyCode,
                     LocalAmount = request.CurrencyCode == TurkishLira ? ToAmount(request) : (decimal?)null,  // kur çevrimi henüz yok
-                    request.TransmissionDateTime, request.Stan, request.LocalTime,
+                    request.LocalTime,
                     TransactionDate = ToTransactionDate(request.LocalDate),
-                    request.CardExpiry, request.MerchantType, request.EntryMode, request.Rrn,
-                    request.TerminalId, request.MerchantId, CardAcceptor = request.CardAcceptor?.TrimEnd()
+                    request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor = request.CardAcceptor?.TrimEnd()
                 },
                 transaction);
         }
         catch (SqlException ex) when (SqlErrors.IsDuplicateKey(ex))
         {
             await transaction.RollbackAsync();
-            return await PreviousResponseAsync(connection, request);
+            return await PreviousResponseAsync(connection, request, id);
         }
 
         var responseCode = await DecideAsync(connection, transaction, request, type.Name);
@@ -141,18 +142,32 @@ public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider c
     }
 
     // Tekrar gelen istek: ilk işlemin kararı aynen döner (ilk istek onaylandıysa tekrarı da "00" alır ama para tekrar düşmez).
-    private async Task<string> PreviousResponseAsync(SqlConnection connection, TransactionRequest request)
+    private async Task<string> PreviousResponseAsync(SqlConnection connection, TransactionRequest request, Guid id)
     {
         var previous = await connection.ExecuteScalarAsync<string>(
-            """
-            SELECT F39_ResponseCode FROM dbo.DebitTransaction
-            WHERE F41_TerminalId = @TerminalId AND F11_Stan = @Stan AND F7_TransmissionDateTime = @TransmissionDateTime
-            """,
-            new { request.TerminalId, request.Stan, request.TransmissionDateTime });
+            "SELECT F39_ResponseCode FROM dbo.DebitTransaction WHERE Guid = @id", new { id });
 
-        logger.LogWarning("Duplicate request TID {TerminalId} STAN {Stan} F7 {F7} - returning previous F39 {ResponseCode}",
-            request.TerminalId, request.Stan, request.TransmissionDateTime, previous);
+        logger.LogWarning("Duplicate request {Id} (TID {TerminalId} STAN {Stan}) - returning previous F39 {ResponseCode}",
+            id, request.TerminalId, request.Stan, previous);
         return previous!;   // kayıt sadece F39 yazılarak commit edildiği için boş olamaz
+    }
+
+    // Tabloda STAN / terminal no olmadığı için istek, tekrarında da aynı kalan alanlarla tanımlanır: MTI, kart, işlem kodu,
+    // tutar, POS'un yerel tarih ve saati (saniye). Bunlardan deterministik bir UUID v5 (RFC 4122, SHA-1) üretilir.
+    // Bilinen sınır: aynı kartla aynı saniyede aynı tutarda iki gerçek işlem, ikincisi tekrar sayılır.
+    private static Guid IdempotencyKey(TransactionRequest request)
+    {
+        var name = string.Join('|', request.Mti, request.CardNumber, request.ProcessingCode, request.AmountMinor,
+            request.LocalDate, request.LocalTime);
+
+        var input = new byte[16 + Encoding.UTF8.GetByteCount(name)];
+        IdempotencyNamespace.TryWriteBytes(input, bigEndian: true, out _);
+        Encoding.UTF8.GetBytes(name, input.AsSpan(16));
+
+        var hash = SHA1.HashData(input).AsSpan(0, 16).ToArray();
+        hash[6] = (byte)((hash[6] & 0x0F) | 0x50);     // versiyon 5
+        hash[8] = (byte)((hash[8] & 0x3F) | 0x80);     // RFC 4122 varyantı
+        return new Guid(hash, bigEndian: true);
     }
 
     private static decimal ToAmount(TransactionRequest request) => request.AmountMinor / 100m;
