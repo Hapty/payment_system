@@ -53,7 +53,6 @@ services:
     container_name: payment_system_gate
     environment:
       Gate__Port: "8583"
-      # Payment'ta henüz /api/transactions yok (sadece CRUD var), bu yüzden her finansal istek F39=91 ile cevaplanır.
       Gate__PaymentBaseUrl: "http://payment:8080"
     ports:
       - "8583:8583"

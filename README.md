@@ -12,7 +12,7 @@ POS ──TCP / ISO8583──► Gate ──HTTP / JSON──► Payment ──�
 | Gate | `src/PaymentSystem.Gate` | TCP'den mesajı okur, ISO8583'ü çözer, format kontrolü yapar, Payment'a iletir, cevabı (F39) ISO8583 olarak POS'a döner |
 | ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli, alan tanımları, pack/unpack, TCP framing (Gate ve simülatör ortak) |
 | POS simülatörü | `tools/PosSimulator` | Gate'i denemek için mesaj üretip gönderen konsol uygulaması |
-| Payment | `src/PaymentSystem.Payment` | Web API + Dapper. Şu an 4 tablonun CRUD'u var; işlem akışı (`POST /api/transactions`) sonraki adım |
+| Payment | `src/PaymentSystem.Payment` | Web API + Dapper. İşlem akışı (`POST /api/transactions`: satış, bakiye sorgu) + 4 tablonun CRUD'u |
 | Veritabanı | `docker/sql` | Tablolar + seed |
 
 ## Veritabanı (MS SQL Server, Docker)
@@ -32,7 +32,9 @@ docker compose up -d
 - `MtiProcessingCode`
 - `DebitTransaction`
 
-Script'ler idempotent'tir (`IF NOT EXISTS` / `MERGE`), yani container her yeniden başladığında tekrar çalışsa bile veriyi bozmaz.
+`03_debit_transaction_keys.sql`, var olan veritabanlarına da `DebitTransaction`'ın F7/F11/F37/F41/F42 kolonlarını ve idempotency index'ini ekler.
+
+Script'ler idempotent'tir (`IF NOT EXISTS` / `COL_LENGTH` / `MERGE`), yani container her yeniden başladığında tekrar çalışsa bile veriyi bozmaz.
 
 ### Kalıcılık
 Veriler `payment_system_mssql_data` adlı Docker named volume'ünde tutulur. `docker compose down` / `docker compose up` ile veri kaybolmaz. Veriyi tamamen silmek için:
@@ -85,7 +87,7 @@ Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi
 | `91` | Gate | Payment'a ulaşılamadı: bağlantı hatası, timeout, 2xx olmayan ya da geçersiz cevap |
 | diğer | Payment | Olduğu gibi POS'a iletilir (örn. `51` yetersiz bakiye) |
 
-Payment'ta işlem akışı (`POST /api/transactions`) henüz olmadığı için **her `0200` şu an `91` döner**.
+Payment'ın ürettiği kodlar (`00`, `12`, `13`, `14`, `51`, `54`, `57`, `62`, `65`) için aşağıdaki **İşlem akışı** bölümüne bak.
 
 ### Mesaj formatı (wire format)
 ```
@@ -138,13 +140,13 @@ docker logs -f payment_system_gate
 ```
 Eski `payment-api` servisiyle çalışmış bir makinede ilk seferde `--remove-orphans` ekle: `docker compose up -d --build --remove-orphans`. Böylece artık compose dosyasında olmayan `payment_system_api` container'ı silinir.
 
-Docker'da Gate, Payment'ı `http://payment:8080` adresinde arar. Bu servis henüz olmadığı için logda `Name or service not known (payment:8080)` uyarısı görünür ve `0200` mesajları `91` alır. Bu beklenen bir durum.
+Docker'da Gate, Payment'ı `http://payment:8080` adresinde arar. Sadece Gate ayaktaysa (Payment yoksa) logda `Name or service not known (payment:8080)` uyarısı görünür ve `0200` mesajları `91` alır.
 
 ### POS simülatörü
 Gate çalışırken ayrı bir terminalde:
 ```bash
 dotnet run --project tools/PosSimulator -- echo                          # 0800 → 0810 / 00
-dotnet run --project tools/PosSimulator -- sale 4111111111111111 150.00  # 0200 → 0210 / 91 (Payment yok)
+dotnet run --project tools/PosSimulator -- sale 4111111111111111 150.00  # 0200 → 0210 / 00 (kart ve bakiye varsa)
 dotnet run --project tools/PosSimulator -- balance 4111111111111111
 dotnet run --project tools/PosSimulator -- transfer 4111111111111111 25,50
 # seçenekler: --host localhost --port 8583 --expiry 2812
@@ -154,7 +156,7 @@ Simülatör gönderdiği alanları, ham baytların hex dökümünü ve gelen cev
 ## Payment (PaymentSystem.Payment)
 
 .NET 9 Web API; veritabanına **Dapper** (düz SQL) ile erişir. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
-Şu an 4 tablonun CRUD endpoint'leri var; Gate'in çağıracağı işlem akışı (`POST /api/transactions`) sonraki adım.
+Gate'in çağırdığı işlem akışı (`POST /api/transactions`) ve 4 tablonun CRUD endpoint'leri var.
 
 | Kaynak | Route |
 |---|---|
@@ -183,12 +185,33 @@ dotnet run --project src/PaymentSystem.Payment --launch-profile http
 ```
 Örnek istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http`.
 
+### İşlem akışı (`POST /api/transactions`)
+Gate'in gönderdiği `PaymentRequest` JSON'unu alır, `{ "responseCode": "00" }` döner. **İş sonucu (onay ya da red) her zaman `200`** ile döner; `4xx`/`5xx` sadece teknik hatalardır ve Gate onları `91`'e çevirir.
+
+1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur. Tanımsızsa `12` (kayıt açılmaz).
+2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** `(F41, F11, F7)` üzerinde unique index var; aynı istek tekrar gelirse (aynı anda gelse bile) ilk işlemin F39'u aynen döner, para ikinci kez düşmez.
+3. Kontroller, sırayla:
+
+| Kontrol | F39 |
+|---|---|
+| Kart yok | `14` |
+| `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `54` |
+| Hesap yok ya da `AccountStatus` `Active` değil | `62` |
+| **Satış:** para birimi `949` (TRY) değil — kur çevrimi yok | `12` |
+| **Satış:** tutar 0 | `13` |
+| **Satış:** temassız (F22 `07x`/`91x`) ama kart temassıza kapalı | `57` |
+| **Satış:** temassız limit aşıldı (terminal çip + PIN ile tekrar dener) | `65` |
+| **Satış:** bakiye yetersiz | `51` |
+| Onay — satışta bakiye düşer, `Card.LastTransaction*` güncellenir | `00` |
+
+Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 (MMDD) yıl eklenerek `yyyymmdd` saklanır; yılbaşında gelen Aralık tarihi önceki yıla yazılır.
+
 ## Testler ve CI
 
 | Test projesi | Kapsam | Gereken |
 |---|---|---|
 | `tests/PaymentSystem.Gate.Tests` | ISO8583 pack/unpack, TCP framing, Gate'in karar mantığı (sahte Payment ile), HTTP Payment client'ı, gerçek soket üzerinden TCP sunucusu | — |
-| `tests/PaymentSystem.Payment.Tests` | 4 controller + Dapper repository'leri, model doğrulama | **Docker** |
+| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları), 4 CRUD controller + Dapper repository'leri, model doğrulama | **Docker** |
 
 Payment testleri [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek bir SQL Server container'ı başlatır ve içinde `docker/sql/init/*.sql` script'lerini çalıştırır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
 
@@ -200,6 +223,8 @@ Line coverage her test projesi için ayrı ayrı %80'in altındaysa komut hata v
 GitHub Actions (`.github/workflows/ci.yml`), `master`'a açılan her pull request'te ve `master`'a yapılan her push'ta restore → build → test + coverage kapısını çalıştırır; coverage özeti job summary'de görünür. `master` üzerindeki ruleset, `build-and-test` check'i geçmeden merge'e izin vermez.
 
 ## Sıradaki Adımlar
-- Payment işlem akışı: `POST /api/transactions` (Gate'in gönderdiği `PaymentRequest`'i alır, `{ "responseCode": "00" }` döner), `MtiProcessingCode` / `TransactionType` ile işlem tipini çözer, bakiye/kart kontrolleri, `DebitTransaction` kaydı.
+- Cevap sözleşmesini genişletmek: F38 (onay kodu), F37 (RRN), F54 (bakiye sorgusu cevabı).
+- Timeout'ta reversal (Gate → Payment), circuit breaker, `/api/transactions`'ı sadece Gate'e açmak.
+- Gate ↔ Payment HTTP/JSON kalıyor; Kafka, Payment servisi bittikten sonra asenkron işler (bildirim, mutabakat) için.
 - DB şemasını ISO formatına uydurmak: `DebitTransaction.F13_TransactionDate` şu an `CHAR(8)` yyyymmdd (ISO: MMDD), `Card.ExpiryDate` MMYY (ISO F14: YYMM).
-- Para transferi için alıcı kart alanı ve bakiye sorgusu cevabı için F54 (additional amounts) henüz desteklenmiyor.
+- Para transferi şu an `12` döner: alıcı kart numarası ISO mesajında / Gate sözleşmesinde henüz yok.
