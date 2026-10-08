@@ -32,9 +32,7 @@ docker compose up -d
 - `MtiProcessingCode`
 - `DebitTransaction`
 
-`03_debit_transaction_keys.sql`, var olan veritabanlarına da `DebitTransaction`'ın F7/F11/F37/F41/F42 kolonlarını ve idempotency index'ini ekler.
-
-Script'ler idempotent'tir (`IF NOT EXISTS` / `COL_LENGTH` / `MERGE`), yani container her yeniden başladığında tekrar çalışsa bile veriyi bozmaz.
+Script'ler idempotent'tir (`IF NOT EXISTS` / `MERGE`), yani container her yeniden başladığında tekrar çalışsa bile veriyi bozmaz.
 
 ### Kalıcılık
 Veriler `payment_system_mssql_data` adlı Docker named volume'ünde tutulur. `docker compose down` / `docker compose up` ile veri kaybolmaz. Veriyi tamamen silmek için:
@@ -189,7 +187,7 @@ dotnet run --project src/PaymentSystem.Payment --launch-profile http
 Gate'in gönderdiği `PaymentRequest` JSON'unu alır, `{ "responseCode": "00" }` döner. **İş sonucu (onay ya da red) her zaman `200`** ile döner; `4xx`/`5xx` sadece teknik hatalardır ve Gate onları `91`'e çevirir.
 
 1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur. Tanımsızsa `12` (kayıt açılmaz).
-2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** `(F41, F11, F7)` üzerinde unique index var; aynı istek tekrar gelirse (aynı anda gelse bile) ilk işlemin F39'u aynen döner, para ikinci kez düşmez.
+2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** kaydın `Guid`'i rastgele değil, isteğin `MTI + F2 + F3 + F4 + F13 + F12` alanlarından türetilen bir UUID v5'tir (şemaya kolon eklenmez). Aynı istek tekrar gelirse (aynı anda gelse bile) aynı Guid PK'ya takılır, ilk işlemin F39'u aynen döner, para ikinci kez düşmez. Sınır: tabloda STAN / terminal no olmadığı için aynı kartla aynı saniyede aynı tutarda iki gerçek işlem, ikincisi tekrar sayılır.
 3. Kontroller, sırayla:
 
 | Kontrol | F39 |

@@ -100,7 +100,7 @@ DELETE {{host}}/api/mti-processing-codes/0200/200000
 
 ### ---------- Transactions (Gate'in çağırdığı işlem akışı) ----------
 # Önce TR01 hesabını ve 4111111111111111 kartını yukarıdaki isteklerle oluştur.
-# Aynı TerminalId + Stan + TransmissionDateTime ile ikinci kez gönderirsen para tekrar düşmez, ilk cevap döner.
+# Aynı isteği (MTI + kart + işlem kodu + tutar + localDate + localTime) ikinci kez gönderirsen para tekrar düşmez, ilk cevap döner.
 POST {{host}}/api/transactions
 Content-Type: application/json
 

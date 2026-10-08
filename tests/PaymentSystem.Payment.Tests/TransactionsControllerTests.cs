@@ -24,8 +24,7 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
 
     private sealed record StoredTransaction(
         string Mti, string F2_CardNo, string Otc, string Ots, decimal F4_Amount, decimal? LocalTxnAmount,
-        string F7_TransmissionDateTime, string F11_Stan, string F13_TransactionDate, string F37_Rrn,
-        string F41_TerminalId, string F42_MerchantId, string F43_Description, string? F39_ResponseCode);
+        string F12_TransactionTime, string F13_TransactionDate, string F43_Description, string? F39_ResponseCode);
 
     // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql) ve bir hesap + kartı yeniden ekler.
     private async Task SeedAsync(decimal balance = 1000m, string status = "Active", string? expiry = "1228",
@@ -44,7 +43,7 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
             new { AccountNo, Pan, status, balance, expiry, contactless, contactlessLimit });
     }
 
-    private static TransactionRequest Sale(long amountMinor = 15000, string stan = "000001") => new()
+    private static TransactionRequest Sale(long amountMinor = 15000, string localTime = "125959") => new()
     {
         Mti = "0200",
         CardNumber = Pan,
@@ -52,8 +51,8 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
         AmountMinor = amountMinor,
         CurrencyCode = "949",
         TransmissionDateTime = "0315095959",
-        Stan = stan,
-        LocalTime = "125959",
+        Stan = "000001",
+        LocalTime = localTime,
         LocalDate = "0315",
         TerminalId = "TERM0001",
         CardExpiry = "2812",
@@ -77,8 +76,8 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
         await using var connection = Db.Create();
         return (await connection.QueryAsync<StoredTransaction>(
             """
-            SELECT Mti, F2_CardNo, Otc, Ots, F4_Amount, LocalTxnAmount, F7_TransmissionDateTime, F11_Stan, F13_TransactionDate,
-                   F37_Rrn, F41_TerminalId, F42_MerchantId, F43_Description, F39_ResponseCode
+            SELECT Mti, F2_CardNo, Otc, Ots, F4_Amount, LocalTxnAmount, F12_TransactionTime, F13_TransactionDate,
+                   F43_Description, F39_ResponseCode
             FROM dbo.DebitTransaction
             """)).AsList();
     }
@@ -93,10 +92,8 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
         Assert.Equal(850m, await BalanceAsync());
         var stored = Assert.Single(await TransactionsAsync());
         Assert.Equal(("0200", Pan, "10", "11", 150m, 150m), (stored.Mti, stored.F2_CardNo, stored.Otc, stored.Ots, stored.F4_Amount, stored.LocalTxnAmount));
-        Assert.Equal(("0315095959", "000001", "20260315", "260315000001"),
-            (stored.F7_TransmissionDateTime, stored.F11_Stan, stored.F13_TransactionDate, stored.F37_Rrn));
-        Assert.Equal(("TERM0001", "MERCHANT0000001", "PAYMENT SYSTEM POS SIMULATOR", "00"),
-            (stored.F41_TerminalId, stored.F42_MerchantId, stored.F43_Description, stored.F39_ResponseCode));
+        Assert.Equal(("125959", "20260315", "PAYMENT SYSTEM POS SIMULATOR", "00"),
+            (stored.F12_TransactionTime, stored.F13_TransactionDate, stored.F43_Description, stored.F39_ResponseCode));
 
         await using var connection = Db.Create();
         Assert.Equal(150m, await connection.ExecuteScalarAsync<decimal>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @Pan", new { Pan }));
@@ -164,8 +161,8 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
     {
         await SeedAsync(balance: 300m);
 
-        // Farklı STAN'ler: hepsi ayrı işlem. 100'lük 5 satıştan sadece 3'ü bakiyeye sığar.
-        var codes = await Task.WhenAll(Enumerable.Range(1, 5).Select(i => AuthorizeAsync(Sale(10000, stan: $"{i:D6}"))));
+        // Farklı saniyeler: hepsi ayrı işlem. 100'lük 5 satıştan sadece 3'ü bakiyeye sığar.
+        var codes = await Task.WhenAll(Enumerable.Range(1, 5).Select(i => AuthorizeAsync(Sale(10000, localTime: $"1259{i:D2}"))));
 
         Assert.Equal(3, codes.Count(c => c == "00"));
         Assert.Equal(2, codes.Count(c => c == "51"));
@@ -173,16 +170,55 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
     }
 
     [Fact]
-    public async Task SameStanFromAnotherTerminal_IsSeparateTransaction()
+    public async Task SameCardAndAmountInAnotherSecond_IsSeparateTransaction()
+    {
+        await SeedAsync();
+
+        Assert.Equal("00", await AuthorizeAsync(Sale(15000, localTime: "125959")));
+        Assert.Equal("00", await AuthorizeAsync(Sale(15000, localTime: "130000")));
+
+        Assert.Equal(700m, await BalanceAsync());
+        Assert.Equal(2, (await TransactionsAsync()).Count);
+    }
+
+    [Fact]
+    public async Task DifferentAmountInSameSecond_IsSeparateTransaction()
+    {
+        await SeedAsync();
+
+        Assert.Equal("00", await AuthorizeAsync(Sale(15000)));
+        Assert.Equal("00", await AuthorizeAsync(Sale(10000)));
+
+        Assert.Equal(750m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task DifferentTypeInSameSecond_IsSeparateTransaction()
+    {
+        await SeedAsync();
+        var inquiry = Sale(15000);
+        inquiry.ProcessingCode = "310000";
+
+        Assert.Equal("00", await AuthorizeAsync(Sale(15000)));
+        Assert.Equal("00", await AuthorizeAsync(inquiry));
+
+        Assert.Equal(2, (await TransactionsAsync()).Count);
+    }
+
+    // Bilinen sınır: anahtarda STAN / terminal yok. Aynı kart + saniye + tutar, başka terminalden gelse de tekrar sayılır.
+    [Fact]
+    public async Task SameCardSecondAndAmountFromAnotherTerminal_IsTreatedAsDuplicate()
     {
         await SeedAsync();
         var other = Sale(15000);
         other.TerminalId = "TERM0002";
+        other.Stan = "000002";
 
         Assert.Equal("00", await AuthorizeAsync(Sale(15000)));
         Assert.Equal("00", await AuthorizeAsync(other));
 
-        Assert.Equal(700m, await BalanceAsync());
+        Assert.Equal(850m, await BalanceAsync());
+        Assert.Single(await TransactionsAsync());
     }
 
     [Fact]
