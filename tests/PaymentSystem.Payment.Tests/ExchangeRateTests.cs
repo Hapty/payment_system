@@ -1,8 +1,10 @@
 using System.Net;
 using System.Xml;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using PaymentSystem.Payment.Controllers;
 using PaymentSystem.Payment.ExchangeRates;
 
 namespace PaymentSystem.Payment.Tests;
@@ -126,6 +128,59 @@ public class ExchangeRateTests
         Assert.True(cache.TryGetSellingRate("840", out _));
         clock.Now = Now.AddHours(24).AddSeconds(1);
         Assert.False(cache.TryGetSellingRate("840", out _));
+    }
+
+    [Fact]
+    public void Controller_GetAll_ReturnsCachedRatesSortedByCurrency()
+    {
+        var cache = NewCache(new FixedClock(Now));
+        cache.Store(TcmbClient.Parse(Bulletin));
+
+        var all = new ExchangeRatesController(cache).GetAll();
+
+        Assert.Equal(["EUR", "JPY", "USD"], all.Select(r => r.Currency));
+        Assert.Equal(new CachedRate("840", "USD", 49.2152m, new DateOnly(2026, 10, 8), Now, IsStale: false), all[2]);
+    }
+
+    [Fact]
+    public void Controller_GetAll_WithEmptyCache_ReturnsEmptyList() =>
+        Assert.Empty(new ExchangeRatesController(NewCache(new FixedClock(Now))).GetAll());
+
+    [Theory]
+    [InlineData("978")]
+    [InlineData("EUR")]
+    [InlineData("eur")]
+    public void Controller_Get_FindsRateByNumericOrAlphaCode(string code)
+    {
+        var cache = NewCache(new FixedClock(Now));
+        cache.Store(TcmbClient.Parse(Bulletin));
+
+        var rate = new ExchangeRatesController(cache).Get(code).Value!;
+
+        Assert.Equal(("978", "EUR", 55.0538m), (rate.CurrencyCode, rate.Currency, rate.SellingRate));
+    }
+
+    [Fact]
+    public void Controller_Get_ShowsStaleRateAsStale()
+    {
+        var clock = new FixedClock(Now);
+        var cache = NewCache(clock);
+        cache.Store(TcmbClient.Parse(Bulletin));
+        clock.Now = Now.AddHours(25);
+
+        Assert.True(new ExchangeRatesController(cache).Get("USD").Value!.IsStale);
+    }
+
+    [Theory]
+    [InlineData("999")]     // TCMB'de olmayan para birimi
+    [InlineData("XDR")]     // TCMB'de var ama döviz satış kuru yok
+    [InlineData("GBP")]     // desteklenir ama bu bültende yok
+    public void Controller_Get_UnknownOrNotCachedCurrency_ReturnsNotFound(string code)
+    {
+        var cache = NewCache(new FixedClock(Now));
+        cache.Store(TcmbClient.Parse(Bulletin));
+
+        Assert.IsType<NotFoundResult>(new ExchangeRatesController(cache).Get(code).Result);
     }
 
     [Fact]
