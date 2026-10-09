@@ -1,6 +1,9 @@
 using Dapper;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using PaymentSystem.Payment.Controllers;
+using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Models;
 using PaymentSystem.Payment.Transactions;
 
@@ -14,7 +17,14 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
     // Testler takvime bağlı olmasın diye "bugün" sabit: 15 Mart 2026.
     private FixedClock Clock { get; } = new(new DateTimeOffset(2026, 3, 15, 10, 0, 0, TimeSpan.Zero));
 
-    private TransactionsController Controller => new(new TransactionProcessor(Db, Clock, NullLogger<TransactionProcessor>.Instance));
+    // Testteki kur cache'i: TCMB'ye gidilmez, kurları test kendisi yazar (StoreRates).
+    private ExchangeRateCache? _rates;
+    private ExchangeRateCache Rates => _rates ??= new(new MemoryCache(new MemoryCacheOptions()), Clock, Options.Create(new ExchangeRateOptions()));
+
+    private TransactionsController Controller => new(new TransactionProcessor(Db, Rates, Clock, NullLogger<TransactionProcessor>.Instance));
+
+    private void StoreRates(params (string Code, decimal Rate)[] rates) =>
+        Rates.Store(new TcmbBulletin(new DateOnly(2026, 3, 13), rates.ToDictionary(r => r.Code, r => r.Rate)));
 
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
     {
@@ -312,15 +322,100 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
     }
 
     [Fact]
-    public async Task ForeignCurrencySale_IsNotSupported()
+    public async Task ForeignCurrencySale_IsConvertedWithCachedSellingRateAndDebitedInLira()
+    {
+        await SeedAsync();
+        StoreRates(("USD", 49.2152m));
+        var request = Sale(1000);       // 10,00 USD
+        request.CurrencyCode = "840";
+
+        Assert.Equal("00", await AuthorizeAsync(request));
+
+        // 10 x 49,2152 = 492,152 -> kuruşa yuvarlanır: 492,15 TL
+        Assert.Equal(507.85m, await BalanceAsync());
+        var stored = Assert.Single(await TransactionsAsync());
+        Assert.Equal((10m, 492.15m), (stored.F4_Amount, stored.LocalTxnAmount));
+        await using var connection = Db.Create();
+        Assert.Equal(492.15m, await connection.ExecuteScalarAsync<decimal>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @Pan", new { Pan }));
+    }
+
+    [Fact]
+    public async Task ForeignCurrencySale_RoundsHalfKurusUp()
+    {
+        await SeedAsync();
+        StoreRates(("EUR", 55.05m));
+        var request = Sale(10);         // 0,10 EUR x 55,05 = 5,505 -> 5,51 (banker's rounding olsaydı 5,50)
+        request.CurrencyCode = "978";
+
+        Assert.Equal("00", await AuthorizeAsync(request));
+        Assert.Equal(5.51m, Assert.Single(await TransactionsAsync()).LocalTxnAmount);
+    }
+
+    [Fact]
+    public async Task ForeignCurrencySale_OverBalanceInLira_IsInsufficientFunds()
+    {
+        await SeedAsync(balance: 400m);
+        StoreRates(("USD", 49.2152m));
+        var request = Sale(1000);       // 492,15 TL > 400 TL
+        request.CurrencyCode = "840";
+
+        Assert.Equal("51", await AuthorizeAsync(request));
+        Assert.Equal(400m, await BalanceAsync());
+        Assert.Equal(492.15m, Assert.Single(await TransactionsAsync()).LocalTxnAmount);
+    }
+
+    [Fact]
+    public async Task ForeignCurrencySale_ContactlessLimitIsCheckedInLira()
+    {
+        await SeedAsync();
+        StoreRates(("USD", 49.2152m));
+        var request = Sale(2000);       // 20 USD = 984,30 TL > 750 TL temassız limit
+        request.CurrencyCode = "840";
+        request.EntryMode = "071";
+
+        Assert.Equal("65", await AuthorizeAsync(request));
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task ForeignCurrencySale_WithoutCachedRate_IsDeclined91WithoutDebit()
     {
         await SeedAsync();
         var request = Sale();
         request.CurrencyCode = "840";
 
-        Assert.Equal("12", await AuthorizeAsync(request));
+        Assert.Equal("91", await AuthorizeAsync(request));
+
+        Assert.Equal(1000m, await BalanceAsync());
         var stored = Assert.Single(await TransactionsAsync());
+        Assert.Equal("91", stored.F39_ResponseCode);
         Assert.Null(stored.LocalTxnAmount);
+    }
+
+    [Fact]
+    public async Task ForeignCurrencySale_WithStaleRate_IsDeclined91()
+    {
+        await SeedAsync();
+        StoreRates(("USD", 49.2152m));
+        Clock.Now = Clock.Now.AddHours(25);     // son başarılı çekimden bu yana MaxAgeHours (24) geçti
+        var request = Sale();
+        request.CurrencyCode = "840";
+        request.LocalDate = "0316";
+
+        Assert.Equal("91", await AuthorizeAsync(request));
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task CurrencyWithoutTcmbRate_IsNotSupported()
+    {
+        await SeedAsync();
+        StoreRates(("USD", 49.2152m));
+        var request = Sale();
+        request.CurrencyCode = "999";
+
+        Assert.Equal("12", await AuthorizeAsync(request));
+        Assert.Null(Assert.Single(await TransactionsAsync()).LocalTxnAmount);
         Assert.Equal(1000m, await BalanceAsync());
     }
 

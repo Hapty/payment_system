@@ -12,7 +12,7 @@ POS ──TCP / ISO8583──► Gate ──HTTP / JSON──► Payment ──�
 | Gate | `src/PaymentSystem.Gate` | TCP'den mesajı okur, ISO8583'ü çözer, format kontrolü yapar, Payment'a iletir, cevabı (F39) ISO8583 olarak POS'a döner |
 | ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli, alan tanımları, pack/unpack, TCP framing (Gate ve simülatör ortak) |
 | POS simülatörü | `tools/PosSimulator` | Gate'i denemek için mesaj üretip gönderen konsol uygulaması |
-| Payment | `src/PaymentSystem.Payment` | Web API + Dapper. İşlem akışı (`POST /api/transactions`: satış, bakiye sorgu) + 4 tablonun CRUD'u |
+| Payment | `src/PaymentSystem.Payment` | Web API + Dapper. İşlem akışı (`POST /api/transactions`: TL ve döviz satış, bakiye sorgu) + 4 tablonun CRUD'u + TCMB kur cache'i |
 | Veritabanı | `docker/sql` | Tablolar + seed |
 
 ## Veritabanı (MS SQL Server, Docker)
@@ -147,7 +147,8 @@ dotnet run --project tools/PosSimulator -- echo                          # 0800 
 dotnet run --project tools/PosSimulator -- sale 4111111111111111 150.00  # 0200 → 0210 / 00 (kart ve bakiye varsa)
 dotnet run --project tools/PosSimulator -- balance 4111111111111111
 dotnet run --project tools/PosSimulator -- transfer 4111111111111111 25,50
-# seçenekler: --host localhost --port 8583 --expiry 2812
+dotnet run --project tools/PosSimulator -- sale 4111111111111111 10.00 --currency 840   # 10 USD, TL karşılığı düşer
+# seçenekler: --host localhost --port 8583 --expiry 2812 (YYMM) --currency 949 (ISO 4217 sayısal kod)
 ```
 Simülatör gönderdiği alanları, ham baytların hex dökümünü ve gelen cevabı alan alan yazdırır.
 
@@ -195,21 +196,37 @@ Gate'in gönderdiği `PaymentRequest` JSON'unu alır, `{ "responseCode": "00" }`
 | Kart yok | `14` |
 | `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `54` |
 | Hesap yok ya da `AccountStatus` `Active` değil | `62` |
-| **Satış:** para birimi `949` (TRY) değil — kur çevrimi yok | `12` |
+| **Satış:** para birimi için TCMB kuru yok (ör. `999`) | `12` |
+| **Satış:** döviz ama cache'te kur yok ya da bayat (bkz. Döviz kurları) | `91` |
 | **Satış:** tutar 0 | `13` |
 | **Satış:** temassız (F22 `07x`/`91x`) ama kart temassıza kapalı | `57` |
-| **Satış:** temassız limit aşıldı (terminal çip + PIN ile tekrar dener) | `65` |
+| **Satış:** temassız limit (TL karşılık üzerinden) aşıldı (terminal çip + PIN ile tekrar dener) | `65` |
 | **Satış:** bakiye yetersiz | `51` |
 | Onay — satışta bakiye düşer, `Card.LastTransaction*` güncellenir | `00` |
 
-Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 (MMDD) yıl eklenerek `yyyymmdd` saklanır; yılbaşında gelen Aralık tarihi önceki yıla yazılır.
+Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzerinden yürür (hesaplar TL). Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 (MMDD) yıl eklenerek `yyyymmdd` saklanır; yılbaşında gelen Aralık tarihi önceki yıla yazılır.
+
+### Döviz kurları (`ExchangeRates/`)
+```
+TCMB today.xml ──(açılışta + her saat)──► ExchangeRateRefresher ──yazar──► IMemoryCache ("fx:USD" ...)
+                                                                               │ sadece okur
+POS → Gate → Payment / TransactionProcessor: TL karşılık = tutar × döviz satış kuru (kuruşa, yarım yukarı)
+```
+- İşlem akışı TCMB'ye **hiç gitmez**, kuru sadece cache'ten okur; satışın hızı dış servise bağlı değildir.
+- Kur: TCMB `ForexSelling` (döviz satış) / `Unit` (JPY gibi kurlar 100 birim için yayımlanır). F49'daki ISO 4217 sayısal kod TCMB'nin harf koduna çevrilir (`840` → USD, `978` → EUR ...).
+- `DebitTransaction.F4_Amount` orijinal döviz tutarı, `LocalTxnAmount` TL karşılığıdır (TL işlemde ikisi aynı).
+- Çekim başarısızsa (TCMB'ye ulaşılamadı, XML bozuk) cache'teki son kurlar kalır, `RetryMinutes` sonra tekrar denenir.
+- Kur, son başarılı çekimden `MaxAgeHours` geçince bayat sayılır → `91`. Bülten tarihine bakılmaz: hafta sonu / bayramda TCMB bülten yayımlamaz, o günlerde son bülten resmî kurdur.
+- Cache in-memory: Payment yeniden başlayınca boş açılır; ilk çekim bitene kadar (internet varsa 1 sn'nin altında) döviz satışları `91` alır. TL satışları etkilenmez.
+
+Ayarlar (`appsettings.json` → `ExchangeRates`, ya da `ExchangeRates__RefreshMinutes` gibi ortam değişkenleri): `TcmbUrl`, `RefreshMinutes` (60), `RetryMinutes` (1), `MaxAgeHours` (24).
 
 ## Testler ve CI
 
 | Test projesi | Kapsam | Gereken |
 |---|---|---|
 | `tests/PaymentSystem.Gate.Tests` | ISO8583 pack/unpack, TCP framing, Gate'in karar mantığı (sahte Payment ile), HTTP Payment client'ı, gerçek soket üzerinden TCP sunucusu | — |
-| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları), 4 CRUD controller + Dapper repository'leri, model doğrulama | **Docker** |
+| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz çevrimi), 4 CRUD controller + Dapper repository'leri, model doğrulama, TCMB ayrıştırma + kur cache'i + arka plan servisi (sahte HTTP ile) | **Docker** |
 
 Payment testleri [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek bir SQL Server container'ı başlatır ve içinde `docker/sql/init/*.sql` script'lerini çalıştırır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
 

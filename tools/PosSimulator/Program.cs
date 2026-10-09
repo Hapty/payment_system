@@ -3,10 +3,10 @@ using System.Net.Sockets;
 using PaymentSystem.Iso8583;
 
 // Küçük bir POS terminali: bir ISO8583 isteği oluşturur, TCP ile Gate'e gönderir ve cevabı ekrana yazar.
-//   dotnet run --project tools/PosSimulator -- sale 4111111111111111 150.00 [--host localhost] [--port 8583] [--expiry 2812]
+//   dotnet run --project tools/PosSimulator -- sale 4111111111111111 150.00 [--host localhost] [--port 8583] [--expiry 2812] [--currency 949]
 
 var positional = new List<string>();
-var options = new Dictionary<string, string> { ["host"] = "localhost", ["port"] = "8583", ["expiry"] = "2812" };
+var options = new Dictionary<string, string> { ["host"] = "localhost", ["port"] = "8583", ["expiry"] = "2812", ["currency"] = "949" };
 for (var i = 0; i < args.Length; i++)
 {
     if (args[i].StartsWith("--") && i + 1 < args.Length) options[args[i][2..]] = args[++i];
@@ -36,7 +36,7 @@ catch (Exception ex) when (ex is ArgumentException or IsoFormatException)
           sale <pan> <amount>        purchase (0200, F3=000000)
           balance <pan>              balance inquiry (0200, F3=310000)
           transfer <pan> <amount>    money transfer (0200, F3=400000)
-        Options: --host localhost --port 8583 --expiry YYMM
+        Options: --host localhost --port 8583 --expiry YYMM --currency 949 (ISO 4217: 840 = USD, 978 = EUR)
         """);
     return 1;
 }
@@ -99,7 +99,7 @@ IsoMessage FinancialMessage(string processingCode, string pan, long amountMinor)
         .Set(41, "TERM0001")
         .Set(42, "MERCHANT0000001")
         .Set(43, "PAYMENT SYSTEM POS SIMULATOR".PadRight(40))
-        .Set(49, "949");                // 949 = TRY
+        .Set(49, options["currency"]);  // 949 = TRY, 840 = USD, 978 = EUR
 }
 
 static string NewStan() => Random.Shared.Next(1, 1_000_000).ToString("D6");

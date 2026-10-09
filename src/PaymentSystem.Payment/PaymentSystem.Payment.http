@@ -118,3 +118,24 @@ Content-Type: application/json
   "cardExpiry": "2812",
   "entryMode": "051"
 }
+
+###
+# Döviz satışı: 10,00 USD (840). Kur cache'teki TCMB döviz satış kuru; TL karşılığı bakiyeden düşer ve LocalTxnAmount'a yazılır.
+# Payment açıldıktan sonra kurlar henüz çekilmediyse (ya da TCMB'ye ulaşılamıyorsa) cevap 91 olur.
+POST {{host}}/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "cardNumber": "4111111111111111",
+  "processingCode": "000000",
+  "amountMinor": 1000,
+  "currencyCode": "840",
+  "transmissionDateTime": "0315100000",
+  "stan": "000002",
+  "localTime": "130000",
+  "localDate": "0315",
+  "terminalId": "TERM0001",
+  "cardExpiry": "2812",
+  "entryMode": "051"
+}
