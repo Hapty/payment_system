@@ -163,6 +163,7 @@ Gate'in çağırdığı işlem akışı (`POST /api/transactions`) ve 4 tablonun
 | Card | `/api/cards`, `/api/cards/{id}`, `/api/cards/by-number/{cardNumber}` |
 | TransactionType | `/api/transaction-types`, `/api/transaction-types/{otc}/{ots}` |
 | MtiProcessingCode | `/api/mti-processing-codes`, `/api/mti-processing-codes/{mti}/{f3}` |
+| Kur cache'i (salt okunur, sadece `GET`) | `/api/exchange-rates`, `/api/exchange-rates/{840 \| USD}` |
 
 Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `POST` → `409`, geçersiz alan → `400`, bulunamayan kayıt → `404`.
 
@@ -218,6 +219,8 @@ POS → Gate → Payment / TransactionProcessor: TL karşılık = tutar × dövi
 - Çekim başarısızsa (TCMB'ye ulaşılamadı, XML bozuk) cache'teki son kurlar kalır, `RetryMinutes` sonra tekrar denenir.
 - Kur, son başarılı çekimden `MaxAgeHours` geçince bayat sayılır → `91`. Bülten tarihine bakılmaz: hafta sonu / bayramda TCMB bülten yayımlamaz, o günlerde son bülten resmî kurdur.
 - Cache in-memory: Payment yeniden başlayınca boş açılır; ilk çekim bitene kadar (internet varsa 1 sn'nin altında) döviz satışları `91` alır. TL satışları etkilenmez.
+
+Cache'in içeriği `GET /api/exchange-rates` (hepsi) ve `GET /api/exchange-rates/{kod}` (sayısal `840` ya da harf `USD`) ile görülür. Her kur için `sellingRate`, `bulletinDate` (TCMB bülten tarihi), `fetchedAt` (çekim zamanı, UTC) ve `isStale` (`true` ise işlem akışı bu kuru kullanmaz, `91` döner) gelir. Cache'te olmayan para biriminde `404`. Endpoint TCMB'ye gitmez, sadece cache'i okur.
 
 Ayarlar (`appsettings.json` → `ExchangeRates`, ya da `ExchangeRates__RefreshMinutes` gibi ortam değişkenleri): `TcmbUrl`, `RefreshMinutes` (60), `RetryMinutes` (1), `MaxAgeHours` (24).
 

@@ -98,6 +98,13 @@ Content-Type: application/json
 ###
 DELETE {{host}}/api/mti-processing-codes/0200/200000
 
+### ---------- ExchangeRates (kur cache'i, salt okunur) ----------
+GET {{host}}/api/exchange-rates
+
+###
+# Sayısal (840) ya da harf (USD) kod; cache'te yoksa 404
+GET {{host}}/api/exchange-rates/USD
+
 ### ---------- Transactions (Gate'in çağırdığı işlem akışı) ----------
 # Önce TR01 hesabını ve 4111111111111111 kartını yukarıdaki isteklerle oluştur.
 # Aynı isteği (MTI + kart + işlem kodu + tutar + localDate + localTime) ikinci kez gönderirsen para tekrar düşmez, ilk cevap döner.
