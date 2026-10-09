@@ -3,13 +3,15 @@ using System.Text;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Transactions;
 
 // Gate'ten gelen bir finansal isteği karara bağlar ve F39 cevap kodunu döner.
 // İşlem kaydı, bakiye ve kart güncellemesi tek bir SQL transaction'ında yapılır: ya hepsi yazılır ya hiçbiri.
-public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider clock, ILogger<TransactionProcessor> logger)
+public sealed class TransactionProcessor(
+    SqlConnectionFactory db, ExchangeRateCache rates, TimeProvider clock, ILogger<TransactionProcessor> logger)
 {
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
@@ -40,6 +42,9 @@ public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider c
             return ResponseCodes.InvalidTransaction;
         }
 
+        // TL karşılığı bir kez, kayıt açılmadan hesaplanır: aynı kur hem LocalTxnAmount'a yazılır hem bakiyeden düşülür.
+        var lira = ToLira(request);
+
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
 
         // Kaydın Guid'i isteğin kendisinden türetilir (bkz. IdempotencyKey): tekrar gelen istek aynı Guid'i üretir ve PK'ya takılır.
@@ -61,7 +66,7 @@ public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider c
                     id, request.Mti, request.CardNumber, request.ProcessingCode, type.Otc, type.Ots,
                     Amount = ToAmount(request),
                     request.CurrencyCode,
-                    LocalAmount = request.CurrencyCode == TurkishLira ? ToAmount(request) : (decimal?)null,  // kur çevrimi henüz yok
+                    LocalAmount = lira,
                     request.LocalTime,
                     TransactionDate = ToTransactionDate(request.LocalDate),
                     request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor = request.CardAcceptor?.TrimEnd()
@@ -74,19 +79,20 @@ public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider c
             return await PreviousResponseAsync(connection, request, id);
         }
 
-        var responseCode = await DecideAsync(connection, transaction, request, type.Name);
+        var responseCode = await DecideAsync(connection, transaction, request, type.Name, lira);
 
         await connection.ExecuteAsync(
             "UPDATE dbo.DebitTransaction SET F39_ResponseCode = @responseCode, UpdatedAt = SYSUTCDATETIME() WHERE Guid = @id",
             new { responseCode, id }, transaction);
         await transaction.CommitAsync();
 
-        logger.LogInformation("{Type} TID {TerminalId} STAN {Stan} amount {Amount} {Currency} -> F39 {ResponseCode}",
-            type.Name, request.TerminalId, request.Stan, ToAmount(request), request.CurrencyCode, responseCode);
+        logger.LogInformation("{Type} TID {TerminalId} STAN {Stan} amount {Amount} {Currency} (TRY {Lira}) -> F39 {ResponseCode}",
+            type.Name, request.TerminalId, request.Stan, ToAmount(request), request.CurrencyCode, lira, responseCode);
         return responseCode;
     }
 
-    private async Task<string> DecideAsync(SqlConnection connection, SqlTransaction transaction, TransactionRequest request, string typeName)
+    private async Task<string> DecideAsync(
+        SqlConnection connection, SqlTransaction transaction, TransactionRequest request, string typeName, decimal? lira)
     {
         var card = await connection.QuerySingleOrDefaultAsync<Card>(
             "SELECT CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit FROM dbo.Card WHERE CardNumber = @CardNumber",
@@ -105,18 +111,20 @@ public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider c
         return typeName switch
         {
             "BalanceInquiry" => ResponseCodes.Approved,     // bakiye cevaba (F54) sonraki adımda eklenecek
-            "Sale" => await SaleAsync(connection, transaction, request, card),
+            "Sale" => await SaleAsync(connection, transaction, request, card, lira),
             // MoneyTransfer: alıcı kart numarası henüz ISO mesajında / Gate sözleşmesinde yok.
             _ => ResponseCodes.InvalidTransaction
         };
     }
 
-    private static async Task<string> SaleAsync(SqlConnection connection, SqlTransaction transaction, TransactionRequest request, Card card)
+    // Limit, bakiye ve kartın son işlem tutarı hep TL karşılık (lira) üzerinden yürür; hesaplar TL'dir.
+    private static async Task<string> SaleAsync(
+        SqlConnection connection, SqlTransaction transaction, TransactionRequest request, Card card, decimal? lira)
     {
-        if (request.CurrencyCode != TurkishLira)
-            return ResponseCodes.InvalidTransaction;
+        // Kur yok: ya bu para birimi için TCMB kuru hiç yok (12) ya da cache'te kur yok / bayat (91, sonra tekrar denenebilir).
+        if (lira is not { } amount)
+            return ExchangeRateCache.IsSupported(request.CurrencyCode) ? ResponseCodes.SystemUnavailable : ResponseCodes.InvalidTransaction;
 
-        var amount = ToAmount(request);
         if (amount <= 0)
             return ResponseCodes.InvalidAmount;
 
@@ -171,6 +179,16 @@ public sealed class TransactionProcessor(SqlConnectionFactory db, TimeProvider c
     }
 
     private static decimal ToAmount(TransactionRequest request) => request.AmountMinor / 100m;
+
+    // TL: tutarın kendisi. Döviz: cache'teki TCMB döviz satış kuruyla TL karşılığı, kuruşa yuvarlanmış. Kur yoksa null.
+    private decimal? ToLira(TransactionRequest request)
+    {
+        if (request.CurrencyCode == TurkishLira)
+            return ToAmount(request);
+        if (!rates.TryGetSellingRate(request.CurrencyCode, out var rate))
+            return null;
+        return decimal.Round(ToAmount(request) * rate, 2, MidpointRounding.AwayFromZero);
+    }
 
     // F22'nin ilk iki hanesi: 07 = temassız çip, 91 = temassız manyetik şerit.
     private static bool IsContactless(string? entryMode) => entryMode is ['0', '7', _] or ['9', '1', _];

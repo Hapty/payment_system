@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Transactions;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +19,17 @@ builder.Services.AddSingleton<TransactionTypeRepository>();
 builder.Services.AddSingleton<MtiProcessingCodeRepository>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<TransactionProcessor>();
+
+// Döviz kurları: arka plan servisi TCMB'den çekip in-memory cache'e yazar, işlem akışı sadece cache'ten okur.
+builder.Services.Configure<ExchangeRateOptions>(builder.Configuration.GetSection(ExchangeRateOptions.SectionName));
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<ExchangeRateCache>();
+builder.Services
+    .AddHttpClient<TcmbClient>(client => client.Timeout = TimeSpan.FromSeconds(10))
+    // Bu client, singleton refresher yaşadığı sürece yaşar; bağlantıları handler'ın kendisi yeniler (Gate'teki gibi).
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) })
+    .SetHandlerLifetime(Timeout.InfiniteTimeSpan);
+builder.Services.AddHostedService<ExchangeRateRefresher>();
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();

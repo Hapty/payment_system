@@ -12,4 +12,5 @@ public static class ResponseCodes
     public const string NotPermittedToCardholder = "57";    // kart bu işleme kapalı (örn. temassız)
     public const string RestrictedCard = "62";              // hesap aktif değil
     public const string ContactlessLimitExceeded = "65";    // temassız limit aşıldı: terminal çip + PIN ile tekrar denemeli
+    public const string SystemUnavailable = "91";           // işlem şu an yapılamıyor (örn. döviz kuru yok), sonra tekrar denenebilir
 }
