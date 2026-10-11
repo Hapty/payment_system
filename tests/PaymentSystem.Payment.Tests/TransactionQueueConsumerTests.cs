@@ -47,6 +47,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
             INSERT INTO dbo.TransactionType (Otc, Ots, Name) VALUES ('10', '11', 'Sale');
             INSERT INTO dbo.MtiProcessingCode (Mti, F3_ProcessingCode, Otc, Ots) VALUES ('0200', '000000', '10', '11');
             INSERT INTO dbo.EntryMode (Code, Name, IsContactless) VALUES ('05', 'Chip', 0);
+            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('3002', 'Insufficient funds', '51');
             INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES ('ACC1', 'Active', 1000);
             INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed) VALUES (@Pan, 'ACC1', '1228', 1);
             """,
@@ -167,7 +168,8 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
 
         Assert.Equal("""{"responseCode":"51"}""", reply?.Body);
         Assert.Equal(1000m, await BalanceAsync());
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: declined") && m.Contains("insufficient funds") && m.Contains("F39 51"));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: declined") && m.Contains("insufficient funds") && m.Contains("IRC 3002"));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("ProcessAsync: Sale") && m.Contains("IRC 3002 F39 51"));
     }
 
     [Theory]

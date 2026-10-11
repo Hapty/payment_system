@@ -34,6 +34,7 @@ docker compose up -d
 - `MtiProcessingCode`
 - `DebitTransaction`
 - `EntryMode`
+- `InternalResponseCode`
 
 Script'ler idempotent'tir (`IF NOT EXISTS` / `MERGE`), yani container her yeniden başladığında tekrar çalışsa bile veriyi bozmaz.
 
@@ -60,6 +61,7 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 | `Card` | Kart bilgileri, ilişkili hesap |
 | `TransactionType` | (Otc, Ots) kombinasyonundan işlem tipine lookup (Sale, MoneyTransfer, BalanceInquiry) |
 | `MtiProcessingCode` | Gelen mesajın (Mti, F3_ProcessingCode) değerinden (Otc, Ots)'ye lookup — örn. `0200`+`000000` → Sale |
+| `InternalResponseCode` | İç karar kodundan (IRC) POS'a dönen F39'a lookup — örn. `3002` (bakiye yetersiz) → `51`. Birkaç IRC aynı F39'a çıkabilir |
 | `EntryMode` | F22'nin ilk iki hanesinden giriş yöntemine lookup ve temassız olup olmadığı (`IsContactless`) — örn. `05` → Chip, `07` → ContactlessChip. 3. hane (PIN yeteneği) karara girmez |
 | `DebitTransaction` | ISO8583 alanlarını taşıyan işlem kayıtları — kolon adları `F2_CardNo`, `F3_ProcessingCode`, `F4_Amount`, `F49_CurrencyCode`, `F12_TransactionTime`, `F13_TransactionDate`, `F14_CardExpiry`, `F18_MerchantCode`, `F22_EntryMode`, `F39_ResponseCode`, `F43_Description` şeklinde ISO8583 field numarasını koruyor |
 
@@ -193,32 +195,32 @@ dotnet run --project src/PaymentSystem.Payment --launch-profile http
 ### İşlem akışı (`Transactions/`)
 `TransactionQueueConsumer` kuyruktaki isteği (`TransactionRequest` JSON) alır, `TransactionHandler`'a verir ve `{ "responseCode": "00" }` cevabını Gate'e yazar. Teknik hatalarda da cevap verilir: okunamayan / geçersiz mesaj → `30`, DB'ye ulaşılamadı gibi beklenmeyen hata → `91` (transaction commit edilmediği için para hareketi yok).
 
-1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur (tanım cache'inden, bkz. Tanım tabloları cache'i). Tanımsızsa `12` (kayıt açılmaz).
+1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur (tanım cache'inden, bkz. Tanım tabloları cache'i). Tanımsızsa IRC `1001` → `12` (kayıt açılmaz).
 2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** kaydın `Guid`'i rastgele değil, isteğin `MTI + F2 + F3 + F4 + F13 + F12` alanlarından türetilen bir UUID v5'tir (şemaya kolon eklenmez). Aynı istek tekrar gelirse (aynı anda gelse bile) aynı Guid PK'ya takılır, ilk işlemin F39'u aynen döner, para ikinci kez düşmez. Sınır: tabloda STAN / terminal no olmadığı için aynı kartla aynı saniyede aynı tutarda iki gerçek işlem, ikincisi tekrar sayılır.
-3. Kontroller, sırayla:
+3. Kontroller, sırayla. Her sebep bir iç kod (IRC) üretir; POS'a dönen F39 `InternalResponseCode` tablosundan okunur (aşağıdaki F39'lar seed değerleridir). IRC tabloda yoksa hata loglanır ve `96` döner. Teknik hatalar (`30`, `91`) DB'ye bağlı olmadığı için kodda sabittir.
 
-| Kontrol | F39 |
-|---|---|
-| F22 geldi ama ilk iki hanesi `EntryMode` tablosunda tanımlı değil (F22 yoksa temassız değil sayılır) | `12` |
-| Kart yok | `14` |
-| `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `54` |
-| Hesap yok ya da `AccountStatus` `Active` değil | `62` |
-| **Satış:** para birimi için TCMB kuru yok (ör. `999`) | `12` |
-| **Satış:** döviz ama cache'te kur yok ya da bayat (bkz. Döviz kurları) | `91` |
-| **Satış:** tutar 0 | `13` |
-| **Satış:** temassız (`EntryMode.IsContactless`, seed'de `07x`/`91x`) ama kart temassıza kapalı | `57` |
-| **Satış:** temassız limit (TL karşılık üzerinden) aşıldı (terminal çip + PIN ile tekrar dener) | `65` |
-| **Satış:** bakiye yetersiz | `51` |
-| Onay — satışta bakiye düşer, `Card.LastTransaction*` güncellenir | `00` |
+| Kontrol | IRC | F39 |
+|---|---|---|
+| F22 geldi ama ilk iki hanesi `EntryMode` tablosunda tanımlı değil (F22 yoksa temassız değil sayılır) | `1002` | `12` |
+| Kart yok | `2001` | `14` |
+| `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `2002` | `54` |
+| Hesap yok ya da `AccountStatus` `Active` değil | `2003` | `62` |
+| **Satış:** para birimi için TCMB kuru yok (ör. `999`) | `1004` | `12` |
+| **Satış:** döviz ama cache'te kur yok ya da bayat (bkz. Döviz kurları) | `9001` | `91` |
+| **Satış:** tutar 0 | `3001` | `13` |
+| **Satış:** temassız (`EntryMode.IsContactless`, seed'de `07x`/`91x`) ama kart temassıza kapalı | `2004` | `57` |
+| **Satış:** temassız limit (TL karşılık üzerinden) aşıldı (terminal çip + PIN ile tekrar dener) | `2005` | `65` |
+| **Satış:** bakiye yetersiz | `3002` | `51` |
+| Onay — satışta bakiye düşer, `Card.LastTransaction*` güncellenir | `0000` | `00` |
 
 Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzerinden yürür (hesaplar TL). Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 (MMDD) yıl eklenerek `yyyymmdd` saklanır; yılbaşında gelen Aralık tarihi önceki yıla yazılır.
 
 ### Tanım tabloları cache'i (`Parameters/`)
-`TransactionType` + `MtiProcessingCode` (işlem tipi yönlendirmesi) ve `EntryMode` (F22) işlem başına DB'den okunmaz: `ParameterCache` üç tabloyu tek seferde `IMemoryCache`'e yükler, tanımsız bir kod da DB'ye gitmeden tanımsız sayılır.
+`TransactionType` + `MtiProcessingCode` (işlem tipi yönlendirmesi) , `EntryMode` (F22) ve `InternalResponseCode` (IRC → F39) işlem başına DB'den okunmaz: `ParameterCache` dört tabloyu tek seferde `IMemoryCache`'e yükler, tanımsız bir kod da DB'ye gitmeden tanımsız sayılır.
 
 - **Yenileme:** yüklendikten `Parameters:RefreshMinutes` (varsayılan **10** dk; ortam değişkeni `Parameters__RefreshMinutes`) sonra ilk işlemde yeniden okunur.
 - **CRUD:** `/api/transaction-types` veya `/api/mti-processing-codes` ile yapılan başarılı bir ekleme / güncelleme / silme cache'i hemen boşaltır; sonraki işlem yeni tanımı görür.
-- **EntryMode:** API'si yok, doğrudan SQL ile değiştirilir; değişiklik en geç 10 dk içinde devreye girer.
+- **EntryMode / InternalResponseCode:** API'leri yok, doğrudan SQL ile değiştirilir; değişiklik en geç 10 dk içinde devreye girer.
 - **Sınır:** birden fazla Payment instance'ı çalışırsa CRUD sadece isteği alan instance'ın cache'ini boşaltır, diğerleri değişikliği en geç 10 dk içinde görür.
 
 ### Döviz kurları (`ExchangeRates/`)
