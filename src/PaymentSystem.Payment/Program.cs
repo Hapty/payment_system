@@ -2,6 +2,7 @@ using Microsoft.Data.SqlClient;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Handlers;
+using PaymentSystem.Payment.Parameters;
 using PaymentSystem.Payment.Transactions;
 using RabbitMQ.Client;
 
@@ -30,6 +31,7 @@ builder.Services.AddSingleton<ICardRepository, CardRepository>();
 builder.Services.AddSingleton<ITransactionTypeRepository, TransactionTypeRepository>();
 builder.Services.AddSingleton<IMtiProcessingCodeRepository, MtiProcessingCodeRepository>();
 builder.Services.AddSingleton<ITransactionRepository, TransactionRepository>();
+builder.Services.AddSingleton<IParameterRepository, ParameterRepository>();
 builder.Services.AddSingleton<BankAccountHandler>();
 builder.Services.AddSingleton<CardHandler>();
 builder.Services.AddSingleton<TransactionTypeHandler>();
@@ -60,6 +62,10 @@ builder.Services
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) })
     .SetHandlerLifetime(Timeout.InfiniteTimeSpan);
 builder.Services.AddHostedService<ExchangeRateRefresher>();
+
+// Tanım tabloları (işlem tipi yönlendirmesi, EntryMode): IMemoryCache'te tutulur, RefreshMinutes'ta (10 dk) bir yeniden okunur.
+builder.Services.Configure<ParameterOptions>(builder.Configuration.GetSection(ParameterOptions.SectionName));
+builder.Services.AddSingleton<ParameterCache>();
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();

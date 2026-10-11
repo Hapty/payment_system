@@ -2,17 +2,10 @@ using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Data;
 
-// MTI + F3'ün yönlendirildiği işlem tipi, örn. 0200 + 000000 -> 10/11 Sale.
-public sealed record RoutedType(string Otc, string Ots, string Name);
-
-// dbo.EntryMode satırı: F22'nin ilk iki hanesi -> giriş yöntemi, örn. 07 -> ContactlessChip (temassız).
-public sealed record EntryMode(string Code, string Name, bool IsContactless);
-
 // Finansal işlem akışının veritabanı erişimi. Kararları TransactionHandler verir; SQL'i TransactionRepository yazar.
+// Tanım tabloları (işlem tipi, F22) buradan değil ParameterCache'ten okunur.
 public interface ITransactionRepository
 {
-    Task<RoutedType?> FindTypeAsync(string mti, string processingCode);
-
     // İşlem kaydı, bakiye ve kart güncellemesi bu oturumdaki tek SQL transaction'ında yapılır.
     Task<IDebitSession> BeginAsync();
 
@@ -25,9 +18,6 @@ public interface IDebitSession : IAsyncDisposable
 {
     // false: aynı Guid'li kayıt zaten var (tekrar gelen istek). Aynı anda gelirse ilk transaction bitene kadar bekler.
     Task<bool> TryInsertAsync(DebitTransaction transaction);
-
-    // null: kod EntryMode tablosunda tanımlı değil.
-    Task<EntryMode?> GetEntryModeAsync(string code);
 
     Task<Card?> GetCardAsync(string cardNumber);
 

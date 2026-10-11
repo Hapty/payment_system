@@ -193,7 +193,7 @@ dotnet run --project src/PaymentSystem.Payment --launch-profile http
 ### İşlem akışı (`Transactions/`)
 `TransactionQueueConsumer` kuyruktaki isteği (`TransactionRequest` JSON) alır, `TransactionHandler`'a verir ve `{ "responseCode": "00" }` cevabını Gate'e yazar. Teknik hatalarda da cevap verilir: okunamayan / geçersiz mesaj → `30`, DB'ye ulaşılamadı gibi beklenmeyen hata → `91` (transaction commit edilmediği için para hareketi yok).
 
-1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur. Tanımsızsa `12` (kayıt açılmaz).
+1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur (tanım cache'inden, bkz. Tanım tabloları cache'i). Tanımsızsa `12` (kayıt açılmaz).
 2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** kaydın `Guid`'i rastgele değil, isteğin `MTI + F2 + F3 + F4 + F13 + F12` alanlarından türetilen bir UUID v5'tir (şemaya kolon eklenmez). Aynı istek tekrar gelirse (aynı anda gelse bile) aynı Guid PK'ya takılır, ilk işlemin F39'u aynen döner, para ikinci kez düşmez. Sınır: tabloda STAN / terminal no olmadığı için aynı kartla aynı saniyede aynı tutarda iki gerçek işlem, ikincisi tekrar sayılır.
 3. Kontroller, sırayla:
 
@@ -212,6 +212,14 @@ dotnet run --project src/PaymentSystem.Payment --launch-profile http
 | Onay — satışta bakiye düşer, `Card.LastTransaction*` güncellenir | `00` |
 
 Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzerinden yürür (hesaplar TL). Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 (MMDD) yıl eklenerek `yyyymmdd` saklanır; yılbaşında gelen Aralık tarihi önceki yıla yazılır.
+
+### Tanım tabloları cache'i (`Parameters/`)
+`TransactionType` + `MtiProcessingCode` (işlem tipi yönlendirmesi) ve `EntryMode` (F22) işlem başına DB'den okunmaz: `ParameterCache` üç tabloyu tek seferde `IMemoryCache`'e yükler, tanımsız bir kod da DB'ye gitmeden tanımsız sayılır.
+
+- **Yenileme:** yüklendikten `Parameters:RefreshMinutes` (varsayılan **10** dk; ortam değişkeni `Parameters__RefreshMinutes`) sonra ilk işlemde yeniden okunur.
+- **CRUD:** `/api/transaction-types` veya `/api/mti-processing-codes` ile yapılan başarılı bir ekleme / güncelleme / silme cache'i hemen boşaltır; sonraki işlem yeni tanımı görür.
+- **EntryMode:** API'si yok, doğrudan SQL ile değiştirilir; değişiklik en geç 10 dk içinde devreye girer.
+- **Sınır:** birden fazla Payment instance'ı çalışırsa CRUD sadece isteği alan instance'ın cache'ini boşaltır, diğerleri değişikliği en geç 10 dk içinde görür.
 
 ### Döviz kurları (`ExchangeRates/`)
 ```

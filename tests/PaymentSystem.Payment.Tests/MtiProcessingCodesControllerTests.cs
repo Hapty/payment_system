@@ -4,13 +4,15 @@ using PaymentSystem.Payment.Controllers;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
+using PaymentSystem.Payment.Parameters;
 
 namespace PaymentSystem.Payment.Tests;
 
 public class MtiProcessingCodesControllerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private MtiProcessingCodeRepository Repository => new(Db);
-    private MtiProcessingCodesController Controller => new(new MtiProcessingCodeHandler(Repository, NullLogger<MtiProcessingCodeHandler>.Instance));
+    private ParameterCache Parameters { get; } = TestParameters.Create(fixture.Db);
+    private MtiProcessingCodesController Controller => new(new MtiProcessingCodeHandler(Repository, Parameters, NullLogger<MtiProcessingCodeHandler>.Instance));
 
     private static MtiProcessingCode Mapping(string mti = "0200", string f3 = "000000", string otc = "10", string ots = "11") =>
         new() { Mti = mti, F3_ProcessingCode = f3, Otc = otc, Ots = ots };

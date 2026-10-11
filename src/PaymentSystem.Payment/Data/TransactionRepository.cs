@@ -4,22 +4,9 @@ using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Data;
 
-// Finansal işlem akışının SQL sorguları (Dapper): işlem tipi yönlendirme, DebitTransaction kaydı, bakiye ve kart güncellemesi.
+// Finansal işlem akışının SQL sorguları (Dapper): DebitTransaction kaydı, bakiye ve kart güncellemesi.
 public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactionRepository
 {
-    public async Task<RoutedType?> FindTypeAsync(string mti, string processingCode)
-    {
-        await using var connection = db.Create();
-        return await connection.QuerySingleOrDefaultAsync<RoutedType>(
-            """
-            SELECT m.Otc, m.Ots, t.Name
-            FROM dbo.MtiProcessingCode m
-            JOIN dbo.TransactionType t ON t.Otc = m.Otc AND t.Ots = m.Ots
-            WHERE m.Mti = @mti AND m.F3_ProcessingCode = @processingCode
-            """,
-            new { mti, processingCode });
-    }
-
     public async Task<IDebitSession> BeginAsync()
     {
         var connection = db.Create();
@@ -64,10 +51,6 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
                 return false;
             }
         }
-
-        public Task<EntryMode?> GetEntryModeAsync(string code) =>
-            connection.QuerySingleOrDefaultAsync<EntryMode>(
-                "SELECT Code, Name, IsContactless FROM dbo.EntryMode WHERE Code = @code", new { code }, transaction);
 
         public Task<Card?> GetCardAsync(string cardNumber) =>
             connection.QuerySingleOrDefaultAsync<Card>(

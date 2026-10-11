@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Models;
+using PaymentSystem.Payment.Parameters;
 using PaymentSystem.Payment.Transactions;
 
 namespace PaymentSystem.Payment.Tests;
@@ -21,7 +22,11 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     private ExchangeRateCache? _rates;
     private ExchangeRateCache Rates => _rates ??= new(new MemoryCache(new MemoryCacheOptions()), Clock, Options.Create(new ExchangeRateOptions()));
 
-    private TransactionHandler Handler => new(new TransactionRepository(Db), Rates, Clock, NullLogger<TransactionHandler>.Instance);
+    // Tanım cache'i her test için bir kez, ilk işlemde DB'den (testin seed'inden) yüklenir.
+    private ParameterCache? _parameters;
+    private ParameterCache Parameters => _parameters ??= TestParameters.Create(Db, Clock);
+
+    private TransactionHandler Handler => new(new TransactionRepository(Db), Parameters, Rates, Clock, NullLogger<TransactionHandler>.Instance);
 
     private void StoreRates(params (string Code, decimal Rate)[] rates) =>
         Rates.Store(new TcmbBulletin(new DateOnly(2026, 3, 13), rates.ToDictionary(r => r.Code, r => r.Rate)));

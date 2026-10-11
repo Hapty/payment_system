@@ -1,10 +1,13 @@
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.Models;
+using PaymentSystem.Payment.Parameters;
 
 namespace PaymentSystem.Payment.Handlers;
 
 // İşlem tipi CRUD işlemleri: TransactionTypesController ile TransactionTypeRepository arasında.
-public sealed class TransactionTypeHandler(ITransactionTypeRepository types, ILogger<TransactionTypeHandler> logger)
+// İşlem tipi değişince ParameterCache boşaltılır: işlem akışı yeni tanımı bir sonraki işlemde görür.
+public sealed class TransactionTypeHandler(
+    ITransactionTypeRepository types, ParameterCache parameters, ILogger<TransactionTypeHandler> logger)
 {
     public async Task<IReadOnlyList<TransactionType>> GetAllAsync()
     {
@@ -25,6 +28,8 @@ public sealed class TransactionTypeHandler(ITransactionTypeRepository types, ILo
         var result = await types.CreateAsync(type);
         logger.LogInformation("{Method}: transaction type {Otc}/{Ots} {Name} -> {Result}",
             nameof(CreateAsync), type.Otc, type.Ots, type.Name, result);
+        if (result == WriteResult.Ok)
+            parameters.Invalidate();
         return result;
     }
 
@@ -34,6 +39,8 @@ public sealed class TransactionTypeHandler(ITransactionTypeRepository types, ILo
         var result = await types.UpdateNameAsync(otc, ots, name);
         logger.LogInformation("{Method}: transaction type {Otc}/{Ots} name {Name} -> {Result}",
             nameof(UpdateNameAsync), otc, ots, name, result);
+        if (result == WriteResult.Ok)
+            parameters.Invalidate();
         return result;
     }
 
@@ -42,6 +49,8 @@ public sealed class TransactionTypeHandler(ITransactionTypeRepository types, ILo
         var deleted = await types.DeleteAsync(otc, ots);
         logger.LogInformation("{Method}: transaction type {Otc}/{Ots} {Result}",
             nameof(DeleteAsync), otc, ots, deleted ? "deleted" : "not found");
+        if (deleted)
+            parameters.Invalidate();
         return deleted;
     }
 }
