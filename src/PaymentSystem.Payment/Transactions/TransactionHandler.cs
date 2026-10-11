@@ -68,6 +68,15 @@ public sealed class TransactionHandler(
 
     private async Task<string> DecideAsync(IDebitSession session, TransactionRequest request, string typeName, decimal? lira)
     {
+        // F22 opsiyonel; geldiyse ilk iki hanesi EntryMode tablosunda tanımlı olmalı (3. hane PIN yeteneği, karara girmez).
+        EntryMode? entryMode = null;
+        if (request.EntryMode is { } f22)
+        {
+            entryMode = f22.Length == 3 ? await session.GetEntryModeAsync(f22[..2]) : null;
+            if (entryMode is null)
+                return Decline(nameof(DecideAsync), request, ResponseCodes.InvalidTransaction, $"F22 entry mode {f22} is not defined");
+        }
+
         var card = await session.GetCardAsync(request.CardNumber);
         if (card is null)
             return Decline(nameof(DecideAsync), request, ResponseCodes.InvalidCardNumber, "card not found");
@@ -82,14 +91,14 @@ public sealed class TransactionHandler(
         return typeName switch
         {
             "BalanceInquiry" => ResponseCodes.Approved,     // bakiye cevaba (F54) sonraki adımda eklenecek
-            "Sale" => await SaleAsync(session, request, card, lira),
+            "Sale" => await SaleAsync(session, request, card, lira, entryMode),
             // MoneyTransfer: alıcı kart numarası henüz ISO mesajında / Gate sözleşmesinde yok.
             _ => Decline(nameof(DecideAsync), request, ResponseCodes.InvalidTransaction, $"{typeName} is not supported")
         };
     }
 
     // Limit, bakiye ve kartın son işlem tutarı hep TL karşılık (lira) üzerinden yürür; hesaplar TL'dir.
-    private async Task<string> SaleAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira)
+    private async Task<string> SaleAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira, EntryMode? entryMode)
     {
         // Kur yok: ya bu para birimi için TCMB kuru hiç yok (12) ya da cache'te kur yok / bayat (91, sonra tekrar denenebilir).
         if (lira is not { } amount)
@@ -100,7 +109,8 @@ public sealed class TransactionHandler(
         if (amount <= 0)
             return Decline(nameof(SaleAsync), request, ResponseCodes.InvalidAmount, "amount is zero");
 
-        if (IsContactless(request.EntryMode))
+        // Temassız olup olmadığı EntryMode.IsContactless'tan gelir; F22 yoksa temassız sayılmaz.
+        if (entryMode is { IsContactless: true })
         {
             if (!card.ContactlessAllowed)
                 return Decline(nameof(SaleAsync), request, ResponseCodes.NotPermittedToCardholder, "contactless not allowed for card");
@@ -165,9 +175,6 @@ public sealed class TransactionHandler(
             return null;
         return decimal.Round(ToAmount(request) * rate, 2, MidpointRounding.AwayFromZero);
     }
-
-    // F22'nin ilk iki hanesi: 07 = temassız çip, 91 = temassız manyetik şerit.
-    private static bool IsContactless(string? entryMode) => entryMode is ['0', '7', _] or ['9', '1', _];
 
     // Card.ExpiryDate MMYY: kart o ayın sonuna kadar geçerlidir.
     private bool IsExpired(string? expiryDate)

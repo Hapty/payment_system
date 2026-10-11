@@ -65,6 +65,10 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
             }
         }
 
+        public Task<EntryMode?> GetEntryModeAsync(string code) =>
+            connection.QuerySingleOrDefaultAsync<EntryMode>(
+                "SELECT Code, Name, IsContactless FROM dbo.EntryMode WHERE Code = @code", new { code }, transaction);
+
         public Task<Card?> GetCardAsync(string cardNumber) =>
             connection.QuerySingleOrDefaultAsync<Card>(
                 "SELECT CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit FROM dbo.Card WHERE CardNumber = @cardNumber",

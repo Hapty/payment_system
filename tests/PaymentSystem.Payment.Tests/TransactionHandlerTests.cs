@@ -36,7 +36,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         string Mti, string F2_CardNo, string Otc, string Ots, decimal F4_Amount, decimal? LocalTxnAmount,
         string F12_TransactionTime, string F13_TransactionDate, string F43_Description, string? F39_ResponseCode);
 
-    // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql) ve bir hesap + kartı yeniden ekler.
+    // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql, 03_seed_entry_modes.sql) ve bir hesap + kartı yeniden ekler.
     private async Task SeedAsync(decimal balance = 1000m, string status = "Active", string? expiry = "1228",
         bool contactless = true, decimal? contactlessLimit = 750m)
     {
@@ -46,6 +46,9 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
             INSERT INTO dbo.TransactionType (Otc, Ots, Name) VALUES ('10', '11', 'Sale'), ('11', '11', 'MoneyTransfer'), ('40', '10', 'BalanceInquiry');
             INSERT INTO dbo.MtiProcessingCode (Mti, F3_ProcessingCode, Otc, Ots)
                 VALUES ('0200', '000000', '10', '11'), ('0200', '400000', '11', '11'), ('0200', '310000', '40', '10');
+            INSERT INTO dbo.EntryMode (Code, Name, IsContactless)
+                VALUES ('00', 'Unknown', 0), ('01', 'Manual', 0), ('02', 'MagneticStripe', 0), ('05', 'Chip', 0),
+                       ('07', 'ContactlessChip', 1), ('90', 'MagneticStripeFullTrack', 0), ('91', 'ContactlessMagneticStripe', 1);
             INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES (@AccountNo, @status, @balance);
             INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit)
                 VALUES (@Pan, @AccountNo, @expiry, @contactless, @contactlessLimit);
@@ -458,6 +461,41 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         await SeedAsync(contactless: false, contactlessLimit: 100m);
 
         Assert.Equal("00", await AuthorizeAsync(Sale(15000)));   // EntryMode 051 = çip
+    }
+
+    [Theory]
+    [InlineData("991")]     // tabloda tanımlı değil
+    [InlineData("07")]      // eksik hane
+    public async Task Sale_WithUndefinedEntryMode_IsInvalidTransaction(string entryMode)
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.EntryMode = entryMode;
+
+        Assert.Equal("12", await AuthorizeAsync(request));
+        Assert.Equal("12", Assert.Single(await TransactionsAsync()).F39_ResponseCode);
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task Sale_WithoutEntryMode_IsApprovedAsNotContactless()
+    {
+        await SeedAsync(contactless: false);
+        var request = Sale();
+        request.EntryMode = null;
+
+        Assert.Equal("00", await AuthorizeAsync(request));
+    }
+
+    [Fact]
+    public async Task ContactlessDecision_ComesFromEntryModeTable()
+    {
+        // 05 tabloda temassız olarak işaretlenirse çip işlemi de temassız kurallarına girer: kod değil tablo belirler.
+        await SeedAsync(contactless: false);
+        await using (var connection = Db.Create())
+            await connection.ExecuteAsync("UPDATE dbo.EntryMode SET IsContactless = 1 WHERE Code = '05'");
+
+        Assert.Equal("57", await AuthorizeAsync(Sale()));   // EntryMode 051
     }
 
     [Fact]

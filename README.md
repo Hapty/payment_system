@@ -33,6 +33,7 @@ docker compose up -d
 - `TransactionType`
 - `MtiProcessingCode`
 - `DebitTransaction`
+- `EntryMode`
 
 Script'ler idempotent'tir (`IF NOT EXISTS` / `MERGE`), yani container her yeniden başladığında tekrar çalışsa bile veriyi bozmaz.
 
@@ -59,6 +60,7 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 | `Card` | Kart bilgileri, ilişkili hesap |
 | `TransactionType` | (Otc, Ots) kombinasyonundan işlem tipine lookup (Sale, MoneyTransfer, BalanceInquiry) |
 | `MtiProcessingCode` | Gelen mesajın (Mti, F3_ProcessingCode) değerinden (Otc, Ots)'ye lookup — örn. `0200`+`000000` → Sale |
+| `EntryMode` | F22'nin ilk iki hanesinden giriş yöntemine lookup ve temassız olup olmadığı (`IsContactless`) — örn. `05` → Chip, `07` → ContactlessChip. 3. hane (PIN yeteneği) karara girmez |
 | `DebitTransaction` | ISO8583 alanlarını taşıyan işlem kayıtları — kolon adları `F2_CardNo`, `F3_ProcessingCode`, `F4_Amount`, `F49_CurrencyCode`, `F12_TransactionTime`, `F13_TransactionDate`, `F14_CardExpiry`, `F18_MerchantCode`, `F22_EntryMode`, `F39_ResponseCode`, `F43_Description` şeklinde ISO8583 field numarasını koruyor |
 
 **Not:** Tablolar arasında foreign key yok — sadece database, tablo ve kolonlar oluşturuluyor. Sadece her tabloda kendi `PRIMARY KEY`'i var.
@@ -197,13 +199,14 @@ dotnet run --project src/PaymentSystem.Payment --launch-profile http
 
 | Kontrol | F39 |
 |---|---|
+| F22 geldi ama ilk iki hanesi `EntryMode` tablosunda tanımlı değil (F22 yoksa temassız değil sayılır) | `12` |
 | Kart yok | `14` |
 | `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `54` |
 | Hesap yok ya da `AccountStatus` `Active` değil | `62` |
 | **Satış:** para birimi için TCMB kuru yok (ör. `999`) | `12` |
 | **Satış:** döviz ama cache'te kur yok ya da bayat (bkz. Döviz kurları) | `91` |
 | **Satış:** tutar 0 | `13` |
-| **Satış:** temassız (F22 `07x`/`91x`) ama kart temassıza kapalı | `57` |
+| **Satış:** temassız (`EntryMode.IsContactless`, seed'de `07x`/`91x`) ama kart temassıza kapalı | `57` |
 | **Satış:** temassız limit (TL karşılık üzerinden) aşıldı (terminal çip + PIN ile tekrar dener) | `65` |
 | **Satış:** bakiye yetersiz | `51` |
 | Onay — satışta bakiye düşer, `Card.LastTransaction*` güncellenir | `00` |

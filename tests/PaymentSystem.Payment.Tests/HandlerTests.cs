@@ -76,6 +76,8 @@ public class HandlerTests
         public string? ResponseCode { get; private set; }
 
         public Task<bool> TryInsertAsync(DebitTransaction transaction) => Task.FromResult(insertSucceeds);
+        public Task<EntryMode?> GetEntryModeAsync(string code) =>
+            Task.FromResult(code == "05" ? new EntryMode("05", "Chip", false) : null);
         public Task<Card?> GetCardAsync(string cardNumber) =>
             Task.FromResult<Card?>(new Card { CardNumber = cardNumber, AccountNo = "ACC1", ExpiryDate = "1299" });
         public Task<string?> GetAccountStatusAsync(string accountNo) => Task.FromResult<string?>("Active");

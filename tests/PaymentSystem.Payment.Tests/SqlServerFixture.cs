@@ -59,7 +59,7 @@ public abstract class DatabaseTest(SqlServerFixture fixture) : IAsyncLifetime
     {
         await using var connection = Db.Create();
         await connection.ExecuteAsync(
-            "DELETE FROM dbo.DebitTransaction; DELETE FROM dbo.Card; DELETE FROM dbo.BankAccount; DELETE FROM dbo.TransactionType; DELETE FROM dbo.MtiProcessingCode;");
+            "DELETE FROM dbo.DebitTransaction; DELETE FROM dbo.Card; DELETE FROM dbo.BankAccount; DELETE FROM dbo.TransactionType; DELETE FROM dbo.MtiProcessingCode; DELETE FROM dbo.EntryMode;");
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
