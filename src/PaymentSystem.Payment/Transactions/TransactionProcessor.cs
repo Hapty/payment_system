@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using PaymentSystem.Iso8583;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Models;
@@ -37,13 +38,16 @@ public sealed class TransactionProcessor(
             new { request.Mti, request.ProcessingCode });
         if (type is null)
         {
-            logger.LogWarning("No transaction type for MTI {Mti} F3 {ProcessingCode} (TID {TerminalId} STAN {Stan})",
-                request.Mti, request.ProcessingCode, request.TerminalId, request.Stan);
+            logger.LogWarning("{Method}: no transaction type for MTI {Mti} F3 {ProcessingCode} (TID {TerminalId} STAN {Stan}) - responding 12",
+                nameof(ProcessAsync), request.Mti, request.ProcessingCode, request.TerminalId, request.Stan);
             return ResponseCodes.InvalidTransaction;
         }
 
         // TL karşılığı bir kez, kayıt açılmadan hesaplanır: aynı kur hem LocalTxnAmount'a yazılır hem bakiyeden düşülür.
         var lira = ToLira(request);
+        logger.LogInformation("{Method}: {Type} TID {TerminalId} STAN {Stan} PAN {Pan} amount {Amount} {Currency} (TRY {Lira})",
+            nameof(ProcessAsync), type.Name, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber),
+            ToAmount(request), request.CurrencyCode, lira);
 
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
 
@@ -86,8 +90,8 @@ public sealed class TransactionProcessor(
             new { responseCode, id }, transaction);
         await transaction.CommitAsync();
 
-        logger.LogInformation("{Type} TID {TerminalId} STAN {Stan} amount {Amount} {Currency} (TRY {Lira}) -> F39 {ResponseCode}",
-            type.Name, request.TerminalId, request.Stan, ToAmount(request), request.CurrencyCode, lira, responseCode);
+        logger.LogInformation("{Method}: {Type} {Id} TID {TerminalId} STAN {Stan} PAN {Pan} committed -> F39 {ResponseCode}",
+            nameof(ProcessAsync), type.Name, id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), responseCode);
         return responseCode;
     }
 
@@ -98,42 +102,44 @@ public sealed class TransactionProcessor(
             "SELECT CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit FROM dbo.Card WHERE CardNumber = @CardNumber",
             new { request.CardNumber }, transaction);
         if (card is null)
-            return ResponseCodes.InvalidCardNumber;
+            return Decline(nameof(DecideAsync), request, ResponseCodes.InvalidCardNumber, "card not found");
 
         if (IsExpired(card.ExpiryDate) || !ExpiryMatches(card.ExpiryDate, request.CardExpiry))
-            return ResponseCodes.ExpiredCard;
+            return Decline(nameof(DecideAsync), request, ResponseCodes.ExpiredCard, "card expired or F14 does not match");
 
         var accountStatus = await connection.ExecuteScalarAsync<string?>(
             "SELECT AccountStatus FROM dbo.BankAccount WHERE AccountNo = @AccountNo", new { card.AccountNo }, transaction);
         if (accountStatus != ActiveAccount)
-            return ResponseCodes.RestrictedCard;
+            return Decline(nameof(DecideAsync), request, ResponseCodes.RestrictedCard, $"account {card.AccountNo} is {accountStatus ?? "missing"}");
 
         return typeName switch
         {
             "BalanceInquiry" => ResponseCodes.Approved,     // bakiye cevaba (F54) sonraki adımda eklenecek
             "Sale" => await SaleAsync(connection, transaction, request, card, lira),
             // MoneyTransfer: alıcı kart numarası henüz ISO mesajında / Gate sözleşmesinde yok.
-            _ => ResponseCodes.InvalidTransaction
+            _ => Decline(nameof(DecideAsync), request, ResponseCodes.InvalidTransaction, $"{typeName} is not supported")
         };
     }
 
     // Limit, bakiye ve kartın son işlem tutarı hep TL karşılık (lira) üzerinden yürür; hesaplar TL'dir.
-    private static async Task<string> SaleAsync(
+    private async Task<string> SaleAsync(
         SqlConnection connection, SqlTransaction transaction, TransactionRequest request, Card card, decimal? lira)
     {
         // Kur yok: ya bu para birimi için TCMB kuru hiç yok (12) ya da cache'te kur yok / bayat (91, sonra tekrar denenebilir).
         if (lira is not { } amount)
-            return ExchangeRateCache.IsSupported(request.CurrencyCode) ? ResponseCodes.SystemUnavailable : ResponseCodes.InvalidTransaction;
+            return ExchangeRateCache.IsSupported(request.CurrencyCode)
+                ? Decline(nameof(SaleAsync), request, ResponseCodes.SystemUnavailable, $"no fresh rate for currency {request.CurrencyCode}")
+                : Decline(nameof(SaleAsync), request, ResponseCodes.InvalidTransaction, $"currency {request.CurrencyCode} is not supported");
 
         if (amount <= 0)
-            return ResponseCodes.InvalidAmount;
+            return Decline(nameof(SaleAsync), request, ResponseCodes.InvalidAmount, "amount is zero");
 
         if (IsContactless(request.EntryMode))
         {
             if (!card.ContactlessAllowed)
-                return ResponseCodes.NotPermittedToCardholder;
+                return Decline(nameof(SaleAsync), request, ResponseCodes.NotPermittedToCardholder, "contactless not allowed for card");
             if (card.ContactlessLimit is { } limit && amount > limit)
-                return ResponseCodes.ContactlessLimitExceeded;
+                return Decline(nameof(SaleAsync), request, ResponseCodes.ContactlessLimitExceeded, $"TRY {amount} exceeds contactless limit {limit}");
         }
 
         // Bakiye kontrolü ve düşme tek sorguda: aynı hesaba aynı anda gelen iki satış bakiyeyi eksiye düşüremez.
@@ -141,12 +147,22 @@ public sealed class TransactionProcessor(
             "UPDATE dbo.BankAccount SET Balance = Balance - @amount WHERE AccountNo = @AccountNo AND Balance >= @amount",
             new { amount, card.AccountNo }, transaction);
         if (debited == 0)
-            return ResponseCodes.InsufficientFunds;
+            return Decline(nameof(SaleAsync), request, ResponseCodes.InsufficientFunds, $"insufficient funds for TRY {amount}");
 
         await connection.ExecuteAsync(
             "UPDATE dbo.Card SET LastTransactionDate = SYSUTCDATETIME(), LastTransactionAmount = @amount WHERE CardNumber = @CardNumber",
             new { amount, card.CardNumber }, transaction);
+        logger.LogInformation("{Method}: debited TRY {Amount} from account {AccountNo} STAN {Stan} PAN {Pan}",
+            nameof(SaleAsync), amount, card.AccountNo, request.Stan, PanMask.Mask(request.CardNumber));
         return ResponseCodes.Approved;
+    }
+
+    // Red kararını sebebiyle loglar ve cevap kodunu döner.
+    private string Decline(string method, TransactionRequest request, string responseCode, string reason)
+    {
+        logger.LogWarning("{Method}: declined STAN {Stan} PAN {Pan} - {Reason} -> F39 {ResponseCode}",
+            method, request.Stan, PanMask.Mask(request.CardNumber), reason, responseCode);
+        return responseCode;
     }
 
     // Tekrar gelen istek: ilk işlemin kararı aynen döner (ilk istek onaylandıysa tekrarı da "00" alır ama para tekrar düşmez).
@@ -155,8 +171,8 @@ public sealed class TransactionProcessor(
         var previous = await connection.ExecuteScalarAsync<string>(
             "SELECT F39_ResponseCode FROM dbo.DebitTransaction WHERE Guid = @id", new { id });
 
-        logger.LogWarning("Duplicate request {Id} (TID {TerminalId} STAN {Stan}) - returning previous F39 {ResponseCode}",
-            id, request.TerminalId, request.Stan, previous);
+        logger.LogWarning("{Method}: duplicate request {Id} (TID {TerminalId} STAN {Stan} PAN {Pan}) - returning previous F39 {ResponseCode}",
+            nameof(PreviousResponseAsync), id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), previous);
         return previous!;   // kayıt sadece F39 yazılarak commit edildiği için boş olamaz
     }
 

@@ -34,16 +34,16 @@ public sealed class ExchangeRateRefresher(
         {
             var bulletin = await tcmb.FetchAsync(cancellationToken);
             rates.Store(bulletin);
-            logger.LogInformation("Exchange rates refreshed from TCMB bulletin {Date}: {Count} currencies",
-                bulletin.Date, bulletin.SellingRates.Count);
+            logger.LogInformation("{Method}: exchange rates refreshed from TCMB bulletin {Date}: {Count} currencies",
+                nameof(RefreshAsync), bulletin.Date, bulletin.SellingRates.Count);
             return true;
         }
         catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException or XmlException or FormatException)
                                    && !cancellationToken.IsCancellationRequested)
         {
             // Biz iptal etmediğimiz halde TaskCanceledException geldiyse HttpClient.Timeout süresi dolmuştur.
-            logger.LogWarning("Could not refresh exchange rates from TCMB ({Error}: {Message}) - keeping the cached rates",
-                ex.GetType().Name, ex.Message);
+            logger.LogWarning("{Method}: could not refresh exchange rates from TCMB ({Error}: {Message}) - keeping the cached rates",
+                nameof(RefreshAsync), ex.GetType().Name, ex.Message);
             return false;
         }
     }

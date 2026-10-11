@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.Net.Sockets;
 using System.Text.Json;
+using PaymentSystem.Iso8583;
 using PaymentSystem.Payment.Models;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -36,7 +37,7 @@ public sealed class TransactionQueueConsumer(
             try
             {
                 await ConsumeUntilDisconnectedAsync(stoppingToken);
-                logger.LogWarning("RabbitMQ connection lost, reconnecting in {Delay}s", RetryDelay.TotalSeconds);
+                logger.LogWarning("{Method}: RabbitMQ connection lost, reconnecting in {Delay}s", nameof(ExecuteAsync), RetryDelay.TotalSeconds);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -45,8 +46,8 @@ public sealed class TransactionQueueConsumer(
             catch (Exception ex) when (ex is RabbitMQClientException or IOException or SocketException)
             {
                 // BrokerUnreachableException da IOException'dır.
-                logger.LogWarning("RabbitMQ unavailable ({Error}: {Message}), retrying in {Delay}s",
-                    ex.GetType().Name, ex.Message, RetryDelay.TotalSeconds);
+                logger.LogWarning("{Method}: RabbitMQ unavailable ({Error}: {Message}), retrying in {Delay}s",
+                    nameof(ExecuteAsync), ex.GetType().Name, ex.Message, RetryDelay.TotalSeconds);
             }
 
             try
@@ -82,7 +83,7 @@ public sealed class TransactionQueueConsumer(
         consumer.ReceivedAsync += (_, delivery) => HandleAsync(channel, writeLock, delivery, stoppingToken);
         await channel.BasicConsumeAsync(QueueName, autoAck: false, consumer, stoppingToken);
 
-        logger.LogInformation("Listening for transactions on RabbitMQ queue {Queue}", QueueName);
+        logger.LogInformation("{Method}: listening for transactions on RabbitMQ queue {Queue}", nameof(ConsumeUntilDisconnectedAsync), QueueName);
         _listening.TrySetResult();
         await disconnected.Task.WaitAsync(stoppingToken);
     }
@@ -100,6 +101,7 @@ public sealed class TransactionQueueConsumer(
                 var reply = new BasicProperties { CorrelationId = properties.CorrelationId, ContentType = "application/json" };
                 var body = JsonSerializer.SerializeToUtf8Bytes(new TransactionResponse(responseCode), Json);
                 await channel.BasicPublishAsync(string.Empty, replyTo, mandatory: false, reply, body, cancellationToken);
+                logger.LogInformation("{Method}: replied {CorrelationId} F39 {ResponseCode}", nameof(HandleAsync), properties.CorrelationId, responseCode);
             }
 
             // Cevap verildikten sonra (ya da süresi dolmuş istek atıldıktan sonra) onaylanır. Mesaj hiçbir durumda
@@ -117,7 +119,8 @@ public sealed class TransactionQueueConsumer(
     {
         if (IsExpired(properties))
         {
-            logger.LogWarning("Dropping expired request {CorrelationId}: the Gate has already answered 91", properties.CorrelationId);
+            logger.LogWarning("{Method}: dropping expired request {CorrelationId}: the Gate has already answered 91",
+                nameof(DecideAsync), properties.CorrelationId);
             return null;
         }
 
@@ -134,9 +137,13 @@ public sealed class TransactionQueueConsumer(
         // Alanların ISO8583 formatını Gate zaten kontrol eder; bu, DB kolonlarına sığmayan değerlere karşı son kontrol.
         if (request is null || !Validator.TryValidateObject(request, new ValidationContext(request), null, validateAllProperties: true))
         {
-            logger.LogWarning("Invalid transaction message {CorrelationId} - responding 30", properties.CorrelationId);
+            // Ham gövde loglanmaz: içinde maskelenmemiş kart numarası olabilir.
+            logger.LogWarning("{Method}: invalid transaction message {CorrelationId} ({Length} bytes) - responding 30",
+                nameof(DecideAsync), properties.CorrelationId, body.Length);
             return ResponseCodes.FormatError;
         }
+
+        logger.LogInformation("{Method}: received {CorrelationId}: {Body}", nameof(DecideAsync), properties.CorrelationId, MaskedJson(request));
 
         try
         {
@@ -145,10 +152,18 @@ public sealed class TransactionQueueConsumer(
         catch (Exception ex)
         {
             // Örn. DB'ye ulaşılamıyor. Transaction commit edilmediği için para hareketi yok; Gate'e "şu an yapılamıyor" denir.
-            logger.LogError(ex, "Transaction {CorrelationId} (TID {TerminalId} STAN {Stan}) failed - responding 91",
-                properties.CorrelationId, request.TerminalId, request.Stan);
+            logger.LogError(ex, "{Method}: transaction {CorrelationId} (TID {TerminalId} STAN {Stan} PAN {Pan}) failed - responding 91",
+                nameof(DecideAsync), properties.CorrelationId, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber));
             return ResponseCodes.SystemUnavailable;
         }
+    }
+
+    // Kuyruktan gelen isteğin JSON'ı, kart numarası maskeli.
+    private static string MaskedJson(TransactionRequest request)
+    {
+        var json = JsonSerializer.SerializeToNode(request, Json)!;
+        json["cardNumber"] = PanMask.Mask(request.CardNumber);
+        return json.ToJsonString(Json);
     }
 
     // Gate isteği Timestamp (saniye) ve Expiration (ms, Gate'in bekleme süresi) ile gönderir. Süre dolduysa Gate 91 döndü demektir.

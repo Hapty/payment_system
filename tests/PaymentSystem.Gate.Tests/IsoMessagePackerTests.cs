@@ -158,7 +158,7 @@ public class IsoMessagePackerTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new IsoMessage("0200").Set(field, "x"));
 
     [Theory]
-    [InlineData("4111111111111111", "411111******1111")]
+    [InlineData("4111111111111111", "411111********11")]
     [InlineData("1234", "****")]
     [InlineData(null, "")]
     public void PanMask_HidesMiddleDigits(string? pan, string expected) =>

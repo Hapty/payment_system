@@ -7,6 +7,7 @@ namespace PaymentSystem.Gate.Tests;
 public class TransactionEndpointTests
 {
     private FakePaymentClient _payment = new();
+    private readonly ListLogger<TransactionEndpointTests> _logger = new();
 
     private static TransactionRequest Sale() => new(
         Mti: "0200", CardNumber: "4111111111111111", ProcessingCode: "000000", AmountMinor: 15000, CurrencyCode: "949",
@@ -16,7 +17,8 @@ public class TransactionEndpointTests
 
     private async Task<IResult> PostAsync(TransactionRequest request) =>
         (await TransactionEndpoint.HandleAsync(
-            request, new TransactionHandler(_payment, NullLogger<TransactionHandler>.Instance), CancellationToken.None)).Result;
+            request, new TransactionHandler(_payment, NullLogger<TransactionHandler>.Instance), _logger,
+            CancellationToken.None)).Result;
 
     private async Task<IDictionary<string, string[]>> ValidationErrorsAsync(TransactionRequest request)
     {
@@ -39,6 +41,26 @@ public class TransactionEndpointTests
         Assert.Equal(15000, forwarded.AmountMinor);
         Assert.Equal("5999", forwarded.MerchantType);
         Assert.Equal("MERCHANT0000001", forwarded.MerchantId);
+    }
+
+    [Fact]
+    public async Task ValidSale_LogsRequestAndResponseWithMaskedPan()
+    {
+        await PostAsync(Sale());
+
+        Assert.Contains(_logger.Messages, m => m.StartsWith("HandleAsync: request received") && m.Contains("PAN 411111********11"));
+        Assert.Contains(_logger.Messages, m => m.StartsWith("HandleAsync: responding 0210"));
+        Assert.DoesNotContain(_logger.Messages, m => m.Contains("4111111111111111"));
+    }
+
+    [Fact]
+    public async Task InvalidFields_LogWhichFieldsFailedWithMaskedPan()
+    {
+        await PostAsync(Sale() with { Stan = "12" });
+
+        var failed = Assert.Single(_logger.Messages, m => m.StartsWith("HandleAsync: validation failed"));
+        Assert.Contains("stan", failed);
+        Assert.Contains("PAN 411111********11", failed);
     }
 
     [Fact]
