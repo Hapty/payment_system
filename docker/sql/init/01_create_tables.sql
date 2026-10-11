@@ -98,3 +98,16 @@ BEGIN
     );
 END
 GO
+
+-- 6) EntryMode (sözlük: F22'nin ilk iki hanesi -> giriş yöntemi; 3. hane PIN yeteneği, karara girmez)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'EntryMode')
+BEGIN
+    CREATE TABLE dbo.EntryMode
+    (
+        Code            CHAR(2)     NOT NULL,
+        Name            VARCHAR(50) NOT NULL,
+        IsContactless   BIT         NOT NULL DEFAULT 0,
+        CONSTRAINT PK_EntryMode PRIMARY KEY (Code)
+    );
+END
+GO
