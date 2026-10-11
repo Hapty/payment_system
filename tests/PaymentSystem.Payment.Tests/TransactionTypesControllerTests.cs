@@ -4,13 +4,15 @@ using PaymentSystem.Payment.Controllers;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
+using PaymentSystem.Payment.Parameters;
 
 namespace PaymentSystem.Payment.Tests;
 
 public class TransactionTypesControllerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private TransactionTypeRepository Repository => new(Db);
-    private TransactionTypesController Controller => new(new TransactionTypeHandler(Repository, NullLogger<TransactionTypeHandler>.Instance));
+    private ParameterCache Parameters { get; } = TestParameters.Create(fixture.Db);
+    private TransactionTypesController Controller => new(new TransactionTypeHandler(Repository, Parameters, NullLogger<TransactionTypeHandler>.Instance));
 
     private static TransactionType Type(string otc = "10", string ots = "11", string name = "Sale") =>
         new() { Otc = otc, Ots = ots, Name = name };

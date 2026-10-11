@@ -4,13 +4,15 @@ using PaymentSystem.Iso8583;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Models;
+using PaymentSystem.Payment.Parameters;
 
 namespace PaymentSystem.Payment.Transactions;
 
 // Gate'ten gelen bir finansal isteği karara bağlar ve F39 cevap kodunu döner. Kararlar burada, SQL TransactionRepository'de.
 // İşlem kaydı, bakiye ve kart güncellemesi tek bir SQL transaction'ında (IDebitSession) yapılır: ya hepsi yazılır ya hiçbiri.
 public sealed class TransactionHandler(
-    ITransactionRepository repository, ExchangeRateCache rates, TimeProvider clock, ILogger<TransactionHandler> logger)
+    ITransactionRepository repository, ParameterCache parameters, ExchangeRateCache rates, TimeProvider clock,
+    ILogger<TransactionHandler> logger)
 {
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
@@ -21,7 +23,7 @@ public sealed class TransactionHandler(
     public async Task<string> ProcessAsync(TransactionRequest request)
     {
         // MTI + F3 -> (Otc, Ots) -> işlem adı. Tanımsız bir işlem için kayıt açılmaz: para hareketi yok, tekrarı da aynı cevabı alır.
-        var type = await repository.FindTypeAsync(request.Mti, request.ProcessingCode);
+        var type = await parameters.FindTypeAsync(request.Mti, request.ProcessingCode);
         if (type is null)
         {
             logger.LogWarning("{Method}: no transaction type for MTI {Mti} F3 {ProcessingCode} (TID {TerminalId} STAN {Stan}) - responding 12",
@@ -72,7 +74,7 @@ public sealed class TransactionHandler(
         EntryMode? entryMode = null;
         if (request.EntryMode is { } f22)
         {
-            entryMode = f22.Length == 3 ? await session.GetEntryModeAsync(f22[..2]) : null;
+            entryMode = f22.Length == 3 ? await parameters.FindEntryModeAsync(f22[..2]) : null;
             if (entryMode is null)
                 return Decline(nameof(DecideAsync), request, ResponseCodes.InvalidTransaction, $"F22 entry mode {f22} is not defined");
         }

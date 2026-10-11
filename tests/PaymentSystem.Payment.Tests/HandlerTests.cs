@@ -4,6 +4,7 @@ using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
+using PaymentSystem.Payment.Parameters;
 using PaymentSystem.Payment.Transactions;
 
 namespace PaymentSystem.Payment.Tests;
@@ -56,15 +57,13 @@ public class HandlerTests
         Assert.DoesNotContain(logger.Messages, m => m.Contains(Pan));
     }
 
-    // İşlem akışının repository'si: tip yönlendirme ve tekrar gelen isteğin önceki kararı ayarlanabilir; oturumda ne yapıldığı kaydedilir.
+    // İşlem akışının repository'si: tekrar gelen isteğin önceki kararı ayarlanabilir; oturumda ne yapıldığı kaydedilir.
     private sealed class FakeTransactionRepository : ITransactionRepository
     {
-        public RoutedType? Type { get; init; } = new("10", "11", "Sale");
         public bool Duplicate { get; init; }
         public string? PreviousResponseCode { get; init; }
         public FakeSession? Session { get; private set; }
 
-        public Task<RoutedType?> FindTypeAsync(string mti, string processingCode) => Task.FromResult(Type);
         public Task<IDebitSession> BeginAsync() => Task.FromResult<IDebitSession>(Session = new FakeSession(!Duplicate));
         public Task<string?> GetResponseCodeAsync(Guid id) => Task.FromResult(PreviousResponseCode);
     }
@@ -76,8 +75,6 @@ public class HandlerTests
         public string? ResponseCode { get; private set; }
 
         public Task<bool> TryInsertAsync(DebitTransaction transaction) => Task.FromResult(insertSucceeds);
-        public Task<EntryMode?> GetEntryModeAsync(string code) =>
-            Task.FromResult(code == "05" ? new EntryMode("05", "Chip", false) : null);
         public Task<Card?> GetCardAsync(string cardNumber) =>
             Task.FromResult<Card?>(new Card { CardNumber = cardNumber, AccountNo = "ACC1", ExpiryDate = "1299" });
         public Task<string?> GetAccountStatusAsync(string accountNo) => Task.FromResult<string?>("Active");
@@ -103,8 +100,13 @@ public class HandlerTests
         }
     }
 
-    private static TransactionHandler TransactionHandler(ITransactionRepository repository) => new(
+    // knownType false: 0200/000000 tanım tablosunda yok.
+    private static TransactionHandler TransactionHandler(ITransactionRepository repository, bool knownType = true) => new(
         repository,
+        TestParameters.Create(new FakeParameterRepository
+        {
+            Routes = knownType ? [new TransactionRoute("0200", "000000", "10", "11", "Sale")] : []
+        }),
         new ExchangeRateCache(new MemoryCache(new MemoryCacheOptions()), TimeProvider.System, Options.Create(new ExchangeRateOptions())),
         TimeProvider.System,
         new ListLogger<TransactionHandler>());
@@ -140,9 +142,9 @@ public class HandlerTests
     [Fact]
     public async Task TransactionHandler_UnknownType_Returns12WithoutOpeningSession()
     {
-        var repository = new FakeTransactionRepository { Type = null };
+        var repository = new FakeTransactionRepository();
 
-        Assert.Equal(ResponseCodes.InvalidTransaction, await TransactionHandler(repository).ProcessAsync(Sale()));
+        Assert.Equal(ResponseCodes.InvalidTransaction, await TransactionHandler(repository, knownType: false).ProcessAsync(Sale()));
         Assert.Null(repository.Session);
     }
 }
