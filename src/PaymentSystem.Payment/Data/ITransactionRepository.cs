@@ -2,6 +2,9 @@ using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Data;
 
+// Daha önce karara bağlanmış işlemin F39'u ve kartın hesabı (kart artık yoksa null).
+public sealed record PreviousResponse(string ResponseCode, string? AccountNo);
+
 // Finansal işlem akışının veritabanı erişimi. Kararları TransactionHandler verir; SQL'i TransactionRepository yazar.
 // Tanım tabloları (işlem tipi, F22) buradan değil ParameterCache'ten okunur.
 public interface ITransactionRepository
@@ -9,8 +12,8 @@ public interface ITransactionRepository
     // İşlem kaydı, bakiye ve kart güncellemesi bu oturumdaki tek SQL transaction'ında yapılır.
     Task<IDebitSession> BeginAsync();
 
-    // Daha önce karara bağlanmış işlemin F39'u (tekrar gelen istek için).
-    Task<string?> GetResponseCodeAsync(Guid id);
+    // Tekrar gelen istek için ilk kararın F39'u; kayıt yoksa null.
+    Task<PreviousResponse?> GetPreviousAsync(Guid id);
 }
 
 // Açık bir SQL transaction'ı. CommitAsync çağrılmadan dispose edilirse her şey geri alınır.

@@ -155,7 +155,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         Assert.Contains("\"cardNumber\":\"411111********11\"", received);
         Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("HandleAsync: replied request-1 F39 00"));
         Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: debited TRY 150") && m.Contains("PAN 411111********11"));
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("ProcessAsync: Sale") && m.Contains("F39 00"));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.Contains("F39 00"));
         Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains(Pan));
     }
 
@@ -169,7 +169,9 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         Assert.Equal("""{"responseCode":"51"}""", reply?.Body);
         Assert.Equal(1000m, await BalanceAsync());
         Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: declined") && m.Contains("insufficient funds") && m.Contains("IRC 3002"));
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("ProcessAsync: Sale") && m.Contains("IRC 3002 F39 51"));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.Contains("IRC 3002 F39 51"));
+        Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: transaction") && m.Contains("not approved: F39 51 Insufficient funds (IRC 3002)")
+            && m.Contains("PAN 411111********11 account ACC1"));
     }
 
     [Theory]

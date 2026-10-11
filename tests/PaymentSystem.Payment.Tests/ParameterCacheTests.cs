@@ -69,8 +69,9 @@ public class ParameterCacheTests
         Assert.Equal(Chip, await cache.FindEntryModeAsync("05"));
         Assert.Null(await cache.FindTypeAsync("0200", "999999"));     // tanımsız kod DB'ye gitmez
         Assert.Null(await cache.FindEntryModeAsync("99"));
-        Assert.Equal("51", await cache.FindResponseCodeAsync("3002"));
-        Assert.Null(await cache.FindResponseCodeAsync("9999"));
+        Assert.Equal("51", (await cache.FindInternalResponseCodeAsync("3002"))!.ResponseCode);
+        Assert.Null(await cache.FindInternalResponseCodeAsync("9999"));
+        Assert.Equal(["Insufficient funds"], await cache.FindDescriptionsAsync("51"));
 
         Assert.Equal(1, _repository.Loads);
         Assert.Contains(logger.Messages, m => m == "GetAsync: loaded 1 transaction routes, 1 entry modes and 1 response codes, next refresh in 10 min");

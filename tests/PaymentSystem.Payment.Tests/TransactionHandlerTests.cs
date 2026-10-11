@@ -82,7 +82,28 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         CardAcceptor = "PAYMENT SYSTEM POS SIMULATOR".PadRight(40)
     };
 
-    private async Task<string> AuthorizeAsync(TransactionRequest request) => await Handler.ProcessAsync(request);
+    // Son reddin exception'ı; testler F39'u karşılaştırır, alanları gerektiğinde buradan kontrol eder.
+    private TransactionException? LastFailure { get; set; }
+
+    // Onayda F39 döner; red / teknik hatada TransactionException'ın F39'u.
+    private async Task<string> AuthorizeAsync(TransactionRequest request)
+    {
+        try
+        {
+            return await Handler.ProcessAsync(request);
+        }
+        catch (TransactionException ex)
+        {
+            LastFailure = ex;
+            return ex.ResponseCode;
+        }
+    }
+
+    private async Task<Guid> StoredIdAsync()
+    {
+        await using var connection = Db.Create();
+        return await connection.ExecuteScalarAsync<Guid>("SELECT Guid FROM dbo.DebitTransaction");
+    }
 
     private async Task<decimal> BalanceAsync()
     {
@@ -526,6 +547,84 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
 
         Assert.Equal("96", await AuthorizeAsync(Sale()));
         Assert.Equal("96", Assert.Single(await TransactionsAsync()).F39_ResponseCode);
+        Assert.Equal(("0000", "IRC 0000 is not defined", AccountNo), (LastFailure!.Irc, LastFailure.Description, LastFailure.AccountNo));
+        Assert.True(LastFailure.IsTechnical);
+    }
+
+    [Fact]
+    public async Task Decline_ThrowsTransactionExceptionAfterRecordIsCommitted()
+    {
+        await SeedAsync(balance: 10m);
+
+        var ex = await Assert.ThrowsAsync<TransactionException>(() => Handler.ProcessAsync(Sale(15000)));
+
+        Assert.Equal("51", ex.ResponseCode);
+        Assert.Equal("3002", ex.Irc);
+        Assert.Equal("Insufficient funds", ex.Description);
+        Assert.Equal("411111********11", ex.CardNumber);
+        Assert.Equal(await StoredIdAsync(), ex.TransactionId);
+        Assert.Equal(AccountNo, ex.AccountNo);
+        Assert.False(ex.IsTechnical);
+        Assert.DoesNotContain(Pan, ex.Message);
+        Assert.Equal("51", Assert.Single(await TransactionsAsync()).F39_ResponseCode);   // kayıt geri alınmadı
+    }
+
+    [Fact]
+    public async Task CardNotFound_ExceptionHasNoAccount()
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.CardNumber = "4000000000000002";
+
+        var ex = await Assert.ThrowsAsync<TransactionException>(() => Handler.ProcessAsync(request));
+
+        Assert.Equal(("14", "2001", "Card not found"), (ex.ResponseCode, ex.Irc, ex.Description));
+        Assert.Equal(await StoredIdAsync(), ex.TransactionId);
+        Assert.Null(ex.AccountNo);
+    }
+
+    [Fact]
+    public async Task UndefinedTransactionType_ExceptionHasNoTransactionId()
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.ProcessingCode = "990000";
+
+        var ex = await Assert.ThrowsAsync<TransactionException>(() => Handler.ProcessAsync(request));
+
+        Assert.Equal(("12", "1001"), (ex.ResponseCode, ex.Irc));
+        Assert.Null(ex.TransactionId);
+        Assert.Empty(await TransactionsAsync());
+    }
+
+    [Fact]
+    public async Task DuplicateOfDeclinedRequest_ThrowsAgainWithAccount()
+    {
+        await SeedAsync(balance: 10m);
+        await AuthorizeAsync(Sale(15000));
+
+        var ex = await Assert.ThrowsAsync<TransactionException>(() => Handler.ProcessAsync(Sale(15000)));
+
+        Assert.Equal("51", ex.ResponseCode);
+        Assert.Null(ex.Irc);
+        Assert.Equal("Duplicate request: Insufficient funds", ex.Description);
+        Assert.Equal(await StoredIdAsync(), ex.TransactionId);
+        Assert.Equal(AccountNo, ex.AccountNo);
+    }
+
+    [Fact]
+    public async Task DatabaseUnreachable_ThrowsTechnical91WithCause()
+    {
+        var unreachable = new SqlConnectionFactory("Server=127.0.0.1,1;Database=PaymentSystem;User Id=sa;Password=x;Connect Timeout=1;TrustServerCertificate=True");
+        var handler = new TransactionHandler(new TransactionRepository(unreachable), TestParameters.Create(unreachable), Rates, Clock,
+            NullLogger<TransactionHandler>.Instance);
+
+        var ex = await Assert.ThrowsAsync<TransactionException>(() => handler.ProcessAsync(Sale()));
+
+        Assert.Equal(("91", "System unavailable"), (ex.ResponseCode, ex.Description));
+        Assert.True(ex.IsTechnical);
+        Assert.NotNull(ex.InnerException);
+        Assert.Equal("411111********11", ex.CardNumber);
     }
 
     [Fact]

@@ -8,9 +8,10 @@ using PaymentSystem.Payment.Parameters;
 
 namespace PaymentSystem.Payment.Transactions;
 
-// Gate'ten gelen bir finansal isteği karara bağlar ve F39 cevap kodunu döner. Kararlar burada, SQL TransactionRepository'de.
+// Gate'ten gelen bir finansal isteği karara bağlar. Kararlar burada, SQL TransactionRepository'de.
 // Karar bir iç koddur (IRC, bkz. InternalResponseCodes); POS'a dönen F39 InternalResponseCode tablosundan (ParameterCache) okunur.
 // İşlem kaydı, bakiye ve kart güncellemesi tek bir SQL transaction'ında (IDebitSession) yapılır: ya hepsi yazılır ya hiçbiri.
+// Onayda F39'u döner; onaylanmayan her işlem (red ya da teknik hata) TransactionException fırlatır.
 public sealed class TransactionHandler(
     ITransactionRepository repository, ParameterCache parameters, ExchangeRateCache rates, TimeProvider clock,
     ILogger<TransactionHandler> logger)
@@ -21,28 +22,53 @@ public sealed class TransactionHandler(
     // UUID v5 için bu sisteme ait sabit namespace. Değiştirilirse eski kayıtların anahtarı yeniden hesaplanamaz.
     private static readonly Guid IdempotencyNamespace = new("6f1c2a7e-3b8d-4c5f-9a0e-2d7b8c1e4f35");
 
+    // İşlem ilerledikçe öğrenilen ve hata anında exception'a konan bilgiler.
+    private sealed class Trace
+    {
+        public Guid? Id { get; set; }
+        public string? AccountNo { get; set; }
+    }
+
+    // Onay: F39. Red ya da teknik hata: TransactionException (F39, açıklama, maskeli kart no, işlem Guid'i, hesap no).
     public async Task<string> ProcessAsync(TransactionRequest request)
+    {
+        var trace = new Trace();
+        try
+        {
+            return await AuthorizeAsync(request, trace);
+        }
+        catch (Exception ex) when (ex is not TransactionException)
+        {
+            // Örn. DB'ye ulaşılamıyor. Transaction commit edilmediği için para hareketi yok; Gate'e "şu an yapılamıyor" denir.
+            throw new TransactionException(
+                ResponseCodes.SystemUnavailable, irc: null, "System unavailable", request.CardNumber, trace.Id, trace.AccountNo, ex);
+        }
+    }
+
+    private async Task<string> AuthorizeAsync(TransactionRequest request, Trace trace)
     {
         // MTI + F3 -> (Otc, Ots) -> işlem adı. Tanımsız bir işlem için kayıt açılmaz: para hareketi yok, tekrarı da aynı cevabı alır.
         var type = await parameters.FindTypeAsync(request.Mti, request.ProcessingCode);
         if (type is null)
         {
             logger.LogWarning("{Method}: no transaction type for MTI {Mti} F3 {ProcessingCode} (TID {TerminalId} STAN {Stan}) - IRC {Irc}",
-                nameof(ProcessAsync), request.Mti, request.ProcessingCode, request.TerminalId, request.Stan,
+                nameof(AuthorizeAsync), request.Mti, request.ProcessingCode, request.TerminalId, request.Stan,
                 InternalResponseCodes.TransactionTypeNotDefined);
-            return await ToResponseCodeAsync(request, InternalResponseCodes.TransactionTypeNotDefined);
+            throw await FailureAsync(request, InternalResponseCodes.TransactionTypeNotDefined, trace);
         }
 
         // TL karşılığı bir kez, kayıt açılmadan hesaplanır: aynı kur hem LocalTxnAmount'a yazılır hem bakiyeden düşülür.
         var lira = ToLira(request);
         logger.LogInformation("{Method}: {Type} TID {TerminalId} STAN {Stan} PAN {Pan} amount {Amount} {Currency} (TRY {Lira})",
-            nameof(ProcessAsync), type.Name, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber),
+            nameof(AuthorizeAsync), type.Name, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber),
             ToAmount(request), request.CurrencyCode, lira);
 
         // Kaydın Guid'i isteğin kendisinden türetilir (bkz. IdempotencyKey): tekrar gelen istek aynı Guid'i üretir ve PK'ya takılır.
         // Aynı anda gelirse ilk transaction bitene kadar bekler, sonra hata alır; böylece aynı işlem asla iki kez karara bağlanmaz.
         var id = IdempotencyKey(request);
-        string? irc = null, responseCode = null;
+        trace.Id = id;
+        string? irc = null;
+        InternalResponseCode? definition = null;
         await using (var session = await repository.BeginAsync())
         {
             var inserted = await session.TryInsertAsync(new DebitTransaction(
@@ -55,23 +81,28 @@ public sealed class TransactionHandler(
                 request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor: request.CardAcceptor?.TrimEnd()));
             if (inserted)
             {
-                irc = await DecideAsync(session, request, type.Name, lira);
-                responseCode = await ToResponseCodeAsync(request, irc);
-                await session.SetResponseCodeAsync(id, responseCode);
+                irc = await DecideAsync(session, request, type.Name, lira, trace);
+                definition = await parameters.FindInternalResponseCodeAsync(irc);
+                await session.SetResponseCodeAsync(id, definition?.ResponseCode ?? ResponseCodes.SystemMalfunction);
                 await session.CommitAsync();
             }
         }
 
         // Tekrar gelen istek: oturum commit edilmeden kapandı (rollback), önceki karar ayrı bir bağlantıyla okunur.
-        if (responseCode is null)
-            return await PreviousResponseAsync(request, id);
+        if (irc is null)
+            return await PreviousResponseAsync(request, id, trace);
 
         logger.LogInformation("{Method}: {Type} {Id} TID {TerminalId} STAN {Stan} PAN {Pan} committed -> IRC {Irc} F39 {ResponseCode}",
-            nameof(ProcessAsync), type.Name, id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), irc, responseCode);
-        return responseCode;
+            nameof(AuthorizeAsync), type.Name, id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), irc,
+            definition?.ResponseCode ?? ResponseCodes.SystemMalfunction);
+
+        // Red kaydı commit edildi; exception ancak şimdi fırlatılır ki kayıt geri alınmasın.
+        if (irc == InternalResponseCodes.Approved && definition is not null)
+            return definition.ResponseCode;
+        throw Failure(request, irc, definition, trace);
     }
 
-    private async Task<string> DecideAsync(IDebitSession session, TransactionRequest request, string typeName, decimal? lira)
+    private async Task<string> DecideAsync(IDebitSession session, TransactionRequest request, string typeName, decimal? lira, Trace trace)
     {
         // F22 opsiyonel; geldiyse ilk iki hanesi EntryMode tablosunda tanımlı olmalı (3. hane PIN yeteneği, karara girmez).
         EntryMode? entryMode = null;
@@ -85,6 +116,7 @@ public sealed class TransactionHandler(
         var card = await session.GetCardAsync(request.CardNumber);
         if (card is null)
             return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardNotFound, "card not found");
+        trace.AccountNo = card.AccountNo;
 
         if (IsExpired(card.ExpiryDate) || !ExpiryMatches(card.ExpiryDate, request.CardExpiry))
             return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardExpired, "card expired or F14 does not match");
@@ -133,7 +165,7 @@ public sealed class TransactionHandler(
         return InternalResponseCodes.Approved;
     }
 
-    // Red kararını sebebiyle loglar ve iç kodu (IRC) döner; F39 ToResponseCodeAsync'te tablodan bulunur.
+    // Red kararını sebebiyle loglar ve iç kodu (IRC) döner; F39 InternalResponseCode tablosundan bulunur.
     private string Decline(string method, TransactionRequest request, string irc, string reason)
     {
         logger.LogWarning("{Method}: declined STAN {Stan} PAN {Pan} - {Reason} -> IRC {Irc}",
@@ -141,25 +173,39 @@ public sealed class TransactionHandler(
         return irc;
     }
 
-    // IRC -> F39, InternalResponseCode tablosundan. Tanımsız IRC'de hata loglanır ve 96 döner: işlem asla tahminle onaylanmaz.
-    private async Task<string> ToResponseCodeAsync(TransactionRequest request, string irc)
+    private async Task<TransactionException> FailureAsync(TransactionRequest request, string irc, Trace trace) =>
+        Failure(request, irc, await parameters.FindInternalResponseCodeAsync(irc), trace);
+
+    // IRC tabloda tanımlıysa onun F39'u ve açıklaması; değilse hata loglanır ve 96: işlem asla tahminle onaylanmaz.
+    private TransactionException Failure(TransactionRequest request, string irc, InternalResponseCode? definition, Trace trace)
     {
-        if (await parameters.FindResponseCodeAsync(irc) is { } responseCode)
-            return responseCode;
+        if (definition is not null)
+            return new TransactionException(definition.ResponseCode, irc, definition.Description, request.CardNumber, trace.Id, trace.AccountNo);
 
         logger.LogError("{Method}: IRC {Irc} is not defined in InternalResponseCode (STAN {Stan} PAN {Pan}) - responding {ResponseCode}",
-            nameof(ToResponseCodeAsync), irc, request.Stan, PanMask.Mask(request.CardNumber), ResponseCodes.SystemMalfunction);
-        return ResponseCodes.SystemMalfunction;
+            nameof(Failure), irc, request.Stan, PanMask.Mask(request.CardNumber), ResponseCodes.SystemMalfunction);
+        return new TransactionException(
+            ResponseCodes.SystemMalfunction, irc, $"IRC {irc} is not defined", request.CardNumber, trace.Id, trace.AccountNo);
     }
 
-    // Tekrar gelen istek: ilk işlemin kararı aynen döner (ilk istek onaylandıysa tekrarı da "00" alır ama para tekrar düşmez).
-    private async Task<string> PreviousResponseAsync(TransactionRequest request, Guid id)
+    // Tekrar gelen istek: ilk işlemin kararı aynen döner (ilk istek onaylandıysa tekrarı da onay alır ama para tekrar düşmez).
+    // İlk karar redse tekrarı da aynı F39 ile TransactionException alır; kayıtta IRC tutulmadığı için açıklama F39'dan bulunur.
+    private async Task<string> PreviousResponseAsync(TransactionRequest request, Guid id, Trace trace)
     {
-        var previous = await repository.GetResponseCodeAsync(id);
+        var previous = (await repository.GetPreviousAsync(id))!;   // kayıt sadece F39 yazılarak commit edildiği için boş olamaz
+        trace.AccountNo = previous.AccountNo;
 
         logger.LogWarning("{Method}: duplicate request {Id} (TID {TerminalId} STAN {Stan} PAN {Pan}) - returning previous F39 {ResponseCode}",
-            nameof(PreviousResponseAsync), id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), previous);
-        return previous!;   // kayıt sadece F39 yazılarak commit edildiği için boş olamaz
+            nameof(PreviousResponseAsync), id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), previous.ResponseCode);
+
+        var approved = await parameters.FindInternalResponseCodeAsync(InternalResponseCodes.Approved);
+        if (previous.ResponseCode == approved?.ResponseCode)
+            return previous.ResponseCode;
+
+        var descriptions = await parameters.FindDescriptionsAsync(previous.ResponseCode);
+        var description = descriptions.Count > 0 ? string.Join(" / ", descriptions) : $"Declined with F39 {previous.ResponseCode}";
+        throw new TransactionException(
+            previous.ResponseCode, irc: null, $"Duplicate request: {description}", request.CardNumber, id, previous.AccountNo);
     }
 
     // Tabloda STAN / terminal no olmadığı için istek, tekrarında da aynı kalan alanlarla tanımlanır: MTI, kart, işlem kodu,

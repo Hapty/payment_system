@@ -195,6 +195,18 @@ dotnet run --project src/PaymentSystem.Payment --launch-profile http
 ### İşlem akışı (`Transactions/`)
 `TransactionQueueConsumer` kuyruktaki isteği (`TransactionRequest` JSON) alır, `TransactionHandler`'a verir ve `{ "responseCode": "00" }` cevabını Gate'e yazar. Teknik hatalarda da cevap verilir: okunamayan / geçersiz mesaj → `30`, DB'ye ulaşılamadı gibi beklenmeyen hata → `91` (transaction commit edilmediği için para hareketi yok).
 
+Onaylanmayan her işlemde `TransactionHandler` bir `TransactionException` fırlatır. Bu exception iş reddinde de (`51`, `14`, `57` ...) teknik hatada da (`91`, `96`) şu alanları taşır:
+
+| Alan | İçerik |
+|---|---|
+| `ResponseCode` / `Irc` | F39 ve iç kod (teknik hatada ve tekrar gelen istekte IRC yok) |
+| `Description` | `InternalResponseCode.Description` ya da teknik hatanın açıklaması |
+| `CardNumber` | **Maskeli** (`411111********11`) |
+| `TransactionId` | `DebitTransaction.Guid` (işlem tipi tanımsızsa kayıt açılmadığı için boş) |
+| `AccountNo` | Kartın hesabı (kart bulunamadıysa boş) |
+
+Red kaydı F39'u ile commit edildikten sonra fırlatılır, kayıt geri alınmaz. `TransactionQueueConsumer` exception'ı yakalar: iş reddini uyarı, teknik hatayı hata olarak loglar ve Gate'e sadece F39'u döner (`{ "responseCode": "51" }`).
+
 1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur (tanım cache'inden, bkz. Tanım tabloları cache'i). Tanımsızsa IRC `1001` → `12` (kayıt açılmaz).
 2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** kaydın `Guid`'i rastgele değil, isteğin `MTI + F2 + F3 + F4 + F13 + F12` alanlarından türetilen bir UUID v5'tir (şemaya kolon eklenmez). Aynı istek tekrar gelirse (aynı anda gelse bile) aynı Guid PK'ya takılır, ilk işlemin F39'u aynen döner, para ikinci kez düşmez. Sınır: tabloda STAN / terminal no olmadığı için aynı kartla aynı saniyede aynı tutarda iki gerçek işlem, ikincisi tekrar sayılır.
 3. Kontroller, sırayla. Her sebep bir iç kod (IRC) üretir; POS'a dönen F39 `InternalResponseCode` tablosundan okunur (aşağıdaki F39'lar seed değerleridir). IRC tabloda yoksa hata loglanır ve `96` döner. Teknik hatalar (`30`, `91`) DB'ye bağlı olmadığı için kodda sabittir.

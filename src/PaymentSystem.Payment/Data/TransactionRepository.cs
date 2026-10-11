@@ -22,10 +22,17 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
         }
     }
 
-    public async Task<string?> GetResponseCodeAsync(Guid id)
+    public async Task<PreviousResponse?> GetPreviousAsync(Guid id)
     {
         await using var connection = db.Create();
-        return await connection.ExecuteScalarAsync<string?>("SELECT F39_ResponseCode FROM dbo.DebitTransaction WHERE Guid = @id", new { id });
+        return await connection.QuerySingleOrDefaultAsync<PreviousResponse>(
+            """
+            SELECT d.F39_ResponseCode AS ResponseCode, c.AccountNo
+            FROM dbo.DebitTransaction d
+            LEFT JOIN dbo.Card c ON c.CardNumber = d.F2_CardNo
+            WHERE d.Guid = @id
+            """,
+            new { id });
     }
 
     private sealed class DebitSession(SqlConnection connection, SqlTransaction transaction) : IDebitSession
