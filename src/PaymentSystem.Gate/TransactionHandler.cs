@@ -4,53 +4,26 @@ using PaymentSystem.Iso8583;
 
 namespace PaymentSystem.Gate;
 
-// Gate'in çekirdeği, soketlerden bağımsız: istek baytları girer, cevap baytları çıkar.
+// Gate'in çekirdeği, HTTP'den bağımsız: alanları doğrulanmış bir ISO8583 istek mesajı girer, cevap mesajı çıkar.
 public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<TransactionHandler> logger)
 {
-    private static readonly int[] RequiredFinancialFields = [2, 3, 4, 7, 11, 12, 13, 41, 49];
+    public const string FinancialRequestMti = "0200";
+
+    public static IReadOnlyList<int> RequiredFinancialFields { get; } = [2, 3, 4, 7, 11, 12, 13, 41, 49];
+
+    // Cevapta geri gönderilen istek alanları: istemci cevabı kendi isteğiyle bunlarla eşleştirir.
     private static readonly int[] EchoedFinancialFields = [2, 3, 4, 7, 11, 12, 13, 37, 41, 42, 49];
-    private static readonly int[] EchoedNetworkFields = [7, 11, 70];
 
-    private readonly IsoMessagePacker _packer = IsoMessagePacker.Default;
-
-    // Geri gönderilecek cevabı döner; mesaj kullanılamaz durumdaysa ve bağlantı kapatılmalıysa null döner.
-    public async Task<byte[]?> HandleAsync(byte[] data, CancellationToken cancellationToken)
+    public async Task<IsoMessage> ProcessAsync(IsoMessage request, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
-        IsoMessage request;
-        try
-        {
-            request = _packer.Unpack(data);
-        }
-        catch (IsoFormatException ex) when (ex.Mti is { } mti && new IsoMessage(mti).IsRequest)
-        {
-            // MTI okunabildi, yani POS'a mesajının bozuk olduğu yine de söylenebilir.
-            logger.LogWarning("Format error in {Mti} message, field {Field}: {Reason}", mti, ex.FieldNumber, ex.Reason);
-            return _packer.Pack(new IsoMessage(new IsoMessage(mti).ToResponseMti()).Set(39, ResponseCodes.FormatError));
-        }
-        catch (IsoFormatException ex)
-        {
-            logger.LogWarning("Dropping unreadable message: {Reason}", ex.Message);
-            return null;
-        }
-
-        if (!request.IsRequest)
-        {
-            logger.LogWarning("Dropping {Mti}: the Gate only accepts requests", request.Mti);
-            return null;
-        }
-
-        var response = request.Mti switch
-        {
-            // Network yönetimi (echo testi, sign-on): hattın çalıştığını göstermek için Gate kendisi cevaplar.
-            "0800" => Echo(request, EchoedNetworkFields).Set(39, ResponseCodes.Approved),
-            "0200" => await AuthorizeAsync(request, cancellationToken),
-            _ => new IsoMessage(request.ToResponseMti()).Set(39, ResponseCodes.InvalidTransaction)
-        };
+        var response = request.Mti == FinancialRequestMti
+            ? await AuthorizeAsync(request, cancellationToken)
+            : new IsoMessage(request.ToResponseMti()).Set(39, ResponseCodes.InvalidTransaction);
 
         logger.LogInformation("{RequestMti} -> {ResponseMti} STAN {Stan} PAN {Pan} F39 {ResponseCode} in {ElapsedMs} ms",
             request.Mti, response.Mti, request[11], PanMask.Mask(request[2]), response[39], stopwatch.ElapsedMilliseconds);
-        return _packer.Pack(response);
+        return response;
     }
 
     private async Task<IsoMessage> AuthorizeAsync(IsoMessage request, CancellationToken cancellationToken)
@@ -59,18 +32,17 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         if (missing.Length > 0)
         {
             logger.LogWarning("0200 STAN {Stan} is missing required fields {Fields}", request[11], string.Join(", ", missing));
-            return Echo(request, EchoedFinancialFields).Set(39, ResponseCodes.FormatError);
+            return Echo(request).Set(39, ResponseCodes.FormatError);
         }
 
         var result = await paymentClient.AuthorizeAsync(ToPaymentRequest(request), cancellationToken);
-        return Echo(request, EchoedFinancialFields).Set(39, result.ResponseCode);
+        return Echo(request).Set(39, result.ResponseCode);
     }
 
-    // Cevabı, POS'un cevabı kendi isteğiyle eşleştirmek için kullandığı istek alanlarıyla başlatır.
-    private static IsoMessage Echo(IsoMessage request, int[] fields)
+    private static IsoMessage Echo(IsoMessage request)
     {
         var response = new IsoMessage(request.ToResponseMti());
-        foreach (var field in fields)
+        foreach (var field in EchoedFinancialFields)
         {
             if (request[field] is { } value)
                 response.Set(field, value);

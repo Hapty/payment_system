@@ -40,11 +40,15 @@ services:
     depends_on:
       db-init:
         condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
     environment:
       MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       ConnectionStrings__PaymentSystem: "Server=db,1433;Database=PaymentSystem;User Id=sa;TrustServerCertificate=True"
+      ConnectionStrings__RabbitMq: "amqp://payment@rabbitmq:5672"
     ports:
-      - "5002:8080"                               # CRUD endpoint'leri: http://localhost:5002/api/...
+      - "5002:8080"                               # sadece yönetim: CRUD + kur endpoint'leri (işlemler kuyruktan gelir)
     restart: unless-stopped
 
   gate:
@@ -52,11 +56,31 @@ services:
       context: .                                  # repo kökü: Gate src/PaymentSystem.Iso8583'e de ihtiyaç duyar
       dockerfile: src/PaymentSystem.Gate/Dockerfile
     container_name: payment_system_gate
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     environment:
-      Gate__Port: "8583"
-      Gate__PaymentBaseUrl: "http://payment:8080"
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      Gate__RabbitMqUri: "amqp://payment@rabbitmq:5672"
     ports:
-      - "8583:8583"
+      - "8080:8080"                               # işlemlerin tek girişi: POST http://localhost:8080/api/transactions
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    container_name: payment_system_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: payment
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"                               # AMQP (Gate ve Payment lokalde çalışırken)
+      - "15672:15672"                             # yönetim arayüzü: http://localhost:15672 (payment / RABBITMQ_PASSWORD)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
 volumes:
