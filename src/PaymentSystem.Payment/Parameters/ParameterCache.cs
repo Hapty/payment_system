@@ -24,7 +24,7 @@ public sealed class ParameterCache(
     private sealed record Snapshot(
         IReadOnlyDictionary<(string Mti, string ProcessingCode), RoutedType> Routes,
         IReadOnlyDictionary<string, EntryMode> EntryModes,
-        IReadOnlyDictionary<string, string> ResponseCodes,
+        IReadOnlyDictionary<string, InternalResponseCode> ResponseCodes,
         DateTimeOffset LoadedAt);
 
     public async Task<RoutedType?> FindTypeAsync(string mti, string processingCode) =>
@@ -33,9 +33,14 @@ public sealed class ParameterCache(
     public async Task<EntryMode?> FindEntryModeAsync(string code) =>
         (await GetAsync()).EntryModes.GetValueOrDefault(code);
 
-    // IRC'nin F39 karşılığı; null: IRC tabloda tanımlı değil.
-    public async Task<string?> FindResponseCodeAsync(string irc) =>
+    // IRC'nin F39 karşılığı ve açıklaması; null: IRC tabloda tanımlı değil.
+    public async Task<InternalResponseCode?> FindInternalResponseCodeAsync(string irc) =>
         (await GetAsync()).ResponseCodes.GetValueOrDefault(irc);
+
+    // Bu F39'a çıkan IRC'lerin açıklamaları, IRC sırasıyla (birkaç IRC aynı F39'a çıkabilir).
+    public async Task<IReadOnlyList<string>> FindDescriptionsAsync(string responseCode) =>
+        (await GetAsync()).ResponseCodes.Values
+            .Where(r => r.ResponseCode == responseCode).OrderBy(r => r.Irc).Select(r => r.Description).ToList();
 
     public void Invalidate()
     {
@@ -62,7 +67,7 @@ public sealed class ParameterCache(
             snapshot = new Snapshot(
                 routes.ToDictionary(r => (r.Mti, r.ProcessingCode), r => new RoutedType(r.Otc, r.Ots, r.Name)),
                 entryModes.ToDictionary(e => e.Code),
-                responseCodes.ToDictionary(r => r.Irc, r => r.ResponseCode),
+                responseCodes.ToDictionary(r => r.Irc),
                 clock.GetUtcNow());
 
             if (Interlocked.Read(ref _version) == version)

@@ -149,12 +149,15 @@ public sealed class TransactionQueueConsumer(
         {
             return await handler.ProcessAsync(request);
         }
-        catch (Exception ex)
+        catch (TransactionException ex)
         {
-            // Örn. DB'ye ulaşılamıyor. Transaction commit edilmediği için para hareketi yok; Gate'e "şu an yapılamıyor" denir.
-            logger.LogError(ex, "{Method}: transaction {CorrelationId} (TID {TerminalId} STAN {Stan} PAN {Pan}) failed - responding 91",
-                nameof(DecideAsync), properties.CorrelationId, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber));
-            return ResponseCodes.SystemUnavailable;
+            // Onaylanmayan her işlem buraya düşer: iş reddi uyarı, teknik hata (91 / 96) hata olarak loglanır. Gate'e sadece F39 gider.
+            logger.Log(ex.IsTechnical ? LogLevel.Error : LogLevel.Warning, ex.InnerException,
+                "{Method}: transaction {CorrelationId} TID {TerminalId} STAN {Stan} not approved: F39 {ResponseCode} {Description} " +
+                "(IRC {Irc}) transaction {TransactionId} PAN {Pan} account {AccountNo}",
+                nameof(DecideAsync), properties.CorrelationId, request.TerminalId, request.Stan, ex.ResponseCode, ex.Description,
+                ex.Irc ?? "-", ex.TransactionId?.ToString() ?? "-", ex.CardNumber, ex.AccountNo ?? "-");
+            return ex.ResponseCode;
         }
     }
 

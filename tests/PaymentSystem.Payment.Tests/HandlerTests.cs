@@ -65,7 +65,8 @@ public class HandlerTests
         public FakeSession? Session { get; private set; }
 
         public Task<IDebitSession> BeginAsync() => Task.FromResult<IDebitSession>(Session = new FakeSession(!Duplicate));
-        public Task<string?> GetResponseCodeAsync(Guid id) => Task.FromResult(PreviousResponseCode);
+        public Task<PreviousResponse?> GetPreviousAsync(Guid id) =>
+            Task.FromResult<PreviousResponse?>(PreviousResponseCode is null ? null : new(PreviousResponseCode, "ACC1"));
     }
 
     private sealed class FakeSession(bool insertSucceeds) : IDebitSession
@@ -134,7 +135,8 @@ public class HandlerTests
     {
         var repository = new FakeTransactionRepository { Duplicate = true, PreviousResponseCode = "51" };
 
-        Assert.Equal("51", await TransactionHandler(repository).ProcessAsync(Sale()));
+        var ex = await Assert.ThrowsAsync<TransactionException>(() => TransactionHandler(repository).ProcessAsync(Sale()));
+        Assert.Equal(("51", "Duplicate request: Declined with F39 51", "ACC1"), (ex.ResponseCode, ex.Description, ex.AccountNo));
         Assert.Null(repository.Session!.ResponseCode);
         Assert.False(repository.Session.Committed);
         Assert.True(repository.Session.Disposed);
@@ -145,7 +147,8 @@ public class HandlerTests
     {
         var repository = new FakeTransactionRepository();
 
-        Assert.Equal("12", await TransactionHandler(repository, knownType: false).ProcessAsync(Sale()));
+        var ex = await Assert.ThrowsAsync<TransactionException>(() => TransactionHandler(repository, knownType: false).ProcessAsync(Sale()));
+        Assert.Equal(("12", "1001", "Transaction type not defined"), (ex.ResponseCode, ex.Irc, ex.Description));
         Assert.Null(repository.Session);
     }
 }
