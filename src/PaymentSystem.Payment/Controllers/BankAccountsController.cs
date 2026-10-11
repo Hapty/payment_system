@@ -1,12 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Controllers;
 
 [ApiController]
 [Route("api/bank-accounts")]
-public class BankAccountsController(BankAccountRepository accounts) : ControllerBase
+public class BankAccountsController(BankAccountHandler accounts) : ControllerBase
 {
     [HttpGet]
     public Task<IReadOnlyList<BankAccount>> GetAll() => accounts.GetAllAsync();

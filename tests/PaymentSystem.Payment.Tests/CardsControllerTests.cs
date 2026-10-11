@@ -1,7 +1,9 @@
 using Dapper;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
 using PaymentSystem.Payment.Controllers;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Tests;
@@ -9,7 +11,7 @@ namespace PaymentSystem.Payment.Tests;
 public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private CardRepository Repository => new(Db);
-    private CardsController Controller => new(Repository);
+    private CardsController Controller => new(new CardHandler(Repository, NullLogger<CardHandler>.Instance));
 
     private static Card NewCard(string number = "4111111111111111") => new()
     {

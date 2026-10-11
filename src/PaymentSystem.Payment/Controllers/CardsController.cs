@@ -1,12 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Controllers;
 
 [ApiController]
 [Route("api/cards")]
-public class CardsController(CardRepository cards) : ControllerBase
+public class CardsController(CardHandler cards) : ControllerBase
 {
     [HttpGet]
     public Task<IReadOnlyList<Card>> GetAll() => cards.GetAllAsync();

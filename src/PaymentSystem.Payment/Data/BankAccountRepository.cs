@@ -5,7 +5,7 @@ using PaymentSystem.Payment.Models;
 namespace PaymentSystem.Payment.Data;
 
 // dbo.BankAccount için SQL sorguları (Dapper).
-public sealed class BankAccountRepository(SqlConnectionFactory db)
+public sealed class BankAccountRepository(SqlConnectionFactory db) : IBankAccountRepository
 {
     private const string Columns = "AccountNo, AccountStatus, Balance";
 

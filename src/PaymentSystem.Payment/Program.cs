@@ -1,6 +1,7 @@
 using Microsoft.Data.SqlClient;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.ExchangeRates;
+using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Transactions;
 using RabbitMQ.Client;
 
@@ -21,12 +22,20 @@ var connectionString = new SqlConnectionStringBuilder(builder.Configuration.GetC
 }.ConnectionString;
 
 builder.Services.AddSingleton(new SqlConnectionFactory(connectionString));
-builder.Services.AddSingleton<BankAccountRepository>();
-builder.Services.AddSingleton<CardRepository>();
-builder.Services.AddSingleton<TransactionTypeRepository>();
-builder.Services.AddSingleton<MtiProcessingCodeRepository>();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<TransactionProcessor>();
+
+// Controller / kuyruk consumer'ı -> handler (iş kuralları, loglama) -> repository (SQL).
+builder.Services.AddSingleton<IBankAccountRepository, BankAccountRepository>();
+builder.Services.AddSingleton<ICardRepository, CardRepository>();
+builder.Services.AddSingleton<ITransactionTypeRepository, TransactionTypeRepository>();
+builder.Services.AddSingleton<IMtiProcessingCodeRepository, MtiProcessingCodeRepository>();
+builder.Services.AddSingleton<ITransactionRepository, TransactionRepository>();
+builder.Services.AddSingleton<BankAccountHandler>();
+builder.Services.AddSingleton<CardHandler>();
+builder.Services.AddSingleton<TransactionTypeHandler>();
+builder.Services.AddSingleton<MtiProcessingCodeHandler>();
+builder.Services.AddSingleton<ExchangeRateHandler>();
+builder.Services.AddSingleton<TransactionHandler>();
 
 // İşlemler HTTP'den değil, Gate'in RabbitMQ'ya yazdığı kuyruktan gelir (request-reply). Şifre RABBITMQ_PASSWORD'den gelir.
 builder.Services.AddSingleton<IConnectionFactory>(new ConnectionFactory

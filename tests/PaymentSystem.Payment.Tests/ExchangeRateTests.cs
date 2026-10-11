@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using PaymentSystem.Payment.Controllers;
 using PaymentSystem.Payment.ExchangeRates;
+using PaymentSystem.Payment.Handlers;
 
 namespace PaymentSystem.Payment.Tests;
 
@@ -53,6 +54,9 @@ public class ExchangeRateTests
 
     private static Task<HttpResponseMessage> Xml(string body) =>
         Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+
+    private static ExchangeRatesController Controller(ExchangeRateCache cache) =>
+        new(new ExchangeRateHandler(cache, NullLogger<ExchangeRateHandler>.Instance));
 
     private static ExchangeRateCache NewCache(TimeProvider clock, int maxAgeHours = 24) =>
         new(new MemoryCache(new MemoryCacheOptions()), clock, Options.Create(new ExchangeRateOptions { MaxAgeHours = maxAgeHours }));
@@ -136,7 +140,7 @@ public class ExchangeRateTests
         var cache = NewCache(new FixedClock(Now));
         cache.Store(TcmbClient.Parse(Bulletin));
 
-        var all = new ExchangeRatesController(cache).GetAll();
+        var all = Controller(cache).GetAll();
 
         Assert.Equal(["EUR", "JPY", "USD"], all.Select(r => r.Currency));
         Assert.Equal(new CachedRate("840", "USD", 49.2152m, new DateOnly(2026, 10, 8), Now, IsStale: false), all[2]);
@@ -144,7 +148,7 @@ public class ExchangeRateTests
 
     [Fact]
     public void Controller_GetAll_WithEmptyCache_ReturnsEmptyList() =>
-        Assert.Empty(new ExchangeRatesController(NewCache(new FixedClock(Now))).GetAll());
+        Assert.Empty(Controller(NewCache(new FixedClock(Now))).GetAll());
 
     [Theory]
     [InlineData("978")]
@@ -155,7 +159,7 @@ public class ExchangeRateTests
         var cache = NewCache(new FixedClock(Now));
         cache.Store(TcmbClient.Parse(Bulletin));
 
-        var rate = new ExchangeRatesController(cache).Get(code).Value!;
+        var rate = Controller(cache).Get(code).Value!;
 
         Assert.Equal(("978", "EUR", 55.0538m), (rate.CurrencyCode, rate.Currency, rate.SellingRate));
     }
@@ -168,7 +172,7 @@ public class ExchangeRateTests
         cache.Store(TcmbClient.Parse(Bulletin));
         clock.Now = Now.AddHours(25);
 
-        Assert.True(new ExchangeRatesController(cache).Get("USD").Value!.IsStale);
+        Assert.True(Controller(cache).Get("USD").Value!.IsStale);
     }
 
     [Theory]
@@ -180,7 +184,7 @@ public class ExchangeRateTests
         var cache = NewCache(new FixedClock(Now));
         cache.Store(TcmbClient.Parse(Bulletin));
 
-        Assert.IsType<NotFoundResult>(new ExchangeRatesController(cache).Get(code).Result);
+        Assert.IsType<NotFoundResult>(Controller(cache).Get(code).Result);
     }
 
     [Fact]

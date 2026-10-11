@@ -138,7 +138,7 @@ dotnet run --project src/PaymentSystem.Gate --launch-profile http
 İstemci için akış senkron kalır: Gate isteği kuyruğa yazar ve aynı HTTP isteği içinde cevabı bekler.
 
 ```
-Gate ──publish──► payment.transactions ──► Payment (TransactionQueueConsumer → TransactionProcessor)
+Gate ──publish──► payment.transactions ──► Payment (TransactionQueueConsumer → TransactionHandler → TransactionRepository)
   ▲   CorrelationId, ReplyTo, Expiration (TTL), Timestamp                 │
   └──────────────── amq.rabbitmq.reply-to (aynı CorrelationId) ◄──────────┘
 ```
@@ -165,6 +165,8 @@ Kuyruklar ve mesaj trafiği yönetim arayüzünden izlenebilir: http://localhost
 | MtiProcessingCode | `/api/mti-processing-codes`, `/api/mti-processing-codes/{mti}/{f3}` |
 | Kur cache'i (salt okunur, sadece `GET`) | `/api/exchange-rates`, `/api/exchange-rates/{840 \| USD}` |
 
+Katmanlar: **Controller** (sadece HTTP: sonucu 200/201/204/404/409'a çevirir) → **Handler** (`Handlers/`; iş kuralları ve `{Method}: ...` logları) → **Repository** (`Data/`; Dapper SQL, `I…Repository` arayüzleriyle). İşlem akışında controller yerine `TransactionQueueConsumer` → `TransactionHandler` → `TransactionRepository` vardır.
+
 Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `POST` → `409`, geçersiz alan → `400`, bulunamayan kayıt → `404`.
 
 Kurallar:
@@ -187,7 +189,7 @@ dotnet run --project src/PaymentSystem.Payment --launch-profile http
 Örnek istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http`.
 
 ### İşlem akışı (`Transactions/`)
-`TransactionQueueConsumer` kuyruktaki isteği (`TransactionRequest` JSON) alır, `TransactionProcessor`'a verir ve `{ "responseCode": "00" }` cevabını Gate'e yazar. Teknik hatalarda da cevap verilir: okunamayan / geçersiz mesaj → `30`, DB'ye ulaşılamadı gibi beklenmeyen hata → `91` (transaction commit edilmediği için para hareketi yok).
+`TransactionQueueConsumer` kuyruktaki isteği (`TransactionRequest` JSON) alır, `TransactionHandler`'a verir ve `{ "responseCode": "00" }` cevabını Gate'e yazar. Teknik hatalarda da cevap verilir: okunamayan / geçersiz mesaj → `30`, DB'ye ulaşılamadı gibi beklenmeyen hata → `91` (transaction commit edilmediği için para hareketi yok).
 
 1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur. Tanımsızsa `12` (kayıt açılmaz).
 2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** kaydın `Guid`'i rastgele değil, isteğin `MTI + F2 + F3 + F4 + F13 + F12` alanlarından türetilen bir UUID v5'tir (şemaya kolon eklenmez). Aynı istek tekrar gelirse (aynı anda gelse bile) aynı Guid PK'ya takılır, ilk işlemin F39'u aynen döner, para ikinci kez düşmez. Sınır: tabloda STAN / terminal no olmadığı için aynı kartla aynı saniyede aynı tutarda iki gerçek işlem, ikincisi tekrar sayılır.
@@ -212,7 +214,7 @@ Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzer
 ```
 TCMB today.xml ──(açılışta + her saat)──► ExchangeRateRefresher ──yazar──► IMemoryCache ("fx:USD" ...)
                                                                                │ sadece okur
-İstemci → Gate → RabbitMQ → Payment / TransactionProcessor: TL karşılık = tutar × döviz satış kuru (kuruşa, yarım yukarı)
+İstemci → Gate → RabbitMQ → Payment / TransactionHandler: TL karşılık = tutar × döviz satış kuru (kuruşa, yarım yukarı)
 ```
 - İşlem akışı TCMB'ye **hiç gitmez**, kuru sadece cache'ten okur; satışın hızı dış servise bağlı değildir.
 - Kur: TCMB `ForexSelling` (döviz satış) / `Unit` (JPY gibi kurlar 100 birim için yayımlanır). F49'daki ISO 4217 sayısal kod TCMB'nin harf koduna çevrilir (`840` → USD, `978` → EUR ...).
