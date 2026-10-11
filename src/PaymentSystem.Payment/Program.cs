@@ -6,6 +6,13 @@ using RabbitMQ.Client;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Tek satırlık, zaman damgalı konsol logu: her işlem adımı "{Method}: ..." ile başlar, kart numarası hep maskelidir.
+builder.Logging.AddSimpleConsole(options =>
+{
+    options.SingleLine = true;
+    options.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
+});
+
 // sa şifresi appsettings'te durmaz: MSSQL_SA_PASSWORD ortam değişkeninden gelir (.env ile aynı anahtar).
 var connectionString = new SqlConnectionStringBuilder(builder.Configuration.GetConnectionString("PaymentSystem"))
 {

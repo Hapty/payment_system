@@ -17,12 +17,14 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
     public async Task<IsoMessage> ProcessAsync(IsoMessage request, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        if (request.Mti != FinancialRequestMti)
+            logger.LogWarning("{Method}: unsupported MTI {Mti} STAN {Stan} - responding 12", nameof(ProcessAsync), request.Mti, request[11]);
         var response = request.Mti == FinancialRequestMti
             ? await AuthorizeAsync(request, cancellationToken)
             : new IsoMessage(request.ToResponseMti()).Set(39, ResponseCodes.InvalidTransaction);
 
-        logger.LogInformation("{RequestMti} -> {ResponseMti} STAN {Stan} PAN {Pan} F39 {ResponseCode} in {ElapsedMs} ms",
-            request.Mti, response.Mti, request[11], PanMask.Mask(request[2]), response[39], stopwatch.ElapsedMilliseconds);
+        logger.LogInformation("{Method}: {RequestMti} -> {ResponseMti} STAN {Stan} PAN {Pan} F39 {ResponseCode} in {ElapsedMs} ms",
+            nameof(ProcessAsync), request.Mti, response.Mti, request[11], PanMask.Mask(request[2]), response[39], stopwatch.ElapsedMilliseconds);
         return response;
     }
 
@@ -31,11 +33,15 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         var missing = RequiredFinancialFields.Where(f => !request.Has(f)).ToArray();
         if (missing.Length > 0)
         {
-            logger.LogWarning("0200 STAN {Stan} is missing required fields {Fields}", request[11], string.Join(", ", missing));
+            logger.LogWarning("{Method}: 0200 STAN {Stan} is missing required fields {Fields} - responding 30",
+                nameof(AuthorizeAsync), request[11], string.Join(", ", missing));
             return Echo(request).Set(39, ResponseCodes.FormatError);
         }
 
+        logger.LogInformation("{Method}: forwarding to Payment STAN {Stan} TID {TerminalId} PAN {Pan} F3 {ProcessingCode} F4 {Amount} F49 {Currency}",
+            nameof(AuthorizeAsync), request[11], request[41], PanMask.Mask(request[2]), request[3], request[4], request[49]);
         var result = await paymentClient.AuthorizeAsync(ToPaymentRequest(request), cancellationToken);
+        logger.LogInformation("{Method}: Payment answered STAN {Stan} F39 {ResponseCode}", nameof(AuthorizeAsync), request[11], result.ResponseCode);
         return Echo(request).Set(39, result.ResponseCode);
     }
 

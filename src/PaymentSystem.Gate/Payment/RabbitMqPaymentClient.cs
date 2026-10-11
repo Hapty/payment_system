@@ -48,19 +48,22 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
             catch (Exception ex) when (ex is RabbitMQClientException or IOException or SocketException or TimeoutException)
             {
                 // BrokerUnreachableException da IOException'dır.
-                logger.LogWarning("RabbitMQ unreachable for STAN {Stan} ({Error}: {Message}) - responding 91",
-                    request.Stan, ex.GetType().Name, ex.Message);
+                logger.LogWarning("{Method}: RabbitMQ unreachable for STAN {Stan} ({Error}: {Message}) - responding 91",
+                    nameof(AuthorizeAsync), request.Stan, ex.GetType().Name, ex.Message);
                 return Unavailable;
             }
 
             try
             {
-                return await reply.Task.WaitAsync(Timeout, cancellationToken);
+                var response = await reply.Task.WaitAsync(Timeout, cancellationToken);
+                logger.LogInformation("{Method}: reply {CorrelationId} for STAN {Stan} F39 {ResponseCode}",
+                    nameof(AuthorizeAsync), correlationId, request.Stan, response.ResponseCode);
+                return response;
             }
             catch (TimeoutException)
             {
-                logger.LogWarning("No reply from Payment within {Timeout}s for STAN {Stan} - responding 91",
-                    options.Value.PaymentTimeoutSeconds, request.Stan);
+                logger.LogWarning("{Method}: no reply {CorrelationId} from Payment within {Timeout}s for STAN {Stan} - responding 91",
+                    nameof(AuthorizeAsync), correlationId, options.Value.PaymentTimeoutSeconds, request.Stan);
                 return Unavailable;
             }
         }
@@ -89,6 +92,9 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
         {
             var channel = await EnsureChannelAsync(cancellationToken);
             await channel.BasicPublishAsync(string.Empty, QueueName, mandatory: false, properties, body, cancellationToken);
+            // Kuyruğa giden gövdenin aynısı, sadece kart numarası maskeli.
+            logger.LogInformation("{Method}: sent {CorrelationId} to queue {Queue}: {Body}", nameof(PublishAsync), correlationId, QueueName,
+                JsonSerializer.Serialize(request with { CardNumber = PanMask.Mask(request.CardNumber) }, Json));
         }
         finally
         {
@@ -125,7 +131,7 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
         await channel.BasicConsumeAsync(DirectReplyTo, autoAck: true, consumer, cancellationToken);
 
         _channel = channel;
-        logger.LogInformation("Connected to RabbitMQ, sending transactions to queue {Queue}", QueueName);
+        logger.LogInformation("{Method}: connected to RabbitMQ, sending transactions to queue {Queue}", nameof(EnsureChannelAsync), QueueName);
         return channel;
     }
 
@@ -135,7 +141,7 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
         if (correlationId is null || !_pending.TryRemove(correlationId, out var reply))
         {
             // Bekleyen kimse yok: Gate bu isteğe zaten 91 döndü. Payment onayladıysa para düşmüş olabilir (ileride reversal).
-            logger.LogWarning("Discarding late reply {CorrelationId}: {Body}", correlationId, System.Text.Encoding.UTF8.GetString(delivery.Body.Span));
+            logger.LogWarning("{Method}: discarding late reply {CorrelationId}: {Body}", nameof(OnReplyAsync), correlationId, System.Text.Encoding.UTF8.GetString(delivery.Body.Span));
             return Task.CompletedTask;
         }
 
@@ -156,7 +162,7 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
         {
         }
 
-        logger.LogWarning("Payment sent an invalid reply - responding 91");
+        logger.LogWarning("{Method}: Payment sent an invalid reply - responding 91", nameof(Parse));
         return Unavailable;
     }
 

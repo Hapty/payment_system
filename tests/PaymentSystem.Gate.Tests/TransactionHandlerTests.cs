@@ -45,6 +45,19 @@ public class TransactionHandlerTests
     }
 
     [Fact]
+    public async Task Sale_LogsEachStepWithMaskedPan()
+    {
+        var logger = new ListLogger<TransactionHandler>();
+
+        await new TransactionHandler(_payment, logger).ProcessAsync(TestMessages.Sale(), CancellationToken.None);
+
+        Assert.Contains(logger.Messages, m => m.StartsWith("AuthorizeAsync: forwarding to Payment") && m.Contains("PAN 411111********11"));
+        Assert.Contains(logger.Messages, m => m.StartsWith("AuthorizeAsync: Payment answered"));
+        Assert.Contains(logger.Messages, m => m.StartsWith("ProcessAsync: 0200 -> 0210") && m.Contains("PAN 411111********11"));
+        Assert.DoesNotContain(logger.Messages, m => m.Contains("4111111111111111"));
+    }
+
+    [Fact]
     public async Task Sale_MissingRequiredField_IsFormatErrorAndNotForwarded()
     {
         var request = new IsoMessage("0200");

@@ -57,6 +57,8 @@ public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassF
             await disposable.DisposeAsync();
     }
 
+    private ListLogger<RabbitMqPaymentClient> Logger { get; } = new();
+
     private RabbitMqPaymentClient CreateClient(int timeoutSeconds = 5, string? uri = null)
     {
         var client = new RabbitMqPaymentClient(
@@ -66,7 +68,7 @@ public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassF
                 RabbitMqPassword = RabbitMqFixture.Password,
                 PaymentTimeoutSeconds = timeoutSeconds
             }),
-            NullLogger<RabbitMqPaymentClient>.Instance);
+            Logger);
         _disposables.Add(client);
         return client;
     }
@@ -103,6 +105,22 @@ public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassF
         Assert.StartsWith("amq.rabbitmq.reply-to", properties.ReplyTo);
         Assert.False(string.IsNullOrEmpty(properties.CorrelationId));
         Assert.True(properties.IsTimestampPresent());
+    }
+
+    [Fact]
+    public async Task Success_LogsQueueMessageWithMaskedPan()
+    {
+        await RespondWithAsync("""{ "responseCode": "00" }""");
+
+        await CreateClient().AuthorizeAsync(Request, CancellationToken.None);
+
+        // Kuyruğa giden gövdede kart numarası tam, logda maskeli.
+        Assert.Contains("\"cardNumber\":\"4111111111111111\"", Assert.Single(Received).Body);
+        var sent = Assert.Single(Logger.Messages, m => m.StartsWith("PublishAsync: sent"));
+        Assert.Contains("\"cardNumber\":\"411111********11\"", sent);
+        Assert.Contains("\"amountMinor\":15000", sent);
+        Assert.Contains(Logger.Messages, m => m.StartsWith("AuthorizeAsync: reply") && m.Contains("F39 00"));
+        Assert.DoesNotContain(Logger.Messages, m => m.Contains("4111111111111111"));
     }
 
     [Fact]

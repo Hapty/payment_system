@@ -8,13 +8,15 @@
   </PropertyGroup>
 
   <!-- Coverage kapısı (coverlet.msbuild): `dotnet test /p:CollectCoverage=true` ile devreye girer.
-       Program.cs sadece DI/hosting kurulumu yaptığı için unit test coverage'ının dışında tutulur. -->
+       Program.cs sadece DI/hosting kurulumu yaptığı için unit test coverage'ının dışında tutulur.
+       Sadece Payment ölçülür: referans verilen PaymentSystem.Iso8583 (PAN maskeleme) Gate testlerinde ölçülüyor. -->
   <PropertyGroup>
     <CoverletOutputFormat>cobertura</CoverletOutputFormat>
     <CoverletOutput>$(MSBuildThisFileDirectory)TestResults/</CoverletOutput>
     <Threshold>80</Threshold>
     <ThresholdType>line</ThresholdType>
     <ExcludeByFile>**/Program.cs</ExcludeByFile>
+    <Include>[PaymentSystem.Payment]*</Include>
   </PropertyGroup>
 
   <ItemGroup>

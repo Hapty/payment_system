@@ -14,4 +14,8 @@
     <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\PaymentSystem.Iso8583\PaymentSystem.Iso8583.csproj" />
+  </ItemGroup>
+
 </Project>
