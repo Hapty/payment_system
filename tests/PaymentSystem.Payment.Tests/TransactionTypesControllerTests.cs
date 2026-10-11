@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
 using PaymentSystem.Payment.Controllers;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Tests;
@@ -8,7 +10,7 @@ namespace PaymentSystem.Payment.Tests;
 public class TransactionTypesControllerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private TransactionTypeRepository Repository => new(Db);
-    private TransactionTypesController Controller => new(Repository);
+    private TransactionTypesController Controller => new(new TransactionTypeHandler(Repository, NullLogger<TransactionTypeHandler>.Instance));
 
     private static TransactionType Type(string otc = "10", string ots = "11", string name = "Sale") =>
         new() { Otc = otc, Ots = ots, Name = name };

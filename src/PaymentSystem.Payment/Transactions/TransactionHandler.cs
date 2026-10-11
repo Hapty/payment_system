@@ -1,7 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using Dapper;
-using Microsoft.Data.SqlClient;
 using PaymentSystem.Iso8583;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.ExchangeRates;
@@ -9,10 +7,10 @@ using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Transactions;
 
-// Gate'ten gelen bir finansal isteği karara bağlar ve F39 cevap kodunu döner.
-// İşlem kaydı, bakiye ve kart güncellemesi tek bir SQL transaction'ında yapılır: ya hepsi yazılır ya hiçbiri.
-public sealed class TransactionProcessor(
-    SqlConnectionFactory db, ExchangeRateCache rates, TimeProvider clock, ILogger<TransactionProcessor> logger)
+// Gate'ten gelen bir finansal isteği karara bağlar ve F39 cevap kodunu döner. Kararlar burada, SQL TransactionRepository'de.
+// İşlem kaydı, bakiye ve kart güncellemesi tek bir SQL transaction'ında (IDebitSession) yapılır: ya hepsi yazılır ya hiçbiri.
+public sealed class TransactionHandler(
+    ITransactionRepository repository, ExchangeRateCache rates, TimeProvider clock, ILogger<TransactionHandler> logger)
 {
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
@@ -20,22 +18,10 @@ public sealed class TransactionProcessor(
     // UUID v5 için bu sisteme ait sabit namespace. Değiştirilirse eski kayıtların anahtarı yeniden hesaplanamaz.
     private static readonly Guid IdempotencyNamespace = new("6f1c2a7e-3b8d-4c5f-9a0e-2d7b8c1e4f35");
 
-    private sealed record RoutedType(string Otc, string Ots, string Name);
-
     public async Task<string> ProcessAsync(TransactionRequest request)
     {
-        await using var connection = db.Create();
-        await connection.OpenAsync();
-
         // MTI + F3 -> (Otc, Ots) -> işlem adı. Tanımsız bir işlem için kayıt açılmaz: para hareketi yok, tekrarı da aynı cevabı alır.
-        var type = await connection.QuerySingleOrDefaultAsync<RoutedType>(
-            """
-            SELECT m.Otc, m.Ots, t.Name
-            FROM dbo.MtiProcessingCode m
-            JOIN dbo.TransactionType t ON t.Otc = m.Otc AND t.Ots = m.Ots
-            WHERE m.Mti = @Mti AND m.F3_ProcessingCode = @ProcessingCode
-            """,
-            new { request.Mti, request.ProcessingCode });
+        var type = await repository.FindTypeAsync(request.Mti, request.ProcessingCode);
         if (type is null)
         {
             logger.LogWarning("{Method}: no transaction type for MTI {Mti} F3 {ProcessingCode} (TID {TerminalId} STAN {Stan}) - responding 12",
@@ -49,81 +35,61 @@ public sealed class TransactionProcessor(
             nameof(ProcessAsync), type.Name, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber),
             ToAmount(request), request.CurrencyCode, lira);
 
-        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
-
         // Kaydın Guid'i isteğin kendisinden türetilir (bkz. IdempotencyKey): tekrar gelen istek aynı Guid'i üretir ve PK'ya takılır.
         // Aynı anda gelirse ilk transaction bitene kadar bekler, sonra hata alır; böylece aynı işlem asla iki kez karara bağlanmaz.
         var id = IdempotencyKey(request);
-        try
+        string? responseCode = null;
+        await using (var session = await repository.BeginAsync())
         {
-            await connection.ExecuteAsync(
-                """
-                INSERT INTO dbo.DebitTransaction
-                    (Guid, Mti, F2_CardNo, F3_ProcessingCode, Otc, Ots, F4_Amount, F49_CurrencyCode, LocalTxnAmount,
-                     F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F43_Description)
-                VALUES
-                    (@id, @Mti, @CardNumber, @ProcessingCode, @Otc, @Ots, @Amount, @CurrencyCode, @LocalAmount,
-                     @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @CardAcceptor)
-                """,
-                new
-                {
-                    id, request.Mti, request.CardNumber, request.ProcessingCode, type.Otc, type.Ots,
-                    Amount = ToAmount(request),
-                    request.CurrencyCode,
-                    LocalAmount = lira,
-                    request.LocalTime,
-                    TransactionDate = ToTransactionDate(request.LocalDate),
-                    request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor = request.CardAcceptor?.TrimEnd()
-                },
-                transaction);
-        }
-        catch (SqlException ex) when (SqlErrors.IsDuplicateKey(ex))
-        {
-            await transaction.RollbackAsync();
-            return await PreviousResponseAsync(connection, request, id);
+            var inserted = await session.TryInsertAsync(new DebitTransaction(
+                id, request.Mti, request.CardNumber, request.ProcessingCode, type.Otc, type.Ots,
+                Amount: ToAmount(request),
+                request.CurrencyCode,
+                LocalAmount: lira,
+                request.LocalTime,
+                TransactionDate: ToTransactionDate(request.LocalDate),
+                request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor: request.CardAcceptor?.TrimEnd()));
+            if (inserted)
+            {
+                responseCode = await DecideAsync(session, request, type.Name, lira);
+                await session.SetResponseCodeAsync(id, responseCode);
+                await session.CommitAsync();
+            }
         }
 
-        var responseCode = await DecideAsync(connection, transaction, request, type.Name, lira);
-
-        await connection.ExecuteAsync(
-            "UPDATE dbo.DebitTransaction SET F39_ResponseCode = @responseCode, UpdatedAt = SYSUTCDATETIME() WHERE Guid = @id",
-            new { responseCode, id }, transaction);
-        await transaction.CommitAsync();
+        // Tekrar gelen istek: oturum commit edilmeden kapandı (rollback), önceki karar ayrı bir bağlantıyla okunur.
+        if (responseCode is null)
+            return await PreviousResponseAsync(request, id);
 
         logger.LogInformation("{Method}: {Type} {Id} TID {TerminalId} STAN {Stan} PAN {Pan} committed -> F39 {ResponseCode}",
             nameof(ProcessAsync), type.Name, id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), responseCode);
         return responseCode;
     }
 
-    private async Task<string> DecideAsync(
-        SqlConnection connection, SqlTransaction transaction, TransactionRequest request, string typeName, decimal? lira)
+    private async Task<string> DecideAsync(IDebitSession session, TransactionRequest request, string typeName, decimal? lira)
     {
-        var card = await connection.QuerySingleOrDefaultAsync<Card>(
-            "SELECT CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit FROM dbo.Card WHERE CardNumber = @CardNumber",
-            new { request.CardNumber }, transaction);
+        var card = await session.GetCardAsync(request.CardNumber);
         if (card is null)
             return Decline(nameof(DecideAsync), request, ResponseCodes.InvalidCardNumber, "card not found");
 
         if (IsExpired(card.ExpiryDate) || !ExpiryMatches(card.ExpiryDate, request.CardExpiry))
             return Decline(nameof(DecideAsync), request, ResponseCodes.ExpiredCard, "card expired or F14 does not match");
 
-        var accountStatus = await connection.ExecuteScalarAsync<string?>(
-            "SELECT AccountStatus FROM dbo.BankAccount WHERE AccountNo = @AccountNo", new { card.AccountNo }, transaction);
+        var accountStatus = await session.GetAccountStatusAsync(card.AccountNo);
         if (accountStatus != ActiveAccount)
             return Decline(nameof(DecideAsync), request, ResponseCodes.RestrictedCard, $"account {card.AccountNo} is {accountStatus ?? "missing"}");
 
         return typeName switch
         {
             "BalanceInquiry" => ResponseCodes.Approved,     // bakiye cevaba (F54) sonraki adımda eklenecek
-            "Sale" => await SaleAsync(connection, transaction, request, card, lira),
+            "Sale" => await SaleAsync(session, request, card, lira),
             // MoneyTransfer: alıcı kart numarası henüz ISO mesajında / Gate sözleşmesinde yok.
             _ => Decline(nameof(DecideAsync), request, ResponseCodes.InvalidTransaction, $"{typeName} is not supported")
         };
     }
 
     // Limit, bakiye ve kartın son işlem tutarı hep TL karşılık (lira) üzerinden yürür; hesaplar TL'dir.
-    private async Task<string> SaleAsync(
-        SqlConnection connection, SqlTransaction transaction, TransactionRequest request, Card card, decimal? lira)
+    private async Task<string> SaleAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira)
     {
         // Kur yok: ya bu para birimi için TCMB kuru hiç yok (12) ya da cache'te kur yok / bayat (91, sonra tekrar denenebilir).
         if (lira is not { } amount)
@@ -143,15 +109,10 @@ public sealed class TransactionProcessor(
         }
 
         // Bakiye kontrolü ve düşme tek sorguda: aynı hesaba aynı anda gelen iki satış bakiyeyi eksiye düşüremez.
-        var debited = await connection.ExecuteAsync(
-            "UPDATE dbo.BankAccount SET Balance = Balance - @amount WHERE AccountNo = @AccountNo AND Balance >= @amount",
-            new { amount, card.AccountNo }, transaction);
-        if (debited == 0)
+        if (!await session.TryDebitAsync(card.AccountNo, amount))
             return Decline(nameof(SaleAsync), request, ResponseCodes.InsufficientFunds, $"insufficient funds for TRY {amount}");
 
-        await connection.ExecuteAsync(
-            "UPDATE dbo.Card SET LastTransactionDate = SYSUTCDATETIME(), LastTransactionAmount = @amount WHERE CardNumber = @CardNumber",
-            new { amount, card.CardNumber }, transaction);
+        await session.SetCardLastTransactionAsync(card.CardNumber, amount);
         logger.LogInformation("{Method}: debited TRY {Amount} from account {AccountNo} STAN {Stan} PAN {Pan}",
             nameof(SaleAsync), amount, card.AccountNo, request.Stan, PanMask.Mask(request.CardNumber));
         return ResponseCodes.Approved;
@@ -166,10 +127,9 @@ public sealed class TransactionProcessor(
     }
 
     // Tekrar gelen istek: ilk işlemin kararı aynen döner (ilk istek onaylandıysa tekrarı da "00" alır ama para tekrar düşmez).
-    private async Task<string> PreviousResponseAsync(SqlConnection connection, TransactionRequest request, Guid id)
+    private async Task<string> PreviousResponseAsync(TransactionRequest request, Guid id)
     {
-        var previous = await connection.ExecuteScalarAsync<string>(
-            "SELECT F39_ResponseCode FROM dbo.DebitTransaction WHERE Guid = @id", new { id });
+        var previous = await repository.GetResponseCodeAsync(id);
 
         logger.LogWarning("{Method}: duplicate request {Id} (TID {TerminalId} STAN {Stan} PAN {Pan}) - returning previous F39 {ResponseCode}",
             nameof(PreviousResponseAsync), id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), previous);

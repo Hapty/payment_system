@@ -5,7 +5,7 @@ using PaymentSystem.Payment.Models;
 namespace PaymentSystem.Payment.Data;
 
 // dbo.Card için SQL sorguları (Dapper). Cvv kolonu hiçbir sorguda yok (bkz. Card modeli).
-public sealed class CardRepository(SqlConnectionFactory db)
+public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
 {
     private const string Columns =
         "Id, CardNumber, AccountNo, CardType, ExpiryDate, LastTransactionDate, LastTransactionAmount, ContactlessAllowed, ContactlessLimit";

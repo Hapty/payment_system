@@ -13,7 +13,7 @@ namespace PaymentSystem.Payment.Transactions;
 // aynı CorrelationId ile yazar (request-reply). Gate cevabı beklediği için akış dışarıdan bakınca senkron kalır.
 // RabbitMQ henüz ayakta değilse ya da bağlantı koparsa RetryDelay sonra yeniden bağlanır.
 public sealed class TransactionQueueConsumer(
-    IConnectionFactory factory, TransactionProcessor processor, TimeProvider clock, ILogger<TransactionQueueConsumer> logger)
+    IConnectionFactory factory, TransactionHandler handler, TimeProvider clock, ILogger<TransactionQueueConsumer> logger)
     : BackgroundService
 {
     // Gate'teki RabbitMqPaymentClient.QueueName ile aynı olmalı.
@@ -147,7 +147,7 @@ public sealed class TransactionQueueConsumer(
 
         try
         {
-            return await processor.ProcessAsync(request);
+            return await handler.ProcessAsync(request);
         }
         catch (Exception ex)
         {

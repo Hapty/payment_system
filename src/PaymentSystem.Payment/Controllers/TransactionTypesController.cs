@@ -1,12 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Controllers;
 
 [ApiController]
 [Route("api/transaction-types")]
-public class TransactionTypesController(TransactionTypeRepository types) : ControllerBase
+public class TransactionTypesController(TransactionTypeHandler types) : ControllerBase
 {
     [HttpGet]
     public Task<IReadOnlyList<TransactionType>> GetAll() => types.GetAllAsync();

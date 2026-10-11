@@ -2,7 +2,7 @@ using Microsoft.Data.SqlClient;
 
 namespace PaymentSystem.Payment.Data;
 
-// Bir ekleme/güncelleme işleminin sonucu; controller bunu HTTP koduna çevirir (204/201, 404, 409).
+// Bir ekleme/güncelleme işleminin sonucu; handler controller'a iletir, controller HTTP koduna çevirir (204/201, 404, 409).
 public enum WriteResult
 {
     Ok,

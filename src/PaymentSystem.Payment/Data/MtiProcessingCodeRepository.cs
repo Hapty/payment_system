@@ -5,7 +5,7 @@ using PaymentSystem.Payment.Models;
 namespace PaymentSystem.Payment.Data;
 
 // dbo.MtiProcessingCode için SQL sorguları (Dapper). Anahtar iki kolondan oluşur: (Mti, F3_ProcessingCode).
-public sealed class MtiProcessingCodeRepository(SqlConnectionFactory db)
+public sealed class MtiProcessingCodeRepository(SqlConnectionFactory db) : IMtiProcessingCodeRepository
 {
     private const string Columns = "Mti, F3_ProcessingCode, Otc, Ots";
 

@@ -1,12 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using PaymentSystem.Payment.ExchangeRates;
+using PaymentSystem.Payment.Handlers;
 
 namespace PaymentSystem.Payment.Controllers;
 
 // Kur cache'inin içeriği (salt okunur). Kurları sadece ExchangeRateRefresher yazar; bu endpoint TCMB'ye gitmez.
 [ApiController]
 [Route("api/exchange-rates")]
-public class ExchangeRatesController(ExchangeRateCache rates) : ControllerBase
+public class ExchangeRatesController(ExchangeRateHandler rates) : ControllerBase
 {
     // Cache boşsa (Payment yeni açıldı, TCMB'ye henüz ulaşılamadı) boş liste döner.
     [HttpGet]

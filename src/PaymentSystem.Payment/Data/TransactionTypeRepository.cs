@@ -5,7 +5,7 @@ using PaymentSystem.Payment.Models;
 namespace PaymentSystem.Payment.Data;
 
 // dbo.TransactionType için SQL sorguları (Dapper). Anahtar iki kolondan oluşur: (Otc, Ots).
-public sealed class TransactionTypeRepository(SqlConnectionFactory db)
+public sealed class TransactionTypeRepository(SqlConnectionFactory db) : ITransactionTypeRepository
 {
     private const string Columns = "Otc, Ots, Name";
 

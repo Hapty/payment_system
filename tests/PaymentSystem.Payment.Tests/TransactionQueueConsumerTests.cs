@@ -62,16 +62,16 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         """;
 
     private ListLogger<TransactionQueueConsumer> ConsumerLogger { get; } = new();
-    private ListLogger<TransactionProcessor> ProcessorLogger { get; } = new();
+    private ListLogger<TransactionHandler> HandlerLogger { get; } = new();
 
     private async Task<T> WithConsumerAsync<T>(Func<Task<T>> test, SqlConnectionFactory? db = null)
     {
-        var processor = new TransactionProcessor(
-            db ?? Db,
+        var handler = new TransactionHandler(
+            new TransactionRepository(db ?? Db),
             new ExchangeRateCache(new MemoryCache(new MemoryCacheOptions()), TimeProvider.System, Options.Create(new ExchangeRateOptions())),
             TimeProvider.System,
-            ProcessorLogger);
-        var consumer = new TransactionQueueConsumer(rabbit.Factory(), processor, TimeProvider.System, ConsumerLogger);
+            HandlerLogger);
+        var consumer = new TransactionQueueConsumer(rabbit.Factory(), handler, TimeProvider.System, ConsumerLogger);
         await consumer.StartAsync(CancellationToken.None);
         try
         {
@@ -151,9 +151,9 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
         Assert.Contains("\"cardNumber\":\"411111********11\"", received);
         Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("HandleAsync: replied request-1 F39 00"));
-        Assert.Contains(ProcessorLogger.Messages, m => m.StartsWith("SaleAsync: debited TRY 150") && m.Contains("PAN 411111********11"));
-        Assert.Contains(ProcessorLogger.Messages, m => m.StartsWith("ProcessAsync: Sale") && m.Contains("F39 00"));
-        Assert.DoesNotContain(ConsumerLogger.Messages.Concat(ProcessorLogger.Messages), m => m.Contains(Pan));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: debited TRY 150") && m.Contains("PAN 411111********11"));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("ProcessAsync: Sale") && m.Contains("F39 00"));
+        Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains(Pan));
     }
 
     [Fact]
@@ -165,7 +165,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
 
         Assert.Equal("""{"responseCode":"51"}""", reply?.Body);
         Assert.Equal(1000m, await BalanceAsync());
-        Assert.Contains(ProcessorLogger.Messages, m => m.StartsWith("SaleAsync: declined") && m.Contains("insufficient funds") && m.Contains("F39 51"));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: declined") && m.Contains("insufficient funds") && m.Contains("F39 51"));
     }
 
     [Theory]
@@ -209,7 +209,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
     {
         var consumer = new TransactionQueueConsumer(
             rabbit.Factory("amqp://payment:x@127.0.0.1:1"),
-            new TransactionProcessor(Db, null!, TimeProvider.System, NullLogger<TransactionProcessor>.Instance),
+            new TransactionHandler(new TransactionRepository(Db), null!, TimeProvider.System, NullLogger<TransactionHandler>.Instance),
             TimeProvider.System,
             NullLogger<TransactionQueueConsumer>.Instance);
 

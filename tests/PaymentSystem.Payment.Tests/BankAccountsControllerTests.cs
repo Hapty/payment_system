@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
 using PaymentSystem.Payment.Controllers;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Tests;
@@ -8,7 +10,7 @@ namespace PaymentSystem.Payment.Tests;
 public class BankAccountsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private BankAccountRepository Repository => new(Db);
-    private BankAccountsController Controller => new(Repository);
+    private BankAccountsController Controller => new(new BankAccountHandler(Repository, NullLogger<BankAccountHandler>.Instance));
 
     private static BankAccount Account(string no = "ACC1", string status = "Active", decimal balance = 100m) =>
         new() { AccountNo = no, AccountStatus = status, Balance = balance };
