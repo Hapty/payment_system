@@ -7,30 +7,13 @@ public class TransactionHandlerTests
 {
     private readonly FakePaymentClient _payment = new();
 
-    private TransactionHandler Handler() => new(_payment, NullLogger<TransactionHandler>.Instance);
-
-    private async Task<IsoMessage> SendAsync(IsoMessage request)
-    {
-        var response = await Handler().HandleAsync(TestMessages.Pack(request), CancellationToken.None);
-        return TestMessages.Unpack(response!);
-    }
-
-    [Fact]
-    public async Task EchoTest_IsAnsweredByGateWithoutCallingPayment()
-    {
-        var response = await SendAsync(TestMessages.Echo());
-
-        Assert.Equal("0810", response.Mti);
-        Assert.Equal("00", response[39]);
-        Assert.Equal("000001", response[11]);
-        Assert.Equal("301", response[70]);
-        Assert.Empty(_payment.Requests);
-    }
+    private Task<IsoMessage> ProcessAsync(IsoMessage request) =>
+        new TransactionHandler(_payment, NullLogger<TransactionHandler>.Instance).ProcessAsync(request, CancellationToken.None);
 
     [Fact]
     public async Task Sale_IsForwardedToPaymentWithReadableFields()
     {
-        await SendAsync(TestMessages.Sale());
+        await ProcessAsync(TestMessages.Sale());
 
         var forwarded = Assert.Single(_payment.Requests);
         Assert.Equal("4111111111111111", forwarded.CardNumber);
@@ -49,11 +32,10 @@ public class TransactionHandlerTests
     [InlineData("91")]
     public async Task Sale_ResponseCarriesPaymentCodeAndEchoesMatchingFields(string paymentCode)
     {
-        var payment = new FakePaymentClient(paymentCode);
-        var handler = new TransactionHandler(payment, NullLogger<TransactionHandler>.Instance);
+        var handler = new TransactionHandler(new FakePaymentClient(paymentCode), NullLogger<TransactionHandler>.Instance);
         var request = TestMessages.Sale();
 
-        var response = TestMessages.Unpack((await handler.HandleAsync(TestMessages.Pack(request), CancellationToken.None))!);
+        var response = await handler.ProcessAsync(request, CancellationToken.None);
 
         Assert.Equal("0210", response.Mti);
         Assert.Equal(paymentCode, response[39]);
@@ -69,46 +51,22 @@ public class TransactionHandlerTests
         foreach (var (field, value) in TestMessages.Sale().Fields.Where(f => f.Key != 4))
             request.Set(field, value);
 
-        var response = await SendAsync(request);
+        var response = await ProcessAsync(request);
 
         Assert.Equal("0210", response.Mti);
         Assert.Equal("30", response[39]);
         Assert.Empty(_payment.Requests);
     }
 
-    [Fact]
-    public async Task UnsupportedMti_IsInvalidTransaction()
+    [Theory]
+    [InlineData("0400", "0410")]   // reversal: henüz desteklenmiyor
+    [InlineData("0800", "0810")]   // network yönetimi: TCP girişiyle birlikte kaldırıldı
+    public async Task UnsupportedMti_IsInvalidTransaction(string mti, string responseMti)
     {
-        var response = await SendAsync(new IsoMessage("0400").Set(11, "000002"));
+        var response = await ProcessAsync(new IsoMessage(mti).Set(11, "000002"));
 
-        Assert.Equal("0410", response.Mti);
+        Assert.Equal(responseMti, response.Mti);
         Assert.Equal("12", response[39]);
-    }
-
-    [Fact]
-    public async Task MalformedBodyWithReadableMti_IsFormatError()
-    {
-        byte[] data = [.. TestMessages.Pack(TestMessages.Sale()), (byte)'X'];
-
-        var response = TestMessages.Unpack((await Handler().HandleAsync(data, CancellationToken.None))!);
-
-        Assert.Equal("0210", response.Mti);
-        Assert.Equal("30", response[39]);
-    }
-
-    [Fact]
-    public async Task UnreadableMessage_ReturnsNull() =>
-        Assert.Null(await Handler().HandleAsync("garbage"u8.ToArray(), CancellationToken.None));
-
-    [Fact]
-    public async Task ResponseMessage_IsDropped() =>
-        Assert.Null(await Handler().HandleAsync(TestMessages.Pack(new IsoMessage("0210").Set(39, "00")), CancellationToken.None));
-
-    [Fact]
-    public async Task MalformedResponseMessage_IsDropped()
-    {
-        byte[] data = [.. "0210"u8, 0, 0, 0];
-
-        Assert.Null(await Handler().HandleAsync(data, CancellationToken.None));
+        Assert.Empty(_payment.Requests);
     }
 }

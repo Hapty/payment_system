@@ -41,18 +41,6 @@ internal sealed class FakePaymentClient(string responseCode = "00") : IPaymentCl
     }
 }
 
-internal sealed class StubHttpHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond)
-    : HttpMessageHandler
-{
-    public List<(HttpRequestMessage Request, string Body)> Received { get; } = [];
-
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-    {
-        Received.Add((request, request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken)));
-        return await respond(request, cancellationToken);
-    }
-}
-
 // Her okumada en fazla 1 bayt verir; mesajı birçok TCP parçasına bölen yavaş bir ağı taklit eder.
 internal sealed class OneByteAtATimeStream(byte[] data) : MemoryStream(data)
 {

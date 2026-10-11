@@ -2,14 +2,13 @@ using Dapper;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using PaymentSystem.Payment.Controllers;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Models;
 using PaymentSystem.Payment.Transactions;
 
 namespace PaymentSystem.Payment.Tests;
 
-public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
+public class TransactionProcessorTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private const string Pan = "4111111111111111";
     private const string AccountNo = "ACC1";
@@ -21,7 +20,7 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
     private ExchangeRateCache? _rates;
     private ExchangeRateCache Rates => _rates ??= new(new MemoryCache(new MemoryCacheOptions()), Clock, Options.Create(new ExchangeRateOptions()));
 
-    private TransactionsController Controller => new(new TransactionProcessor(Db, Rates, Clock, NullLogger<TransactionProcessor>.Instance));
+    private TransactionProcessor Processor => new(Db, Rates, Clock, NullLogger<TransactionProcessor>.Instance);
 
     private void StoreRates(params (string Code, decimal Rate)[] rates) =>
         Rates.Store(new TcmbBulletin(new DateOnly(2026, 3, 13), rates.ToDictionary(r => r.Code, r => r.Rate)));
@@ -73,7 +72,7 @@ public class TransactionsControllerTests(SqlServerFixture fixture) : DatabaseTes
         CardAcceptor = "PAYMENT SYSTEM POS SIMULATOR".PadRight(40)
     };
 
-    private async Task<string> AuthorizeAsync(TransactionRequest request) => (await Controller.Authorize(request)).ResponseCode;
+    private async Task<string> AuthorizeAsync(TransactionRequest request) => await Processor.ProcessAsync(request);
 
     private async Task<decimal> BalanceAsync()
     {

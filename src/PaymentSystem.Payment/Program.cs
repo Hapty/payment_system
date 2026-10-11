@@ -2,6 +2,7 @@ using Microsoft.Data.SqlClient;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Transactions;
+using RabbitMQ.Client;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,6 +20,19 @@ builder.Services.AddSingleton<TransactionTypeRepository>();
 builder.Services.AddSingleton<MtiProcessingCodeRepository>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<TransactionProcessor>();
+
+// İşlemler HTTP'den değil, Gate'in RabbitMQ'ya yazdığı kuyruktan gelir (request-reply). Şifre RABBITMQ_PASSWORD'den gelir.
+builder.Services.AddSingleton<IConnectionFactory>(new ConnectionFactory
+{
+    Uri = new Uri(builder.Configuration.GetConnectionString("RabbitMq")
+        ?? throw new InvalidOperationException("ConnectionStrings:RabbitMq is not configured.")),
+    Password = builder.Configuration["RABBITMQ_PASSWORD"]
+        ?? throw new InvalidOperationException("RABBITMQ_PASSWORD is not configured."),
+    // Kopan bağlantıyı TransactionQueueConsumer kendisi yeniler; kütüphanenin otomatik toparlanmasıyla çakışmasın.
+    AutomaticRecoveryEnabled = false,
+    ConsumerDispatchConcurrency = TransactionQueueConsumer.Concurrency
+});
+builder.Services.AddHostedService<TransactionQueueConsumer>();
 
 // Döviz kurları: arka plan servisi TCMB'den çekip in-memory cache'e yazar, işlem akışı sadece cache'ten okur.
 builder.Services.Configure<ExchangeRateOptions>(builder.Configuration.GetSection(ExchangeRateOptions.SectionName));

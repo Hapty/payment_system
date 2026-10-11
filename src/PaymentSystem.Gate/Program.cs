@@ -1,24 +1,26 @@
-using Microsoft.Extensions.Options;
 using PaymentSystem.Gate;
 using PaymentSystem.Gate.Payment;
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
+
+// RabbitMQ şifresi appsettings'te durmaz: RABBITMQ_PASSWORD ortam değişkeninden gelir (.env ile aynı anahtar).
+var rabbitMqPassword = builder.Configuration["RABBITMQ_PASSWORD"]
+    ?? throw new InvalidOperationException("RABBITMQ_PASSWORD is not configured.");
 
 builder.Services.Configure<GateOptions>(builder.Configuration.GetSection(GateOptions.SectionName));
+builder.Services.PostConfigure<GateOptions>(options => options.RabbitMqPassword = rabbitMqPassword);
 
-builder.Services
-    .AddHttpClient<IPaymentClient, HttpPaymentClient>((services, client) =>
-    {
-        var options = services.GetRequiredService<IOptions<GateOptions>>().Value;
-        client.BaseAddress = new Uri(options.PaymentBaseUrl.TrimEnd('/') + "/");
-        client.Timeout = TimeSpan.FromSeconds(options.PaymentTimeoutSeconds);
-    })
-    // Bu client, singleton TransactionHandler yaşadığı sürece yaşar. Bu yüzden HttpClientFactory'nin handler
-    // yenilemesine güvenmek yerine bağlantıları handler'ın kendisi yeniler (DNS değişikliklerini de böyle yakalar).
-    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) })
-    .SetHandlerLifetime(Timeout.InfiniteTimeSpan);
-
+builder.Services.AddSingleton<IPaymentClient, RabbitMqPaymentClient>();
 builder.Services.AddSingleton<TransactionHandler>();
-builder.Services.AddHostedService<TcpGateServer>();
+builder.Services.AddOpenApi();
 
-builder.Build().Run();
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+app.MapPost("/api/transactions", TransactionEndpoint.HandleAsync);
+
+app.Run();

@@ -8,8 +8,8 @@ COPY src/PaymentSystem.Iso8583/ src/PaymentSystem.Iso8583/
 COPY src/PaymentSystem.Gate/ src/PaymentSystem.Gate/
 RUN dotnet publish src/PaymentSystem.Gate/PaymentSystem.Gate.csproj -c Release -o /app --no-restore
 
-FROM mcr.microsoft.com/dotnet/runtime:9.0
+FROM mcr.microsoft.com/dotnet/aspnet:9.0
 WORKDIR /app
 COPY --from=build /app .
-EXPOSE 8583
+EXPOSE 8080
 ENTRYPOINT ["dotnet", "PaymentSystem.Gate.dll"]

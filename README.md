@@ -1,18 +1,20 @@
 # Payment System
 
-POS terminallerinden TCP üzerinden ISO8583 kart işlem mesajlarını alan ödeme sistemi.
+Kart işlemlerini (satış, bakiye sorgu) HTTP/JSON olarak alan ödeme sistemi. İşlemlerin tek girişi Gate'tir;
+Gate isteği RabbitMQ kuyruğuyla Payment'a iletir ve cevabı bekler.
 
 ```
-POS ──TCP / ISO8583──► Gate ──HTTP / JSON──► Payment ──► SQL Server
-                       :8583                 POST /api/transactions
+İstemci (Postman) ──HTTP / JSON──► Gate ──RabbitMQ (request-reply)──► Payment ──► SQL Server
+                    POST :8080/api/transactions   payment.transactions     │
+                                                                           └─ CRUD + kur: http://localhost:5002 (yönetim)
 ```
 
 | Parça | Konum | Durum |
 |---|---|---|
-| Gate | `src/PaymentSystem.Gate` | TCP'den mesajı okur, ISO8583'ü çözer, format kontrolü yapar, Payment'a iletir, cevabı (F39) ISO8583 olarak POS'a döner |
-| ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli, alan tanımları, pack/unpack, TCP framing (Gate ve simülatör ortak) |
-| POS simülatörü | `tools/PosSimulator` | Gate'i denemek için mesaj üretip gönderen konsol uygulaması |
-| Payment | `src/PaymentSystem.Payment` | Web API + Dapper. İşlem akışı (`POST /api/transactions`: TL ve döviz satış, bakiye sorgu) + 4 tablonun CRUD'u + TCMB kur cache'i |
+| Gate | `src/PaymentSystem.Gate` | `POST /api/transactions`: alanları ISO8583 tanımına göre doğrular, isteği kuyruğa yazar, Payment'ın cevabını (F39) döner |
+| ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli ve alan tanımları (Gate'in doğrulaması bunları kullanır); pack/unpack ve TCP framing |
+| Payment | `src/PaymentSystem.Payment` | Kuyruktan işlem akışı (TL ve döviz satış, bakiye sorgu) + Web API ile 4 tablonun CRUD'u ve TCMB kur cache'i. Dapper |
+| RabbitMQ | `docker-compose.yml` | Gate ↔ Payment arası kuyruk; yönetim arayüzü http://localhost:15672 |
 | Veritabanı | `docker/sql` | Tablolar + seed |
 
 ## Veritabanı (MS SQL Server, Docker)
@@ -20,7 +22,7 @@ POS ──TCP / ISO8583──► Gate ──HTTP / JSON──► Payment ──�
 ### Kurulum
 ```bash
 cp .env.example .env
-# .env içindeki MSSQL_SA_PASSWORD değerini güçlü bir şifreyle değiştir
+# .env içindeki MSSQL_SA_PASSWORD ve RABBITMQ_PASSWORD değerlerini güçlü şifrelerle değiştir
 docker compose up -d
 ```
 
@@ -63,99 +65,97 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 
 ## Gate (PaymentSystem.Gate)
 
-.NET 9 worker servisi. TCP `8583` portunu dinler; bir POS bağlantıyı açık tutup art arda birçok mesaj gönderebilir.
+.NET 9 Web API. İşlemlerin sisteme tek giriş noktası: `POST /api/transactions` (port `8080`). Örnek istekler: `src/PaymentSystem.Gate/PaymentSystem.Gate.http`.
 
-Her mesaj için:
-1. TCP'den çerçeveyi (frame) okur.
-2. ISO8583'ü çözer ve alanların formatını kontrol eder.
-3. MTI'ya göre karar verir:
-   - `0800` (network / echo): Gate kendisi `0810`, F39=`00` döner; Payment'a gitmez.
-   - `0200` (finansal): zorunlu alanlar (2, 3, 4, 7, 11, 12, 13, 41, 49) kontrol edilir, mesaj JSON'a çevrilip `POST {PaymentBaseUrl}/api/transactions` ile Payment'a gönderilir. Payment'ın `responseCode` değeri F39'a yazılır.
-   - Diğer MTI'lar: F39=`12`.
-4. Cevabı (`0210` / `0810` …) ISO8583 olarak POS'a geri yazar. POS'un cevabı isteğiyle eşleştirebilmesi için 2, 3, 4, 7, 11, 12, 13, 37, 41, 42, 49 alanları geri gönderilir.
+Her istek için:
+1. JSON gövdesi ISO8583 mesajına çevrilir ve her alan ISO8583 tanımına göre doğrulanır (aşağıdaki tablo). Bozuk ya da eksik alan → `400`; cevapta hangi alanda ne sorun olduğu yazar, istek Payment'a gitmez.
+2. `0200` (finansal) isteği RabbitMQ'daki `payment.transactions` kuyruğuna yazılır ve Payment'ın cevabı beklenir (bkz. **Gate ↔ Payment: RabbitMQ**). Diğer MTI'lar: F39=`12`.
+3. Cevap `200` ile döner; karar `responseCode` alanındadır (F39). Onay da red de (`51` yetersiz bakiye ...) `200`'dür.
 
-Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi (`MtiProcessingCode` tablosu). Loglarda kart numarası maskelenir (`411111******1111`).
+```json
+// istek
+{ "mti": "0200", "cardNumber": "4111111111111111", "processingCode": "000000", "amountMinor": 15000, "currencyCode": "949",
+  "transmissionDateTime": "0315095959", "stan": "000001", "localTime": "125959", "localDate": "0315", "terminalId": "TERM0001",
+  "cardExpiry": "2812", "entryMode": "051" }
+// cevap
+{ "mti": "0210", "responseCode": "00", "stan": "000001", "rrn": null }
+```
+
+Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi (`MtiProcessingCode` tablosu). Loglarda kart numarası maskelenir (`411111******1111`). Development modunda OpenAPI şeması `GET /openapi/v1.json`'dadır (Postman'a import edilebilir).
+
+### Alanlar
+| JSON | F | Format | Zorunlu (`0200`) |
+|---|---|---|---|
+| `mti` | — | 4 hane, istek MTI'ı (`0200`) | evet |
+| `cardNumber` | 2 | rakam, 1–19 | evet |
+| `processingCode` | 3 | n6 (`000000` satış, `310000` bakiye sorgu) | evet |
+| `amountMinor` | 4 | sayı, kuruş cinsinden (150,00 → `15000`), en fazla 12 hane | evet |
+| `transmissionDateTime` | 7 | n10 MMDDhhmmss | evet |
+| `stan` | 11 | n6 | evet |
+| `localTime` | 12 | n6 hhmmss | evet |
+| `localDate` | 13 | n4 MMDD | evet |
+| `terminalId` | 41 | ans8 | evet |
+| `currencyCode` | 49 | n3 (949 = TRY, 840 = USD) | evet |
+| `cardExpiry` | 14 | n4 YYMM | |
+| `merchantType` | 18 | n4 | |
+| `entryMode` | 22 | n3 (`051` çip, `071` temassız) | |
+| `rrn` | 37 | an12 | |
+| `merchantId` | 42 | ans15 | |
+| `cardAcceptor` | 43 | ans40 (tam 40 karakter) | |
+
+Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir.
 
 ### F39 (cevap kodu)
 | Kod | Kim üretir | Anlamı |
 |---|---|---|
-| `00` | Gate (0800) / Payment | Onay |
 | `12` | Gate | Desteklenmeyen MTI |
-| `30` | Gate | Format hatası: bozuk ya da eksik alan |
-| `91` | Gate | Payment'a ulaşılamadı: bağlantı hatası, timeout, 2xx olmayan ya da geçersiz cevap |
-| diğer | Payment | Olduğu gibi POS'a iletilir (örn. `51` yetersiz bakiye) |
+| `91` | Gate | Payment'tan `PaymentTimeoutSeconds` içinde cevap gelmedi, RabbitMQ'ya ulaşılamadı ya da cevap geçersiz |
+| diğer | Payment | Olduğu gibi döner (örn. `00` onay, `51` yetersiz bakiye) |
 
-Payment'ın ürettiği kodlar (`00`, `12`, `13`, `14`, `51`, `54`, `57`, `62`, `65`) için aşağıdaki **İşlem akışı** bölümüne bak.
-
-### Mesaj formatı (wire format)
-```
-[uzunluk: 2 bayt, big-endian][MTI: 4 ASCII][primary bitmap: 8 bayt][secondary bitmap: 8 bayt, bit 1 set ise][alanlar: ASCII, alan sırasıyla]
-```
-Uzunluk başlığı kendisini saymaz, en fazla 8192 bayt olabilir. Bitmap'te bit n (ilk baytın en soldaki biti = bit 1) "alan n mesajda var" demektir.
-
-| F | Ad | Format |
-|---|---|---|
-| 2 | PAN | LLVAR n..19 (2 haneli uzunluk öneki) |
-| 3 | Processing code | n6 |
-| 4 | Tutar (kuruş: 150.00 → `000000015000`) | n12 |
-| 7 | Transmission date/time MMDDhhmmss | n10 |
-| 11 | STAN | n6 |
-| 12 | Yerel saat hhmmss | n6 |
-| 13 | Yerel tarih MMDD | n4 |
-| 14 | Son kullanma YYMM | n4 |
-| 18 | Merchant type | n4 |
-| 22 | POS entry mode | n3 |
-| 37 | RRN | an12 |
-| 39 | Response code | an2 |
-| 41 | Terminal ID | ans8 |
-| 42 | Merchant ID | ans15 |
-| 43 | İşyeri adı/konumu | ans40 |
-| 49 | Para birimi (949 = TRY) | n3 |
-| 70 | Network management code (secondary bitmap) | n3 |
-
-Listede olmayan bir alan bitmap'te işaretliyse uzunluğu bilinemeyeceği için mesaj format hatası sayılır. Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir.
+Payment'ın ürettiği kodlar (`00`, `12`, `13`, `14`, `30`, `51`, `54`, `57`, `62`, `65`, `91`) için aşağıdaki **İşlem akışı** bölümüne bak.
 
 ### Ayarlar
-`src/PaymentSystem.Gate/appsettings.json` içindeki `Gate` bölümü, ya da `Gate__Port` gibi env var'lar:
+`src/PaymentSystem.Gate/appsettings.json` içindeki `Gate` bölümü, ya da `Gate__RabbitMqUri` gibi env var'lar. RabbitMQ şifresi `RABBITMQ_PASSWORD` env var'ından gelir.
 
 | Ayar | Varsayılan | |
 |---|---|---|
-| `Port` | `8583` | POS'ların bağlandığı TCP portu |
-| `PaymentBaseUrl` | `http://localhost:5002` | Payment servisinin adresi |
-| `PaymentTimeoutSeconds` | `10` | Bu süre içinde cevap gelmezse F39=`91` |
+| `RabbitMqUri` | `amqp://payment@localhost:5672` | Kuyruğun bulunduğu RabbitMQ (şifresiz) |
+| `PaymentTimeoutSeconds` | `10` | Bu süre içinde cevap gelmezse F39=`91`; isteğin kuyruktaki ömrü de bu süre |
 
 ### Çalıştırma
 ```bash
-# lokal
-dotnet run --project src/PaymentSystem.Gate
-
-# ya da Docker (DB ile birlikte)
+# Docker (hepsi birlikte): http://localhost:8080
 docker compose up -d --build
-
-# sadece Gate (DB'siz)
-docker compose up -d --build gate
 docker logs -f payment_system_gate
-```
-Eski `payment-api` servisiyle çalışmış bir makinede ilk seferde `--remove-orphans` ekle: `docker compose up -d --build --remove-orphans`. Böylece artık compose dosyasında olmayan `payment_system_api` container'ı silinir.
 
-Docker'da Gate, Payment'ı `http://payment:8080` adresinde arar. Sadece Gate ayaktaysa (Payment yoksa) logda `Name or service not known (payment:8080)` uyarısı görünür ve `0200` mesajları `91` alır.
-
-### POS simülatörü
-Gate çalışırken ayrı bir terminalde:
-```bash
-dotnet run --project tools/PosSimulator -- echo                          # 0800 → 0810 / 00
-dotnet run --project tools/PosSimulator -- sale 4111111111111111 150.00  # 0200 → 0210 / 00 (kart ve bakiye varsa)
-dotnet run --project tools/PosSimulator -- balance 4111111111111111
-dotnet run --project tools/PosSimulator -- transfer 4111111111111111 25,50
-dotnet run --project tools/PosSimulator -- sale 4111111111111111 10.00 --currency 840   # 10 USD, TL karşılığı düşer
-# seçenekler: --host localhost --port 8583 --expiry 2812 (YYMM) --currency 949 (ISO 4217 sayısal kod)
+# lokal (RabbitMQ container'ı ayaktayken; gate container'ı durdurulmuş olmalı, ikisi de 8080'i kullanır)
+$env:RABBITMQ_PASSWORD = "<şifreniz>"
+dotnet run --project src/PaymentSystem.Gate --launch-profile http
 ```
-Simülatör gönderdiği alanları, ham baytların hex dökümünü ve gelen cevabı alan alan yazdırır.
+
+## Gate ↔ Payment: RabbitMQ (request-reply)
+
+İstemci için akış senkron kalır: Gate isteği kuyruğa yazar ve aynı HTTP isteği içinde cevabı bekler.
+
+```
+Gate ──publish──► payment.transactions ──► Payment (TransactionQueueConsumer → TransactionProcessor)
+  ▲   CorrelationId, ReplyTo, Expiration (TTL), Timestamp                 │
+  └──────────────── amq.rabbitmq.reply-to (aynı CorrelationId) ◄──────────┘
+```
+
+- **Eşleştirme:** Her istek rastgele bir `CorrelationId` taşır; Payment cevabı isteğin `ReplyTo` adresine (RabbitMQ'nun direct reply-to'su, ayrı cevap kuyruğu açılmaz) aynı `CorrelationId` ile yazar. Aynı anda gelen istekler karışmaz.
+- **Geç işlenme koruması:** Gate `PaymentTimeoutSeconds` dolunca `91` döner. İstek bu süreyi TTL (`Expiration`) olarak taşır: süresi dolan istek kuyruktan silinir; Payment da `Timestamp`'e bakıp kuyruktan almış olsa bile süresi dolmuş isteği işlemez. Böylece Payment sonradan ayağa kalksa bile istemcinin `91` aldığı işlemden para düşmez. Gate'e geç gelen cevap loglanıp atılır.
+- **Tekrar:** Aynı istek ikinci kez gelirse UUID v5 idempotency anahtarı (bkz. İşlem akışı) para düşmesini engeller.
+- **Kopma:** Gate RabbitMQ'ya ilk istekte bağlanır, bağlantı koparsa bir sonraki istekte yeniden bağlanır (o arada `91`). Payment bağlanamazsa 5 sn'de bir yeniden dener.
+- **Paralellik:** Payment aynı anda en fazla 8 isteği işler (prefetch 8).
+- Bilinen sınır: Payment isteği tam süre dolarken işlerse (işleme sırasında süre dolar) para düşer ama Gate `91` döner. Çözümü reversal (`0400`), sonraki adım.
+
+Kuyruklar ve mesaj trafiği yönetim arayüzünden izlenebilir: http://localhost:15672 (kullanıcı `payment`, şifre `RABBITMQ_PASSWORD`).
 
 ## Payment (PaymentSystem.Payment)
 
 .NET 9 Web API; veritabanına **Dapper** (düz SQL) ile erişir. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
-Gate'in çağırdığı işlem akışı (`POST /api/transactions`) ve 4 tablonun CRUD endpoint'leri var.
+İşlemleri HTTP'den değil RabbitMQ kuyruğundan alır (bkz. **Gate ↔ Payment: RabbitMQ**). HTTP'de sadece yönetim için 4 tablonun CRUD endpoint'leri ve kur cache'i var.
 
 | Kaynak | Route |
 |---|---|
@@ -179,14 +179,15 @@ Kurallar:
 # Docker (DB ile birlikte): http://localhost:5002
 docker compose up -d --build
 
-# lokal (DB container'ı ayaktayken; payment container'ı durdurulmuş olmalı — ikisi de 5002'yi kullanır)
+# lokal (DB ve RabbitMQ container'ları ayaktayken; payment container'ı durdurulmuş olmalı — ikisi de 5002'yi kullanır)
 $env:MSSQL_SA_PASSWORD = "<şifreniz>"
+$env:RABBITMQ_PASSWORD = "<şifreniz>"
 dotnet run --project src/PaymentSystem.Payment --launch-profile http
 ```
 Örnek istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http`.
 
-### İşlem akışı (`POST /api/transactions`)
-Gate'in gönderdiği `PaymentRequest` JSON'unu alır, `{ "responseCode": "00" }` döner. **İş sonucu (onay ya da red) her zaman `200`** ile döner; `4xx`/`5xx` sadece teknik hatalardır ve Gate onları `91`'e çevirir.
+### İşlem akışı (`Transactions/`)
+`TransactionQueueConsumer` kuyruktaki isteği (`TransactionRequest` JSON) alır, `TransactionProcessor`'a verir ve `{ "responseCode": "00" }` cevabını Gate'e yazar. Teknik hatalarda da cevap verilir: okunamayan / geçersiz mesaj → `30`, DB'ye ulaşılamadı gibi beklenmeyen hata → `91` (transaction commit edilmediği için para hareketi yok).
 
 1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur. Tanımsızsa `12` (kayıt açılmaz).
 2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** kaydın `Guid`'i rastgele değil, isteğin `MTI + F2 + F3 + F4 + F13 + F12` alanlarından türetilen bir UUID v5'tir (şemaya kolon eklenmez). Aynı istek tekrar gelirse (aynı anda gelse bile) aynı Guid PK'ya takılır, ilk işlemin F39'u aynen döner, para ikinci kez düşmez. Sınır: tabloda STAN / terminal no olmadığı için aynı kartla aynı saniyede aynı tutarda iki gerçek işlem, ikincisi tekrar sayılır.
@@ -211,7 +212,7 @@ Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzer
 ```
 TCMB today.xml ──(açılışta + her saat)──► ExchangeRateRefresher ──yazar──► IMemoryCache ("fx:USD" ...)
                                                                                │ sadece okur
-POS → Gate → Payment / TransactionProcessor: TL karşılık = tutar × döviz satış kuru (kuruşa, yarım yukarı)
+İstemci → Gate → RabbitMQ → Payment / TransactionProcessor: TL karşılık = tutar × döviz satış kuru (kuruşa, yarım yukarı)
 ```
 - İşlem akışı TCMB'ye **hiç gitmez**, kuru sadece cache'ten okur; satışın hızı dış servise bağlı değildir.
 - Kur: TCMB `ForexSelling` (döviz satış) / `Unit` (JPY gibi kurlar 100 birim için yayımlanır). F49'daki ISO 4217 sayısal kod TCMB'nin harf koduna çevrilir (`840` → USD, `978` → EUR ...).
@@ -228,10 +229,10 @@ Ayarlar (`appsettings.json` → `ExchangeRates`, ya da `ExchangeRates__RefreshMi
 
 | Test projesi | Kapsam | Gereken |
 |---|---|---|
-| `tests/PaymentSystem.Gate.Tests` | ISO8583 pack/unpack, TCP framing, Gate'in karar mantığı (sahte Payment ile), HTTP Payment client'ı, gerçek soket üzerinden TCP sunucusu | — |
-| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz çevrimi), 4 CRUD controller + Dapper repository'leri, model doğrulama, TCMB ayrıştırma + kur cache'i + arka plan servisi (sahte HTTP ile) | **Docker** |
+| `tests/PaymentSystem.Gate.Tests` | HTTP endpoint'in alan doğrulaması, Gate'in karar mantığı (sahte Payment ile), gerçek RabbitMQ üzerinden request-reply (sahte Payment cevaplayıcısıyla: eşzamanlı istekler, geçersiz cevap, timeout + TTL, geç cevap), ISO8583 pack/unpack ve framing | **Docker** |
+| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz çevrimi), kuyruk tüketicisi (gerçek RabbitMQ + SQL: cevap, `30`, süresi dolmuş istek, DB yokken `91`), 4 CRUD controller + Dapper repository'leri, model doğrulama, TCMB ayrıştırma + kur cache'i + arka plan servisi (sahte HTTP ile) | **Docker** |
 
-Payment testleri [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek bir SQL Server container'ı başlatır ve içinde `docker/sql/init/*.sql` script'lerini çalıştırır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
+Testler [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek SQL Server ve RabbitMQ container'ları başlatır (compose'dakiyle aynı imajlar). SQL Server'da `docker/sql/init/*.sql` script'leri çalıştırılır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
 
 ```bash
 dotnet test -p:CollectCoverage=true
@@ -242,7 +243,8 @@ GitHub Actions (`.github/workflows/ci.yml`), `master`'a açılan her pull reques
 
 ## Sıradaki Adımlar
 - Cevap sözleşmesini genişletmek: F38 (onay kodu), F37 (RRN), F54 (bakiye sorgusu cevabı).
-- Timeout'ta reversal (Gate → Payment), circuit breaker, `/api/transactions`'ı sadece Gate'e açmak.
-- Gate ↔ Payment HTTP/JSON kalıyor; Kafka, Payment servisi bittikten sonra asenkron işler (bildirim, mutabakat) için.
+- Timeout'ta reversal (`0400`): Gate cevap alamadığı işlem için kuyruğa iptal mesajı bırakır, Payment açıldığında işler (store & forward).
+- Gate'e kimlik doğrulama (API key / mTLS); Payment'ın yönetim endpoint'lerini iç ağa almak.
+- Asenkron işler (bildirim, mutabakat) için ayrı kuyruklar.
 - DB şemasını ISO formatına uydurmak: `DebitTransaction.F13_TransactionDate` şu an `CHAR(8)` yyyymmdd (ISO: MMDD), `Card.ExpiryDate` MMYY (ISO F14: YYMM).
 - Para transferi şu an `12` döner: alıcı kart numarası ISO mesajında / Gate sözleşmesinde henüz yok.
