@@ -28,6 +28,7 @@ internal sealed class FakeParameterRepository : IParameterRepository
 {
     public IReadOnlyList<TransactionRoute> Routes { get; set; } = [];
     public IReadOnlyList<EntryMode> EntryModes { get; set; } = [];
+    public IReadOnlyList<InternalResponseCode> ResponseCodes { get; set; } = [];
     public int Loads { get; private set; }
 
     public Task<IReadOnlyList<TransactionRoute>> GetRoutesAsync()
@@ -37,6 +38,8 @@ internal sealed class FakeParameterRepository : IParameterRepository
     }
 
     public Task<IReadOnlyList<EntryMode>> GetEntryModesAsync() => Task.FromResult(EntryModes);
+
+    public Task<IReadOnlyList<InternalResponseCode>> GetInternalResponseCodesAsync() => Task.FromResult(ResponseCodes);
 }
 
 public class ParameterCacheTests
@@ -51,7 +54,10 @@ public class ParameterCacheTests
     private static readonly EntryMode Chip = new("05", "Chip", false);
 
     private readonly MovableClock _clock = new();
-    private readonly FakeParameterRepository _repository = new() { Routes = [Sale], EntryModes = [Chip] };
+    private readonly FakeParameterRepository _repository = new()
+    {
+        Routes = [Sale], EntryModes = [Chip], ResponseCodes = [new("3002", "Insufficient funds", "51")]
+    };
 
     [Fact]
     public async Task LoadsOnce_ThenServesFromMemory()
@@ -63,9 +69,11 @@ public class ParameterCacheTests
         Assert.Equal(Chip, await cache.FindEntryModeAsync("05"));
         Assert.Null(await cache.FindTypeAsync("0200", "999999"));     // tanımsız kod DB'ye gitmez
         Assert.Null(await cache.FindEntryModeAsync("99"));
+        Assert.Equal("51", await cache.FindResponseCodeAsync("3002"));
+        Assert.Null(await cache.FindResponseCodeAsync("9999"));
 
         Assert.Equal(1, _repository.Loads);
-        Assert.Contains(logger.Messages, m => m == "GetAsync: loaded 1 transaction routes and 1 entry modes, next refresh in 10 min");
+        Assert.Contains(logger.Messages, m => m == "GetAsync: loaded 1 transaction routes, 1 entry modes and 1 response codes, next refresh in 10 min");
     }
 
     [Fact]

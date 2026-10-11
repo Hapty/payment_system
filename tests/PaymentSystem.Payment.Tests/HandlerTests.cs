@@ -105,7 +105,8 @@ public class HandlerTests
         repository,
         TestParameters.Create(new FakeParameterRepository
         {
-            Routes = knownType ? [new TransactionRoute("0200", "000000", "10", "11", "Sale")] : []
+            Routes = knownType ? [new TransactionRoute("0200", "000000", "10", "11", "Sale")] : [],
+            ResponseCodes = [new("0000", "Approved", "00"), new("1001", "Transaction type not defined", "12")]
         }),
         new ExchangeRateCache(new MemoryCache(new MemoryCacheOptions()), TimeProvider.System, Options.Create(new ExchangeRateOptions())),
         TimeProvider.System,
@@ -122,8 +123,8 @@ public class HandlerTests
     {
         var repository = new FakeTransactionRepository();
 
-        Assert.Equal(ResponseCodes.Approved, await TransactionHandler(repository).ProcessAsync(Sale()));
-        Assert.Equal(ResponseCodes.Approved, repository.Session!.ResponseCode);
+        Assert.Equal("00", await TransactionHandler(repository).ProcessAsync(Sale()));
+        Assert.Equal("00", repository.Session!.ResponseCode);
         Assert.True(repository.Session.Committed);
         Assert.True(repository.Session.Disposed);
     }
@@ -144,7 +145,7 @@ public class HandlerTests
     {
         var repository = new FakeTransactionRepository();
 
-        Assert.Equal(ResponseCodes.InvalidTransaction, await TransactionHandler(repository, knownType: false).ProcessAsync(Sale()));
+        Assert.Equal("12", await TransactionHandler(repository, knownType: false).ProcessAsync(Sale()));
         Assert.Null(repository.Session);
     }
 }

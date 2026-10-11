@@ -23,4 +23,12 @@ public sealed class ParameterRepository(SqlConnectionFactory db) : IParameterRep
         var rows = await connection.QueryAsync<EntryMode>("SELECT Code, Name, IsContactless FROM dbo.EntryMode");
         return rows.AsList();
     }
+
+    public async Task<IReadOnlyList<InternalResponseCode>> GetInternalResponseCodesAsync()
+    {
+        await using var connection = db.Create();
+        var rows = await connection.QueryAsync<InternalResponseCode>(
+            "SELECT Irc, Description, F39_ResponseCode AS ResponseCode FROM dbo.InternalResponseCode");
+        return rows.AsList();
+    }
 }

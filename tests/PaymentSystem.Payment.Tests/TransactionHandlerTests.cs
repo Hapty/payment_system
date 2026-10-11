@@ -41,7 +41,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         string Mti, string F2_CardNo, string Otc, string Ots, decimal F4_Amount, decimal? LocalTxnAmount,
         string F12_TransactionTime, string F13_TransactionDate, string F43_Description, string? F39_ResponseCode);
 
-    // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql, 03_seed_entry_modes.sql) ve bir hesap + kartı yeniden ekler.
+    // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql, 03_seed_entry_modes.sql, 04_seed_internal_response_codes.sql) ve bir hesap + kartı yeniden ekler.
     private async Task SeedAsync(decimal balance = 1000m, string status = "Active", string? expiry = "1228",
         bool contactless = true, decimal? contactlessLimit = 750m)
     {
@@ -54,6 +54,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
             INSERT INTO dbo.EntryMode (Code, Name, IsContactless)
                 VALUES ('00', 'Unknown', 0), ('01', 'Manual', 0), ('02', 'MagneticStripe', 0), ('05', 'Chip', 0),
                        ('07', 'ContactlessChip', 1), ('90', 'MagneticStripeFullTrack', 0), ('91', 'ContactlessMagneticStripe', 1);
+            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('9001', 'Exchange rate unavailable or stale', '91');
             INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES (@AccountNo, @status, @balance);
             INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit)
                 VALUES (@Pan, @AccountNo, @expiry, @contactless, @contactlessLimit);
@@ -501,6 +502,30 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
             await connection.ExecuteAsync("UPDATE dbo.EntryMode SET IsContactless = 1 WHERE Code = '05'");
 
         Assert.Equal("57", await AuthorizeAsync(Sale()));   // EntryMode 051
+    }
+
+    [Fact]
+    public async Task ResponseCode_ComesFromInternalResponseCodeTable()
+    {
+        // 3002 (bakiye yetersiz) tabloda 61'e çevrilirse POS 61 alır: F39'u kod değil tablo belirler.
+        await SeedAsync(balance: 10m);
+        await using (var connection = Db.Create())
+            await connection.ExecuteAsync("UPDATE dbo.InternalResponseCode SET F39_ResponseCode = '61' WHERE Irc = '3002'");
+
+        Assert.Equal("61", await AuthorizeAsync(Sale()));
+        Assert.Equal("61", Assert.Single(await TransactionsAsync()).F39_ResponseCode);
+    }
+
+    [Fact]
+    public async Task UndefinedIrc_Responds96AndMovesNoMoney()
+    {
+        // Onay kodu (0000) tabloda yok: işlem onaylanmış sayılmaz, transaction geri alınmaz ama F39 96 yazılır.
+        await SeedAsync();
+        await using (var connection = Db.Create())
+            await connection.ExecuteAsync("DELETE FROM dbo.InternalResponseCode WHERE Irc = '0000'");
+
+        Assert.Equal("96", await AuthorizeAsync(Sale()));
+        Assert.Equal("96", Assert.Single(await TransactionsAsync()).F39_ResponseCode);
     }
 
     [Fact]

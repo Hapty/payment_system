@@ -4,10 +4,11 @@ using PaymentSystem.Payment.Data;
 
 namespace PaymentSystem.Payment.Parameters;
 
-// İşlem akışının tanım tabloları (TransactionType + MtiProcessingCode yönlendirmesi, EntryMode) IMemoryCache'te tek kayıt
+// İşlem akışının tanım tabloları (TransactionType + MtiProcessingCode yönlendirmesi, EntryMode, InternalResponseCode) IMemoryCache'te tek kayıt
 // olarak durur: işlem başına DB'ye gidilmez, tanımsız bir kod da DB'ye gitmeden tanımsız sayılır.
 // RefreshMinutes dolunca ilk ihtiyaçta yeniden okunur. TransactionType / MtiProcessingCode API'den değişince handler'lar
-// Invalidate ile hemen boşaltır; EntryMode'un API'si yok (doğrudan SQL), değişikliği en geç RefreshMinutes içinde devreye girer.
+// Invalidate ile hemen boşaltır; EntryMode ve InternalResponseCode'un API'si yok (doğrudan SQL), değişikliği en geç
+// RefreshMinutes içinde devreye girer.
 public sealed class ParameterCache(
     IParameterRepository repository, IMemoryCache cache, TimeProvider clock, IOptions<ParameterOptions> options,
     ILogger<ParameterCache> logger)
@@ -23,6 +24,7 @@ public sealed class ParameterCache(
     private sealed record Snapshot(
         IReadOnlyDictionary<(string Mti, string ProcessingCode), RoutedType> Routes,
         IReadOnlyDictionary<string, EntryMode> EntryModes,
+        IReadOnlyDictionary<string, string> ResponseCodes,
         DateTimeOffset LoadedAt);
 
     public async Task<RoutedType?> FindTypeAsync(string mti, string processingCode) =>
@@ -30,6 +32,10 @@ public sealed class ParameterCache(
 
     public async Task<EntryMode?> FindEntryModeAsync(string code) =>
         (await GetAsync()).EntryModes.GetValueOrDefault(code);
+
+    // IRC'nin F39 karşılığı; null: IRC tabloda tanımlı değil.
+    public async Task<string?> FindResponseCodeAsync(string irc) =>
+        (await GetAsync()).ResponseCodes.GetValueOrDefault(irc);
 
     public void Invalidate()
     {
@@ -52,15 +58,18 @@ public sealed class ParameterCache(
             var version = Interlocked.Read(ref _version);
             var routes = await repository.GetRoutesAsync();
             var entryModes = await repository.GetEntryModesAsync();
+            var responseCodes = await repository.GetInternalResponseCodesAsync();
             snapshot = new Snapshot(
                 routes.ToDictionary(r => (r.Mti, r.ProcessingCode), r => new RoutedType(r.Otc, r.Ots, r.Name)),
                 entryModes.ToDictionary(e => e.Code),
+                responseCodes.ToDictionary(r => r.Irc, r => r.ResponseCode),
                 clock.GetUtcNow());
 
             if (Interlocked.Read(ref _version) == version)
                 cache.Set(Key, snapshot);
-            logger.LogInformation("{Method}: loaded {Routes} transaction routes and {EntryModes} entry modes, next refresh in {Minutes} min",
-                nameof(GetAsync), snapshot.Routes.Count, snapshot.EntryModes.Count, options.Value.RefreshMinutes);
+            logger.LogInformation(
+                "{Method}: loaded {Routes} transaction routes, {EntryModes} entry modes and {ResponseCodes} response codes, next refresh in {Minutes} min",
+                nameof(GetAsync), snapshot.Routes.Count, snapshot.EntryModes.Count, snapshot.ResponseCodes.Count, options.Value.RefreshMinutes);
             return snapshot;
         }
         finally

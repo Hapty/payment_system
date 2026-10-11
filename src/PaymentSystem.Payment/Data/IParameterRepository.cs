@@ -9,10 +9,15 @@ public sealed record TransactionRoute(string Mti, string ProcessingCode, string 
 // dbo.EntryMode satırı: F22'nin ilk iki hanesi -> giriş yöntemi, örn. 07 -> ContactlessChip (temassız).
 public sealed record EntryMode(string Code, string Name, bool IsContactless);
 
+// dbo.InternalResponseCode satırı: iç karar kodu -> POS'a dönen F39, örn. 3002 (bakiye yetersiz) -> 51.
+public sealed record InternalResponseCode(string Irc, string Description, string ResponseCode);
+
 // İşlem akışının tanım (parametre) tabloları. Tamamı birden okunur ve ParameterCache'te tutulur.
 public interface IParameterRepository
 {
     Task<IReadOnlyList<TransactionRoute>> GetRoutesAsync();
 
     Task<IReadOnlyList<EntryMode>> GetEntryModesAsync();
+
+    Task<IReadOnlyList<InternalResponseCode>> GetInternalResponseCodesAsync();
 }

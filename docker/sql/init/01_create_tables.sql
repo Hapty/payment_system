@@ -111,3 +111,16 @@ BEGIN
     );
 END
 GO
+
+-- 7) InternalResponseCode (sözlük: iç karar kodu IRC -> POS'a dönen F39)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'InternalResponseCode')
+BEGIN
+    CREATE TABLE dbo.InternalResponseCode
+    (
+        Irc                 CHAR(4)         NOT NULL,
+        Description         VARCHAR(100)    NOT NULL,
+        F39_ResponseCode    CHAR(2)         NOT NULL,
+        CONSTRAINT PK_InternalResponseCode PRIMARY KEY (Irc)
+    );
+END
+GO
