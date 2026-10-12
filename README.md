@@ -1,12 +1,18 @@
 # Payment System
 
 Kart işlemlerini (satış, bakiye sorgu) HTTP/JSON olarak alan ödeme sistemi. İşlemlerin tek girişi Gate'tir;
-Gate isteği RabbitMQ kuyruğuyla Payment'a iletir ve cevabı bekler.
+Gate isteği RabbitMQ kuyruğuyla Payment'a iletir ve cevabı bekler. Payment her kararı Kafka'ya olay olarak yazar;
+Notification bu olaylardan onaylı satışları müşteriye e-postayla bildirir (asenkron, işlemi bekletmez).
 
 ```
 İstemci (Postman) ──HTTP / JSON──► Gate ──RabbitMQ (request-reply)──► Payment ──► SQL Server
-                    POST :8080/api/transactions   payment.transactions     │
-                                                                           └─ CRUD + kur: http://localhost:5002 (yönetim)
+                    POST :8080/api/transactions   payment.transactions     │  │
+                                                                           │  └─ CRUD + kur: http://localhost:5002 (yönetim)
+                                                                           │
+                                        Kafka: payment.transaction-events ◄┘ (her karar, bloklamadan)
+                                                       │
+                                                       ▼
+                                                 Notification ──SMTP (Gmail)──► müşterinin e-postası (onaylı satış)
 ```
 
 | Parça | Konum | Durum |
@@ -14,7 +20,9 @@ Gate isteği RabbitMQ kuyruğuyla Payment'a iletir ve cevabı bekler.
 | Gate | `src/PaymentSystem.Gate` | `POST /api/transactions`: alanları ISO8583 tanımına göre doğrular, isteği kuyruğa yazar, Payment'ın cevabını (F39) döner |
 | ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli ve alan tanımları (Gate'in doğrulaması bunları kullanır); pack/unpack ve TCP framing |
 | Payment | `src/PaymentSystem.Payment` | Kuyruktan işlem akışı (TL ve döviz satış, bakiye sorgu) + Web API ile 4 tablonun CRUD'u ve TCMB kur cache'i. Dapper |
+| Notification | `src/PaymentSystem.Notification` | Kafka'daki işlem olaylarını okur, onaylı satışlarda hesabın e-postasına SMTP ile bildirim atar |
 | RabbitMQ | `docker-compose.yml` | Gate ↔ Payment arası kuyruk; yönetim arayüzü http://localhost:15672 |
+| Kafka | `docker-compose.yml` | Payment'ın işlem olayları (`payment.transaction-events`); KRaft, tek node |
 | Veritabanı | `docker/sql` | Tablolar + seed |
 
 ## Veritabanı (MS SQL Server, Docker)
@@ -22,7 +30,8 @@ Gate isteği RabbitMQ kuyruğuyla Payment'a iletir ve cevabı bekler.
 ### Kurulum
 ```bash
 cp .env.example .env
-# .env içindeki MSSQL_SA_PASSWORD ve RABBITMQ_PASSWORD değerlerini güçlü şifrelerle değiştir
+# .env içindeki MSSQL_SA_PASSWORD ve RABBITMQ_PASSWORD değerlerini güçlü şifrelerle değiştir,
+# e-posta bildirimleri için SMTP_USER ve SMTP_PASSWORD'ü doldur (bkz. Notification)
 docker compose up -d
 ```
 
@@ -186,7 +195,7 @@ Kurallar:
 # Docker (DB ile birlikte): http://localhost:5002
 docker compose up -d --build
 
-# lokal (DB ve RabbitMQ container'ları ayaktayken; payment container'ı durdurulmuş olmalı — ikisi de 5002'yi kullanır)
+# lokal (DB, RabbitMQ ve Kafka container'ları ayaktayken; payment container'ı durdurulmuş olmalı — ikisi de 5002'yi kullanır)
 $env:MSSQL_SA_PASSWORD = "<şifreniz>"
 $env:RABBITMQ_PASSWORD = "<şifreniz>"
 dotnet run --project src/PaymentSystem.Payment --launch-profile http
@@ -253,14 +262,72 @@ Cache'in içeriği `GET /api/exchange-rates` (hepsi) ve `GET /api/exchange-rates
 
 Ayarlar (`appsettings.json` → `ExchangeRates`, ya da `ExchangeRates__RefreshMinutes` gibi ortam değişkenleri): `TcmbUrl`, `RefreshMinutes` (60), `RetryMinutes` (1), `MaxAgeHours` (24).
 
+### İşlem olayları (`Events/`)
+Commit edilen her karar (onay da red de) Kafka'daki `payment.transaction-events` topic'ine bir `TransactionCompleted` olayı olarak yazılır. Topic tek bir servise değil, "Payment'ta ne oldu" sorusuna aittir: her tüketici (bugün Notification; yarın fraud, raporlama ...) kendi consumer group'uyla okur ve ilgilendiği olayları kendisi seçer. Yeni tüketici eklemek için Payment'a dokunmak gerekmez.
+
+- **Bloklamaz:** olay kütüphanenin yerel kuyruğuna bırakılır, Gate'e dönen cevap Kafka'yı beklemez. Kafka kapalıysa olay `MessageTimeoutMs` (30 sn) boyunca denenir, sonra loglanıp bırakılır; işlemin kendisi etkilenmez (outbox yok, bilinçli tercih).
+- **Olmayanlar:** tekrar gelen istek (ilk istek olayını zaten yazdı), kayıt açılmayan red (tanımsız işlem tipi, `12`) ve teknik hata (`91`) olay üretmez.
+- **Anahtar:** hesap no; aynı hesabın olayları aynı partition'a düşer, sırası korunur (kart bulunamadıysa anahtar boş).
+- **PCI:** kart numarası sadece maskeli (`411111********11`) yazılır.
+- **Sürüm:** `eventType` (`TransactionCompleted`) ve `version` (`1`). Alan eklemek geriye uyumludur; alan silmek / anlamını değiştirmek `version`'ı artırır.
+
+```json
+{ "transactionId": "…", "occurredAt": "2026-03-15T10:00:00+00:00", "mti": "0200", "transactionType": "Sale",
+  "responseCode": "00", "irc": "0000", "maskedCardNumber": "411111********11", "accountNo": "TR01",
+  "email": "musteri@example.com", "amount": 10.00, "currencyCode": "840", "localAmount": 492.15,
+  "cardAcceptor": "PAYMENT SYSTEM POS SIMULATOR", "transactionDate": "20260315", "localTime": "125959",
+  "terminalId": "TERM0001", "stan": "000001", "eventType": "TransactionCompleted", "version": 1 }
+```
+
+Ayarlar (`appsettings.json` → `Kafka`, ya da `Kafka__BootstrapServers`): `BootstrapServers` (`localhost:9094`; compose'da `kafka:9092`), `Topic`, `MessageTimeoutMs` (30000).
+
+## Notification (PaymentSystem.Notification)
+
+.NET 9 worker servisi (HTTP endpoint'i yok). `payment.transaction-events` topic'ini `notification` consumer group'uyla okur.
+
+- **Kime:** sadece **onaylı satış** (`transactionType = Sale` ve F39 `00`) bildirilir; red, bakiye sorgu ve bilinmeyen olay tipleri atlanır. E-posta olaydaki `email`'e (`BankAccount.Email`) gider; hesabın e-postası yoksa loglanıp geçilir.
+- **İçerik:** maskeli kart no, tutar ve para birimi, dövizse TL karşılığı, işyeri (F43), tarih / saat ve işlem no (Guid).
+- **Tekrar:** Kafka bir olayı birden fazla teslim edebilir; gönderilen son 10.000 işlemin Guid'i bellekte tutulur, aynı işleme ikinci e-posta gitmez.
+- **Hata:** gönderilemeyen e-posta `MaxAttempts` (3) kez, `RetryDelaySeconds` (5) arayla denenir, sonra loglanıp geçilir: tüketici o olayda takılı kalmaz. Offset olay işlendikten sonra saklanır; servis olayın ortasında kapanırsa açılınca aynı olay yeniden gelir.
+- **Topic:** servis açılışta topic yoksa oluşturur (Payment henüz hiç olay yazmamış olabilir). Group ilk kez açılıyorsa topic'in başından okur.
+
+### Gmail ile gerçek gönderim
+1. Gönderen Google hesabında 2 adımlı doğrulamayı aç.
+2. https://myaccount.google.com/apppasswords adresinden bir uygulama şifresi oluştur (16 hane).
+3. `.env`'e yaz ve servisi yeniden başlat:
+   ```
+   SMTP_USER=gonderen@gmail.com
+   SMTP_PASSWORD=abcdefghijklmnop
+   ```
+   `docker compose up -d --build notification`
+4. Bir hesaba e-posta tanımla (`PUT /api/bank-accounts/{accountNo}` ile `"email": "..."`), o hesabın kartıyla Gate'ten satış yap; e-posta gelen kutusuna düşer. Akış `docker logs -f payment_system_notification`'da izlenir.
+
+Gmail dışında bir sunucu için `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM` verilebilir. `SMTP_USER` / `SMTP_FROM`'dan biri yoksa servis açılışta hata verip durur.
+
+### Ayarlar
+`src/PaymentSystem.Notification/appsettings.json` → `Kafka` (`BootstrapServers`, `Topic`, `GroupId`) ve `Smtp` (`Host`, `Port`, `Security` = `StartTls` / `SslOnConnect` / `None`, `User`, `Password`, `From`, `FromName`, `MaxAttempts`, `RetryDelaySeconds`); ya da `Smtp__User` gibi ortam değişkenleri.
+
+### Çalıştırma
+```bash
+# Docker (hepsi birlikte)
+docker compose up -d --build
+docker logs -f payment_system_notification
+
+# lokal (Kafka container'ı ayaktayken; notification container'ı durdurulmuş olmalı)
+$env:Smtp__User = "gonderen@gmail.com"
+$env:Smtp__Password = "<uygulama şifresi>"
+dotnet run --project src/PaymentSystem.Notification
+```
+
 ## Testler ve CI
 
 | Test projesi | Kapsam | Gereken |
 |---|---|---|
 | `tests/PaymentSystem.Gate.Tests` | HTTP endpoint'in alan doğrulaması, Gate'in karar mantığı (sahte Payment ile), gerçek RabbitMQ üzerinden request-reply (sahte Payment cevaplayıcısıyla: eşzamanlı istekler, geçersiz cevap, timeout + TTL, geç cevap), ISO8583 pack/unpack ve framing | **Docker** |
-| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz çevrimi), kuyruk tüketicisi (gerçek RabbitMQ + SQL: cevap, `30`, süresi dolmuş istek, DB yokken `91`), 4 CRUD controller + Dapper repository'leri, model doğrulama, TCMB ayrıştırma + kur cache'i + arka plan servisi (sahte HTTP ile) | **Docker** |
+| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz çevrimi), kuyruk tüketicisi (gerçek RabbitMQ + SQL: cevap, `30`, süresi dolmuş istek, DB yokken `91`), 4 CRUD controller + Dapper repository'leri, model doğrulama, TCMB ayrıştırma + kur cache'i + arka plan servisi (sahte HTTP ile), işlem olayları (içerik, hangi kararda yayımlandığı, gerçek Kafka'ya yazım) | **Docker** |
+| `tests/PaymentSystem.Notification.Tests` | Bildirim kuralları (sadece onaylı satış, e-postasız hesap, tekrar gelen olay, yeniden deneme), e-posta içeriği, gerçek Kafka'dan okuma (bozuk olay atlanır), SMTP gönderimi (Mailpit container'ına; gerçek e-posta gitmez) | **Docker** |
 
-Testler [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek SQL Server ve RabbitMQ container'ları başlatır (compose'dakiyle aynı imajlar). SQL Server'da `docker/sql/init/*.sql` script'leri çalıştırılır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
+Testler [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek SQL Server, RabbitMQ, Kafka ve Mailpit container'ları başlatır (compose'dakiyle aynı imajlar). SQL Server'da `docker/sql/init/*.sql` script'leri çalıştırılır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
 
 ```bash
 dotnet test -p:CollectCoverage=true
@@ -273,6 +340,7 @@ GitHub Actions (`.github/workflows/ci.yml`), `master`'a açılan her pull reques
 - Cevap sözleşmesini genişletmek: F38 (onay kodu), F37 (RRN), F54 (bakiye sorgusu cevabı).
 - Timeout'ta reversal (`0400`): Gate cevap alamadığı işlem için kuyruğa iptal mesajı bırakır, Payment açıldığında işler (store & forward).
 - Gate'e kimlik doğrulama (API key / mTLS); Payment'ın yönetim endpoint'lerini iç ağa almak.
-- Asenkron işler (bildirim, mutabakat) için ayrı kuyruklar.
+- Diğer asenkron işler (mutabakat, fraud) `payment.transaction-events`'i kendi consumer group'larıyla okuyabilir.
+- Bildirim geçmişi: gönderilen / gönderilemeyen e-postaların kaydı (web arayüzünde göstermek için).
 - DB şemasını ISO formatına uydurmak: `DebitTransaction.F13_TransactionDate` şu an `CHAR(8)` yyyymmdd (ISO: MMDD), `Card.ExpiryDate` MMYY (ISO F14: YYMM).
 - Para transferi şu an `12` döner: alıcı kart numarası ISO mesajında / Gate sözleşmesinde henüz yok.
