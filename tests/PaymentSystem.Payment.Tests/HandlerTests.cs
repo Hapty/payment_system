@@ -41,7 +41,7 @@ public class HandlerTests
     {
         var repository = new FakeCardRepository();
         var logger = new ListLogger<CardHandler>();
-        var handler = new CardHandler(repository, logger);
+        var handler = new CardHandler(repository, TestCvv.Calculator, logger);
         var card = new Card { CardNumber = Pan, AccountNo = "ACC1" };
 
         Assert.Equal(WriteResult.Ok, await handler.CreateAsync(card));
@@ -114,6 +114,7 @@ public class HandlerTests
             ResponseCodes = [new("0000", "Approved", "00"), new("1001", "Transaction type not defined", "12")]
         }),
         new ExchangeRateCache(new MemoryCache(new MemoryCacheOptions()), TimeProvider.System, Options.Create(new ExchangeRateOptions())),
+        TestCvv.Calculator,
         Events,
         TimeProvider.System,
         new ListLogger<TransactionHandler>());

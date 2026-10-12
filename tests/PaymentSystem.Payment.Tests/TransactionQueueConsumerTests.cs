@@ -72,6 +72,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
             new TransactionRepository(db ?? Db),
             TestParameters.Create(db ?? Db),
             new ExchangeRateCache(new MemoryCache(new MemoryCacheOptions()), TimeProvider.System, Options.Create(new ExchangeRateOptions())),
+            TestCvv.Calculator,
             new RecordingEventPublisher(),
             TimeProvider.System,
             HandlerLogger);
@@ -216,7 +217,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
     {
         var consumer = new TransactionQueueConsumer(
             rabbit.Factory("amqp://payment:x@127.0.0.1:1"),
-            new TransactionHandler(new TransactionRepository(Db), TestParameters.Create(Db), null!, new RecordingEventPublisher(), TimeProvider.System,
+            new TransactionHandler(new TransactionRepository(Db), TestParameters.Create(Db), null!, TestCvv.Calculator, new RecordingEventPublisher(), TimeProvider.System,
                 NullLogger<TransactionHandler>.Instance),
             TimeProvider.System,
             NullLogger<TransactionQueueConsumer>.Instance);

@@ -18,6 +18,7 @@ USING (VALUES
     ('2003', 'Account not active', '62'),
     ('2004', 'Contactless not allowed for card', '57'),
     ('2005', 'Contactless limit exceeded', '65'),
+    ('2006', 'CVV2 missing or does not match', 'N7'),
     ('3001', 'Amount is zero', '13'),
     ('3002', 'Insufficient funds', '51'),
     ('9001', 'Exchange rate unavailable or stale', '91')

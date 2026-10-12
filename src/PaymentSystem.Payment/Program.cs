@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using PaymentSystem.Payment.Cards;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.Events;
 using PaymentSystem.Payment.ExchangeRates;
@@ -24,6 +25,11 @@ var connectionString = new SqlConnectionStringBuilder(builder.Configuration.GetC
 }.ConnectionString;
 
 builder.Services.AddSingleton(new SqlConnectionFactory(connectionString));
+
+// CVV saklanmaz, CVV_KEY (32 hex = KeyA + KeyB) ile kart bilgilerinden hesaplanır. Anahtar appsettings'te durmaz.
+var cvvCalculator = new VisaCvvCalculator(builder.Configuration["CVV_KEY"]
+    ?? throw new InvalidOperationException("CVV_KEY is not configured."));
+builder.Services.AddSingleton<ICvvCalculator>(cvvCalculator);
 builder.Services.AddSingleton(TimeProvider.System);
 
 // Controller / kuyruk consumer'ı -> handler (iş kuralları, loglama) -> repository (SQL).
@@ -76,6 +82,9 @@ builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+
+// Anahtarın kendisi değil parmak izi (KCV) loglanır: doğru anahtarın yüklendiği, anahtar görünmeden kontrol edilir.
+app.Logger.LogInformation("{Method}: CVV key loaded, KCV {Kcv}", "Startup", cvvCalculator.KeyCheckValue);
 
 if (app.Environment.IsDevelopment())
 {

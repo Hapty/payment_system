@@ -11,7 +11,7 @@ namespace PaymentSystem.Payment.Tests;
 public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private CardRepository Repository => new(Db);
-    private CardsController Controller => new(new CardHandler(Repository, NullLogger<CardHandler>.Instance));
+    private CardsController Controller => new(new CardHandler(Repository, TestCvv.Calculator, NullLogger<CardHandler>.Instance));
 
     private static Card NewCard(string number = "4111111111111111") => new()
     {
@@ -78,11 +78,37 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
         var result = await Controller.Create(card);
 
         var created = Assert.IsType<CreatedAtActionResult>(result.Result);
-        var saved = Assert.IsType<Card>(created.Value);
+        var saved = Assert.IsType<IssuedCard>(created.Value);
         Assert.NotEqual(42, saved.Id);
         var stored = (await Repository.GetAsync(saved.Id))!;
         Assert.Null(stored.LastTransactionDate);
         Assert.Null(stored.LastTransactionAmount);
+    }
+
+    [Fact]
+    public async Task Create_ReturnsCvvOnceButItIsNeitherStoredNorReturnedLater()
+    {
+        var created = Assert.IsType<CreatedAtActionResult>((await Controller.Create(NewCard())).Result);
+        var issued = Assert.IsType<IssuedCard>(created.Value);
+
+        Assert.Equal(TestCvv.Calculator.CalculateCvv2("4111111111111111", "1228"), issued.Cvv);
+        Assert.Equal(("4111111111111111", "ACC1", "Debit", "1228"), (issued.CardNumber, issued.AccountNo, issued.CardType, issued.ExpiryDate));
+
+        // GET kartın kendisini (Card) döner, CVV alanı yoktur; DB'deki Cvv kolonu boş kalır.
+        Assert.IsNotType<IssuedCard>((await Controller.Get(issued.Id)).Value);
+        await using var connection = Db.Create();
+        Assert.Null(await connection.ExecuteScalarAsync<string?>("SELECT Cvv FROM dbo.Card WHERE Id = @Id", new { issued.Id }));
+    }
+
+    [Fact]
+    public async Task Create_WithoutExpiry_HasNoCvv()
+    {
+        var card = NewCard();
+        card.ExpiryDate = null;
+
+        var created = Assert.IsType<CreatedAtActionResult>((await Controller.Create(card)).Result);
+
+        Assert.Null(Assert.IsType<IssuedCard>(created.Value).Cvv);
     }
 
     [Fact]

@@ -14,6 +14,7 @@ public static class InternalResponseCodes
     public const string AccountNotActive = "2003";
     public const string ContactlessNotAllowed = "2004";
     public const string ContactlessLimitExceeded = "2005";
+    public const string CvvMismatch = "2006";                   // CVV2 yanlış ya da kart fiziksel olarak yokken gelmedi
     public const string ZeroAmount = "3001";
     public const string InsufficientFunds = "3002";
     public const string ExchangeRateUnavailable = "9001";       // cache'te kur yok ya da bayat

@@ -53,6 +53,10 @@ public class TransactionRequest
 
     [StringLength(40)]
     public string? CardAcceptor { get; set; }                   // F43
+
+    // CVV2 (kartın arkası). ISO8583:1987'de standart alanı yok; Gate ayrı bir alan olarak iletir. Asla loglanmaz / saklanmaz.
+    [RegularExpression("^[0-9]{3,4}$")]
+    public string? Cvv { get; set; }
 }
 
 // Sonuç ne olursa olsun (onay ya da red) 200 ile döner; Gate ResponseCode'u F39'a yazar.

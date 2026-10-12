@@ -1,12 +1,16 @@
 using PaymentSystem.Iso8583;
+using PaymentSystem.Payment.Cards;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Handlers;
 
 // Kart CRUD işlemleri: CardsController ile CardRepository arasında. Kart numarası loglara maskeli yazılır.
-public sealed class CardHandler(ICardRepository cards, ILogger<CardHandler> logger)
+public sealed class CardHandler(ICardRepository cards, ICvvCalculator cvv, ILogger<CardHandler> logger)
 {
+    // Yeni kartın CVV2'si: kartın arkasına basılacak değer. Sadece kart oluşturulurken bir kez döner, hiçbir yere yazılmaz.
+    public string? IssueCvv(Card card) => cvv.CalculateCvv2(card.CardNumber, card.ExpiryDate);
+
     public async Task<IReadOnlyList<Card>> GetAllAsync()
     {
         var all = await cards.GetAllAsync();

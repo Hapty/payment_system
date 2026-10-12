@@ -74,6 +74,18 @@ public class ModelValidationTests
         Assert.False(IsValid(request));
     }
 
+    [Theory]
+    [InlineData("123", true)]
+    [InlineData("1234", true)]      // Amex CID 4 hanelidir
+    [InlineData("12", false)]
+    [InlineData("12a", false)]
+    public void TransactionRequest_Cvv_MustBeThreeOrFourDigits(string cvv, bool valid)
+    {
+        var request = ValidTransaction();
+        request.Cvv = cvv;
+        Assert.Equal(valid, IsValid(request));
+    }
+
     [Fact]
     public void TransactionRequest_NegativeAmount_IsInvalid()
     {
