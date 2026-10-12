@@ -42,13 +42,63 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     environment:
       MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       ConnectionStrings__PaymentSystem: "Server=db,1433;Database=PaymentSystem;User Id=sa;TrustServerCertificate=True"
       ConnectionStrings__RabbitMq: "amqp://payment@rabbitmq:5672"
+      Kafka__BootstrapServers: "kafka:9092"
     ports:
       - "5002:8080"                               # sadece yönetim: CRUD + kur endpoint'leri (işlemler kuyruktan gelir)
+    restart: unless-stopped
+
+  notification:
+    build:
+      context: .
+      dockerfile: src/PaymentSystem.Notification/Dockerfile
+    container_name: payment_system_notification
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      Kafka__BootstrapServers: "kafka:9092"
+      # Gmail: SMTP_USER = gönderen Gmail adresi, SMTP_PASSWORD = 16 haneli uygulama şifresi (bkz. README / Notification)
+      Smtp__Host: ${SMTP_HOST:-smtp.gmail.com}
+      Smtp__Port: ${SMTP_PORT:-587}
+      Smtp__User: ${SMTP_USER}
+      Smtp__Password: ${SMTP_PASSWORD}
+      Smtp__From: ${SMTP_FROM:-}
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:3.9.0                     # KRaft: Zookeeper'sız, tek node (broker + controller)
+    container_name: payment_system_kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # PLAINTEXT: container'lar arası (kafka:9092), EXTERNAL: lokalde çalışan servisler için (localhost:9094)
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3                     # payment.transaction-events: hesap no'ya göre 3 partition
+    ports:
+      - "9094:9094"
+    # Volume yok: olaylar ve offset'ler container'la birlikte durur; `docker compose down` ile silinir (bildirimler geçicidir).
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
   gate:
