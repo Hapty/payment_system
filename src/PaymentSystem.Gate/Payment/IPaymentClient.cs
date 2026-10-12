@@ -2,6 +2,6 @@ namespace PaymentSystem.Gate.Payment;
 
 public interface IPaymentClient
 {
-    // Never throws for Payment-side problems: an unreachable or misbehaving Payment service yields response code 91.
+    // Payment tarafındaki sorunlarda asla exception fırlatmaz: ulaşılamayan ya da hatalı cevap veren Payment servisi 91 kodunu üretir.
     Task<PaymentResponse> AuthorizeAsync(PaymentRequest request, CancellationToken cancellationToken);
 }

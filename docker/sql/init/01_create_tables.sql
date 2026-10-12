@@ -1,7 +1,7 @@
 -- =========================================================
--- Payment System - Table Definitions
--- Idempotent: safe to re-run (checks existence before create)
--- No foreign keys - tables and columns only
+-- Payment System - Tablo tanımları
+-- Idempotent: tekrar çalıştırmak güvenli (oluşturmadan önce var mı diye bakar)
+-- Foreign key yok - sadece tablolar ve kolonlar
 -- =========================================================
 
 IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = 'PaymentSystem')
@@ -20,9 +20,15 @@ BEGIN
     (
         AccountNo       VARCHAR(34)     NOT NULL PRIMARY KEY,
         AccountStatus   VARCHAR(20)     NOT NULL,
-        Balance         DECIMAL(18,2)   NOT NULL DEFAULT 0
+        Balance         DECIMAL(18,2)   NOT NULL DEFAULT 0,
+        Email           VARCHAR(254)    NULL            -- onaylı satışta Notification servisi bu adrese e-posta atar
     );
 END
+GO
+
+-- Email kolonu sonradan eklendi: tablo bu kolondan önce oluşturulduysa (mevcut volume) burada eklenir.
+IF COL_LENGTH('dbo.BankAccount', 'Email') IS NULL
+    ALTER TABLE dbo.BankAccount ADD Email VARCHAR(254) NULL;
 GO
 
 -- 2) Card
@@ -44,7 +50,7 @@ BEGIN
 END
 GO
 
--- 3) TransactionType (lookup: otc/ots combination -> meaning)
+-- 3) TransactionType (sözlük: otc/ots kombinasyonu -> işlem adı)
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'TransactionType')
 BEGIN
     CREATE TABLE dbo.TransactionType
@@ -72,7 +78,7 @@ BEGIN
         Ots                     CHAR(2)         NOT NULL,
         F4_Amount               DECIMAL(18,2)   NOT NULL,
         F49_CurrencyCode        CHAR(3)         NULL,
-        LocalTxnAmount          DECIMAL(18,2)   NULL,           -- currency x amount
+        LocalTxnAmount          DECIMAL(18,2)   NULL,           -- kur x tutar
         F12_TransactionTime     CHAR(6)         NULL,           -- hhmmss
         F13_TransactionDate     CHAR(8)         NULL,           -- yyyymmdd
         F14_CardExpiry          CHAR(4)         NULL,
@@ -80,12 +86,12 @@ BEGIN
         F22_EntryMode           CHAR(3)         NULL,
         F39_ResponseCode        CHAR(2)         NULL,
         F43_Description         VARCHAR(100)    NULL,
-        RecipientCardNumber     VARCHAR(19)     NULL            -- only for money transfer (kkpt)
+        RecipientCardNumber     VARCHAR(19)     NULL            -- sadece para transferinde (kkpt)
     );
 END
 GO
 
--- 5) MtiProcessingCode (lookup: MTI + F3 -> otc/ots)
+-- 5) MtiProcessingCode (eşleme: MTI + F3 -> otc/ots)
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'MtiProcessingCode')
 BEGIN
     CREATE TABLE dbo.MtiProcessingCode
@@ -95,6 +101,32 @@ BEGIN
         Otc                 CHAR(2)     NOT NULL,
         Ots                 CHAR(2)     NOT NULL,
         CONSTRAINT PK_MtiProcessingCode PRIMARY KEY (Mti, F3_ProcessingCode)
+    );
+END
+GO
+
+-- 6) EntryMode (sözlük: F22'nin ilk iki hanesi -> giriş yöntemi; 3. hane PIN yeteneği, karara girmez)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'EntryMode')
+BEGIN
+    CREATE TABLE dbo.EntryMode
+    (
+        Code            CHAR(2)     NOT NULL,
+        Name            VARCHAR(50) NOT NULL,
+        IsContactless   BIT         NOT NULL DEFAULT 0,
+        CONSTRAINT PK_EntryMode PRIMARY KEY (Code)
+    );
+END
+GO
+
+-- 7) InternalResponseCode (sözlük: iç karar kodu IRC -> POS'a dönen F39)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'InternalResponseCode')
+BEGIN
+    CREATE TABLE dbo.InternalResponseCode
+    (
+        Irc                 CHAR(4)         NOT NULL,
+        Description         VARCHAR(100)    NOT NULL,
+        F39_ResponseCode    CHAR(2)         NOT NULL,
+        CONSTRAINT PK_InternalResponseCode PRIMARY KEY (Irc)
     );
 END
 GO

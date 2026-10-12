@@ -1,0 +1,68 @@
+@gate = http://localhost:8080
+
+# İşlemlerin tek girişi. Gate alanları ISO8583 tanımına göre doğrular (bozuk/eksik alan -> 400),
+# isteği RabbitMQ ile Payment'a iletir ve cevabı bekler. Onay da red de 200 ile döner; karar responseCode'dadır (F39).
+# Önce Payment'ın CRUD endpoint'leriyle hesap ve kart oluştur (src/PaymentSystem.Payment/PaymentSystem.Payment.http).
+# Aynı isteği (MTI + kart + işlem kodu + tutar + localDate + localTime) ikinci kez gönderirsen para tekrar düşmez, ilk cevap döner.
+
+### Satış: 150,00 TL (amountMinor kuruş cinsinden, 949 = TRY, entryMode 051 = çip)
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "cardNumber": "4111111111111111",
+  "processingCode": "000000",
+  "amountMinor": 15000,
+  "currencyCode": "949",
+  "transmissionDateTime": "0315095959",
+  "stan": "000001",
+  "localTime": "125959",
+  "localDate": "0315",
+  "terminalId": "TERM0001",
+  "cardExpiry": "2812",
+  "entryMode": "051"
+}
+
+### Bakiye sorgulama (F3 310000)
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "cardNumber": "4111111111111111",
+  "processingCode": "310000",
+  "amountMinor": 0,
+  "currencyCode": "949",
+  "transmissionDateTime": "0315100000",
+  "stan": "000002",
+  "localTime": "130000",
+  "localDate": "0315",
+  "terminalId": "TERM0001",
+  "cardExpiry": "2812"
+}
+
+### Döviz satışı: 10,00 USD (840). TL karşılığı TCMB kuruyla hesaplanıp bakiyeden düşer.
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "cardNumber": "4111111111111111",
+  "processingCode": "000000",
+  "amountMinor": 1000,
+  "currencyCode": "840",
+  "transmissionDateTime": "0315100100",
+  "stan": "000003",
+  "localTime": "130100",
+  "localDate": "0315",
+  "terminalId": "TERM0001",
+  "cardExpiry": "2812",
+  "entryMode": "051"
+}
+
+### Bozuk alanlar -> 400, her alanın hatası ayrı yazılır
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{ "mti": "0200", "cardNumber": "4111-1111", "processingCode": "000000", "currencyCode": "TRY" }

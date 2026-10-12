@@ -5,6 +5,7 @@ services:
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      MSSQL_MEMORY_LIMIT_MB: "2048"             # SQL Server sınırsız bırakılırsa VM belleğinin ~%80'ini kendine ayırır
     ports:
       - "1433:1433"
     volumes:
@@ -31,17 +32,105 @@ services:
       - ./docker/sql/run-init.sh:/run-init.sh:ro
     entrypoint: ["/bin/bash", "/run-init.sh"]
 
+  payment:
+    build:
+      context: .
+      dockerfile: src/PaymentSystem.Payment/Dockerfile
+    container_name: payment_system_payment
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      ConnectionStrings__PaymentSystem: "Server=db,1433;Database=PaymentSystem;User Id=sa;TrustServerCertificate=True"
+      ConnectionStrings__RabbitMq: "amqp://payment@rabbitmq:5672"
+      Kafka__BootstrapServers: "kafka:9092"
+    ports:
+      - "5002:8080"                               # sadece yönetim: CRUD + kur endpoint'leri (işlemler kuyruktan gelir)
+    restart: unless-stopped
+
+  notification:
+    build:
+      context: .
+      dockerfile: src/PaymentSystem.Notification/Dockerfile
+    container_name: payment_system_notification
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      Kafka__BootstrapServers: "kafka:9092"
+      # Gmail: SMTP_USER = gönderen Gmail adresi, SMTP_PASSWORD = 16 haneli uygulama şifresi (bkz. README / Notification)
+      Smtp__Host: ${SMTP_HOST:-smtp.gmail.com}
+      Smtp__Port: ${SMTP_PORT:-587}
+      Smtp__User: ${SMTP_USER}
+      Smtp__Password: ${SMTP_PASSWORD}
+      Smtp__From: ${SMTP_FROM:-}
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:3.9.0                     # KRaft: Zookeeper'sız, tek node (broker + controller)
+    container_name: payment_system_kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # PLAINTEXT: container'lar arası (kafka:9092), EXTERNAL: lokalde çalışan servisler için (localhost:9094)
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3                     # payment.transaction-events: hesap no'ya göre 3 partition
+    ports:
+      - "9094:9094"
+    # Volume yok: olaylar ve offset'ler container'la birlikte durur; `docker compose down` ile silinir (bildirimler geçicidir).
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
   gate:
     build:
-      context: .                                  # repo root: the Gate also needs src/PaymentSystem.Iso8583
+      context: .                                  # repo kökü: Gate src/PaymentSystem.Iso8583'e de ihtiyaç duyar
       dockerfile: src/PaymentSystem.Gate/Dockerfile
     container_name: payment_system_gate
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     environment:
-      Gate__Port: "8583"
-      # The Payment service does not exist yet, so every financial request is answered with F39=91.
-      Gate__PaymentBaseUrl: "http://payment:8080"
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      Gate__RabbitMqUri: "amqp://payment@rabbitmq:5672"
     ports:
-      - "8583:8583"
+      - "8080:8080"                               # işlemlerin tek girişi: POST http://localhost:8080/api/transactions
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    container_name: payment_system_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: payment
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"                               # AMQP (Gate ve Payment lokalde çalışırken)
+      - "15672:15672"                             # yönetim arayüzü: http://localhost:15672 (payment / RABBITMQ_PASSWORD)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
 volumes:
