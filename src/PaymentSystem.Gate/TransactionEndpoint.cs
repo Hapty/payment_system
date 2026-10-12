@@ -21,7 +21,8 @@ public sealed record TransactionRequest(
     string? EntryMode,              // F22
     string? Rrn,                    // F37
     string? MerchantId,             // F42
-    string? CardAcceptor);          // F43
+    string? CardAcceptor,           // F43
+    string? Cvv = null);            // CVV2 (kartın arkası): ISO8583:1987'de standart alanı yok, Payment'a ayrı alan olarak gider
 
 // ResponseCode = F39. Onay da red de (örn. 51 yetersiz bakiye) 200 ile döner.
 public sealed record TransactionResponse(string Mti, string ResponseCode, string? Stan, string? Rrn);
@@ -83,6 +84,10 @@ public static class TransactionEndpoint
                 message.Set(field, value);
         }
 
+        // CVV2 3 hane (Visa, Mastercard, Troy) ya da 4 hane (Amex). Değeri hiçbir yere loglanmaz.
+        if (request.Cvv is { } cvv && (cvv.Length is not (3 or 4) || !cvv.All(char.IsAsciiDigit)))
+            errors["cvv"] = ["Must be 3 or 4 digits."];
+
         if (errors.Count > 0)
         {
             logger.LogWarning("{Method}: validation failed STAN {Stan} PAN {Pan} fields {Fields} - responding 400",
@@ -90,7 +95,7 @@ public static class TransactionEndpoint
             return TypedResults.ValidationProblem(errors);
         }
 
-        var response = await handler.ProcessAsync(message, cancellationToken);
+        var response = await handler.ProcessAsync(message, request.Cvv, cancellationToken);
         logger.LogInformation("{Method}: responding {ResponseMti} STAN {Stan} F39 {ResponseCode}",
             nameof(HandleAsync), response.Mti, response[11], response[39]);
         return TypedResults.Ok(new TransactionResponse(response.Mti, response[39]!, response[11], response[37]));

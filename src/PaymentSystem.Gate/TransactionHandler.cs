@@ -14,13 +14,14 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
     // Cevapta geri gönderilen istek alanları: istemci cevabı kendi isteğiyle bunlarla eşleştirir.
     private static readonly int[] EchoedFinancialFields = [2, 3, 4, 7, 11, 12, 13, 37, 41, 42, 49];
 
-    public async Task<IsoMessage> ProcessAsync(IsoMessage request, CancellationToken cancellationToken)
+    // cvv: CVV2, ISO mesajının dışında taşınır (ISO8583:1987'de alanı yok); olduğu gibi Payment'a iletilir, loglanmaz.
+    public async Task<IsoMessage> ProcessAsync(IsoMessage request, string? cvv, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
         if (request.Mti != FinancialRequestMti)
             logger.LogWarning("{Method}: unsupported MTI {Mti} STAN {Stan} - responding 12", nameof(ProcessAsync), request.Mti, request[11]);
         var response = request.Mti == FinancialRequestMti
-            ? await AuthorizeAsync(request, cancellationToken)
+            ? await AuthorizeAsync(request, cvv, cancellationToken)
             : new IsoMessage(request.ToResponseMti()).Set(39, ResponseCodes.InvalidTransaction);
 
         logger.LogInformation("{Method}: {RequestMti} -> {ResponseMti} STAN {Stan} PAN {Pan} F39 {ResponseCode} in {ElapsedMs} ms",
@@ -28,7 +29,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         return response;
     }
 
-    private async Task<IsoMessage> AuthorizeAsync(IsoMessage request, CancellationToken cancellationToken)
+    private async Task<IsoMessage> AuthorizeAsync(IsoMessage request, string? cvv, CancellationToken cancellationToken)
     {
         var missing = RequiredFinancialFields.Where(f => !request.Has(f)).ToArray();
         if (missing.Length > 0)
@@ -40,7 +41,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
 
         logger.LogInformation("{Method}: forwarding to Payment STAN {Stan} TID {TerminalId} PAN {Pan} F3 {ProcessingCode} F4 {Amount} F49 {Currency}",
             nameof(AuthorizeAsync), request[11], request[41], PanMask.Mask(request[2]), request[3], request[4], request[49]);
-        var result = await paymentClient.AuthorizeAsync(ToPaymentRequest(request), cancellationToken);
+        var result = await paymentClient.AuthorizeAsync(ToPaymentRequest(request, cvv), cancellationToken);
         logger.LogInformation("{Method}: Payment answered STAN {Stan} F39 {ResponseCode}", nameof(AuthorizeAsync), request[11], result.ResponseCode);
         return Echo(request).Set(39, result.ResponseCode);
     }
@@ -57,7 +58,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
     }
 
     // Sadece zorunlu alanlar kontrol edildikten sonra çağrılır; bu yüzden aşağıdaki ! işaretleri güvenlidir.
-    private static PaymentRequest ToPaymentRequest(IsoMessage m) => new(
+    private static PaymentRequest ToPaymentRequest(IsoMessage m, string? cvv) => new(
         Mti: m.Mti,
         CardNumber: m[2]!,
         ProcessingCode: m[3]!,
@@ -73,5 +74,6 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         EntryMode: m[22],
         Rrn: m[37],
         MerchantId: m[42],
-        CardAcceptor: m[43]);
+        CardAcceptor: m[43],
+        Cvv: cvv);
 }

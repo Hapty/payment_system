@@ -115,8 +115,9 @@ Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi
 | `rrn` | 37 | an12 | |
 | `merchantId` | 42 | ans15 | |
 | `cardAcceptor` | 43 | ans40 (tam 40 karakter) | |
+| `cvv` | — | 3 ya da 4 rakam (CVV2, kartın arkası) | elle girişte (`01x`) ve e-ticarette (`81x`) |
 
-Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir.
+Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir. `cvv` bir ISO8583:1987 alanı değildir (gerçek ağlarda markaya özel alt alanda taşınır, örn. Visa F126.10); Gate onu ISO mesajının dışında, ayrı alan olarak Payment'a iletir ve hiçbir yere loglamaz.
 
 ### F39 (cevap kodu)
 | Kod | Kim üretir | Anlamı |
@@ -125,7 +126,7 @@ Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir.
 | `91` | Gate | Payment'tan `PaymentTimeoutSeconds` içinde cevap gelmedi, RabbitMQ'ya ulaşılamadı ya da cevap geçersiz |
 | diğer | Payment | Olduğu gibi döner (örn. `00` onay, `51` yetersiz bakiye) |
 
-Payment'ın ürettiği kodlar (`00`, `12`, `13`, `14`, `30`, `51`, `54`, `57`, `62`, `65`, `91`) için aşağıdaki **İşlem akışı** bölümüne bak.
+Payment'ın ürettiği kodlar (`00`, `12`, `13`, `14`, `30`, `51`, `54`, `57`, `62`, `65`, `91`, `N7`) için aşağıdaki **İşlem akışı** bölümüne bak.
 
 ### Ayarlar
 `src/PaymentSystem.Gate/appsettings.json` içindeki `Gate` bölümü, ya da `Gate__RabbitMqUri` gibi env var'lar. RabbitMQ şifresi `RABBITMQ_PASSWORD` env var'ından gelir.
@@ -187,7 +188,8 @@ Kurallar:
 - `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus` ve `Email`'i değiştirir (`email` gönderilmezse silinir).
 - `BankAccount.Email` opsiyoneldir; doluysa onaylı satışlarda Notification servisi bu adrese e-posta atar (bkz. **Notification**).
 - `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
-- `Card.Cvv` kolonu API'de hiç yok (PCI DSS: CVV saklanmamalı).
+- `Card.Cvv` kolonu API'de hiç yok ve hep boş kalır (PCI DSS: CVV saklanmamalı). CVV hesaplanır, bkz. **CVV2**.
+- `POST /api/cards` cevabında kartın CVV2'si (`cvv`) **bir kez** döner: kartın arkasına basılan değerin karşılığı. Sonradan hiçbir endpoint göstermez; not alınmalı. Son kullanma tarihi olmayan kartta `null`. Son kullanma tarihi `PUT` ile değişirse CVV de değişir (gerçekte yeni kart basılır): yeni CVV için kart yeniden oluşturulmalı.
 - Aynı anahtar kontrolü önce "var mı?" diye sorarak değil, DB'nin unique hatası (2627/2601) yakalanarak yapılır; eşzamanlı isteklerde de doğru `409` döner.
 
 ### Çalıştırma
@@ -198,6 +200,7 @@ docker compose up -d --build
 # lokal (DB, RabbitMQ ve Kafka container'ları ayaktayken; payment container'ı durdurulmuş olmalı — ikisi de 5002'yi kullanır)
 $env:MSSQL_SA_PASSWORD = "<şifreniz>"
 $env:RABBITMQ_PASSWORD = "<şifreniz>"
+$env:CVV_KEY = "<32 hex>"
 dotnet run --project src/PaymentSystem.Payment --launch-profile http
 ```
 Örnek istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http`.
@@ -226,6 +229,7 @@ Red kaydı F39'u ile commit edildikten sonra fırlatılır, kayıt geri alınmaz
 | F22 geldi ama ilk iki hanesi `EntryMode` tablosunda tanımlı değil (F22 yoksa temassız değil sayılır) | `1002` | `12` |
 | Kart yok | `2001` | `14` |
 | `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `2002` | `54` |
+| Kart fiziksel olarak yok (F22 `01x` elle giriş / `81x` e-ticaret) ama CVV2 gelmedi; ya da (hangi girişte olursa olsun) gelen CVV2 tutmuyor | `2006` | `N7` |
 | Hesap yok ya da `AccountStatus` `Active` değil | `2003` | `62` |
 | **Satış:** para birimi için TCMB kuru yok (ör. `999`) | `1004` | `12` |
 | **Satış:** döviz ama cache'te kur yok ya da bayat (bkz. Döviz kurları) | `9001` | `91` |
@@ -236,6 +240,21 @@ Red kaydı F39'u ile commit edildikten sonra fırlatılır, kayıt geri alınmaz
 | Onay — satışta bakiye düşer, `Card.LastTransaction*` güncellenir | `0000` | `00` |
 
 Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzerinden yürür (hesaplar TL). Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 (MMDD) yıl eklenerek `yyyymmdd` saklanır; yılbaşında gelen Aralık tarihi önceki yıla yazılır.
+
+### CVV2 (`Cards/`)
+CVV **saklanmaz**, bankalardaki gibi gizli bir anahtarla (CVK) kart bilgilerinden **hesaplanır**. Doğrulamada aynı hesap tekrarlanıp gelen değerle karşılaştırılır; çözülecek bir şey yoktur.
+
+```
+Kart oluşturulurken:  CVV_KEY + (PAN, son kullanma YYMM, servis kodu 000) ──Visa CVV algoritması──► 123   → POST cevabında bir kez, saklanmaz
+Satış sırasında:      CVV_KEY + (PAN, son kullanma YYMM, servis kodu 000) ──Visa CVV algoritması──► 123   == gelen cvv ?  hayır → N7
+```
+
+- **Algoritma** (`VisaCvvCalculator`): `PAN + YYMM + 000` sıfırla 32 haneye tamamlanır; ilk 16 hane KeyA ile DES, sonuç son 16 haneyle XOR, sonra KeyA + KeyB ile 3DES; çıkan hex'ten önce rakamlar, sonra A–F (0–5) alınır, ilk 3 hane CVV'dir. Visa'nın yayımlanmış test vektörüyle doğrulanır (testlerde).
+- **Ne zaman:** kart fiziksel olarak yokken zorunlu: elle giriş (F22 `01x`) ve e-ticaret (`81x`). Çipli / temassız işlemde CVV istenmez (kart kendisi kriptogram üretir); ama yine de geldiyse doğrulanır. Karşılaştırma sabit zamanlıdır.
+- **Anahtar:** `CVV_KEY` ortam değişkeni (`.env`), 32 hex = KeyA + KeyB. Payment açılışta anahtarın kendisini değil parmak izini (KCV) loglar: `Startup: CVV key loaded, KCV 1A2B3C`. Anahtar değişirse **tüm kartların CVV'si değişir**.
+- **Gerçek bankalarda** anahtar HSM'in içindedir ve dışarı çıkmaz; hesap da orada yapılır. Burada demo için yazılımla yapılıyor. Hesaplama `ICvvCalculator` arayüzünün arkasında: Vault / Azure Key Vault / AWS Payment Cryptography gibi bir hizmete geçmek kontrol mantığını değiştirmez.
+- CVV hiçbir yere yazılmaz: DB, loglar, Kafka olayı.
+- Bu özellikten önce oluşturulan kartların CVV'si kimseye gösterilmedi; onlarla elle giriş / e-ticaret yapılamaz (`N7`), çip / temassız işlemler etkilenmez. Yeni kart oluşturulmalı.
 
 ### Tanım tabloları cache'i (`Parameters/`)
 `TransactionType` + `MtiProcessingCode` (işlem tipi yönlendirmesi) , `EntryMode` (F22) ve `InternalResponseCode` (IRC → F39) işlem başına DB'den okunmaz: `ParameterCache` dört tabloyu tek seferde `IMemoryCache`'e yükler, tanımsız bir kod da DB'ye gitmeden tanımsız sayılır.

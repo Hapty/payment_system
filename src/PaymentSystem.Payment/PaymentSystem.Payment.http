@@ -26,6 +26,7 @@ DELETE {{host}}/api/bank-accounts/TR01
 GET {{host}}/api/cards
 
 ###
+# Cevapta kartın CVV2'si ("cvv") bir kez döner: not alın, sonradan hiçbir yerde görünmez (elle giriş / e-ticarette gerekir)
 POST {{host}}/api/cards
 Content-Type: application/json
 

@@ -53,6 +53,28 @@ public class TransactionEndpointTests
         Assert.DoesNotContain(_logger.Messages, m => m.Contains("4111111111111111"));
     }
 
+    [Theory]
+    [InlineData("123")]
+    [InlineData("1234")]
+    public async Task Cvv_IsForwardedToPaymentButNeverLogged(string cvv)
+    {
+        Assert.IsType<Ok<TransactionResponse>>(await PostAsync(Sale() with { EntryMode = "812", Cvv = cvv }));
+
+        Assert.Equal(cvv, Assert.Single(_payment.Requests).Cvv);
+        Assert.DoesNotContain(_logger.Messages, m => m.Contains($"CVV {cvv}") || m.Contains($"cvv {cvv}"));
+    }
+
+    [Fact]
+    public async Task Cvv_IsOptional() =>
+        Assert.IsType<Ok<TransactionResponse>>(await PostAsync(Sale()));
+
+    [Theory]
+    [InlineData("12")]
+    [InlineData("12345")]
+    [InlineData("12a")]
+    public async Task InvalidCvv_IsRejectedWith400(string cvv) =>
+        Assert.Equal(["Must be 3 or 4 digits."], (await ValidationErrorsAsync(Sale() with { Cvv = cvv }))["cvv"]);
+
     [Fact]
     public async Task InvalidFields_LogWhichFieldsFailedWithMaskedPan()
     {

@@ -18,6 +18,7 @@ public sealed record PaymentRequest(
     string? EntryMode,              // F22
     string? Rrn,                    // F37
     string? MerchantId,             // F42
-    string? CardAcceptor);          // F43
+    string? CardAcceptor,           // F43
+    string? Cvv);                   // CVV2; ISO alanı değil, Payment doğrular
 
 public sealed record PaymentResponse(string ResponseCode);
