@@ -61,6 +61,27 @@ Content-Type: application/json
   "entryMode": "051"
 }
 
+### E-ticaret satışı (entryMode 812): kart fiziksel olarak yok, CVV2 zorunlu (yanlış ya da eksikse F39 N7).
+# cvv: kart oluşturulurken POST /api/cards cevabında dönen değer.
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "cardNumber": "4111111111111111",
+  "processingCode": "000000",
+  "amountMinor": 2500,
+  "currencyCode": "949",
+  "transmissionDateTime": "0315100200",
+  "stan": "000004",
+  "localTime": "130200",
+  "localDate": "0315",
+  "terminalId": "TERM0001",
+  "cardExpiry": "2812",
+  "entryMode": "812",
+  "cvv": "123"
+}
+
 ### Bozuk alanlar -> 400, her alanın hatası ayrı yazılır
 POST {{gate}}/api/transactions
 Content-Type: application/json

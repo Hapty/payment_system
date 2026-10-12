@@ -8,7 +8,7 @@ public class TransactionHandlerTests
     private readonly FakePaymentClient _payment = new();
 
     private Task<IsoMessage> ProcessAsync(IsoMessage request) =>
-        new TransactionHandler(_payment, NullLogger<TransactionHandler>.Instance).ProcessAsync(request, CancellationToken.None);
+        new TransactionHandler(_payment, NullLogger<TransactionHandler>.Instance).ProcessAsync(request, cvv: null, CancellationToken.None);
 
     [Fact]
     public async Task Sale_IsForwardedToPaymentWithReadableFields()
@@ -35,7 +35,7 @@ public class TransactionHandlerTests
         var handler = new TransactionHandler(new FakePaymentClient(paymentCode), NullLogger<TransactionHandler>.Instance);
         var request = TestMessages.Sale();
 
-        var response = await handler.ProcessAsync(request, CancellationToken.None);
+        var response = await handler.ProcessAsync(request, cvv: null, CancellationToken.None);
 
         Assert.Equal("0210", response.Mti);
         Assert.Equal(paymentCode, response[39]);
@@ -49,7 +49,7 @@ public class TransactionHandlerTests
     {
         var logger = new ListLogger<TransactionHandler>();
 
-        await new TransactionHandler(_payment, logger).ProcessAsync(TestMessages.Sale(), CancellationToken.None);
+        await new TransactionHandler(_payment, logger).ProcessAsync(TestMessages.Sale(), cvv: null, CancellationToken.None);
 
         Assert.Contains(logger.Messages, m => m.StartsWith("AuthorizeAsync: forwarding to Payment") && m.Contains("PAN 411111********11"));
         Assert.Contains(logger.Messages, m => m.StartsWith("AuthorizeAsync: Payment answered"));

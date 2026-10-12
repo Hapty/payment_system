@@ -34,7 +34,7 @@ public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassF
 {
     private static readonly PaymentRequest Request = new(
         "0200", "4111111111111111", "000000", 15000, "949", "1002143015", "123456", "173015", "1002", "TERM0001",
-        "2812", null, "051", "261002123456", "MERCHANT0000001", null);
+        "2812", null, "051", "261002123456", "MERCHANT0000001", null, Cvv: null);
 
     private readonly List<IAsyncDisposable> _disposables = [];
     private IChannel _admin = null!;
