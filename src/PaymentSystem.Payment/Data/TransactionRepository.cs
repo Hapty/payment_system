@@ -64,9 +64,9 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
                 "SELECT CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit FROM dbo.Card WHERE CardNumber = @cardNumber",
                 new { cardNumber }, transaction);
 
-        public Task<string?> GetAccountStatusAsync(string accountNo) =>
-            connection.ExecuteScalarAsync<string?>(
-                "SELECT AccountStatus FROM dbo.BankAccount WHERE AccountNo = @accountNo", new { accountNo }, transaction);
+        public Task<BankAccount?> GetAccountAsync(string accountNo) =>
+            connection.QuerySingleOrDefaultAsync<BankAccount>(
+                "SELECT AccountNo, AccountStatus, Email FROM dbo.BankAccount WHERE AccountNo = @accountNo", new { accountNo }, transaction);
 
         // Aynı hesaba aynı anda gelen iki satış bakiyeyi eksiye düşüremez: kontrol ve düşme aynı UPDATE'te.
         public async Task<bool> TryDebitAsync(string accountNo, decimal amount) =>

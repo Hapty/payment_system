@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using PaymentSystem.Iso8583;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Events;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Models;
 using PaymentSystem.Payment.Parameters;
@@ -11,10 +12,11 @@ namespace PaymentSystem.Payment.Transactions;
 // Gate'ten gelen bir finansal isteği karara bağlar. Kararlar burada, SQL TransactionRepository'de.
 // Karar bir iç koddur (IRC, bkz. InternalResponseCodes); POS'a dönen F39 InternalResponseCode tablosundan (ParameterCache) okunur.
 // İşlem kaydı, bakiye ve kart güncellemesi tek bir SQL transaction'ında (IDebitSession) yapılır: ya hepsi yazılır ya hiçbiri.
+// Commit edilen her karar (onay da red de) TransactionCompleted olayı olarak yayımlanır; yayımlama işlemi bekletmez.
 // Onayda F39'u döner; onaylanmayan her işlem (red ya da teknik hata) TransactionException fırlatır.
 public sealed class TransactionHandler(
-    ITransactionRepository repository, ParameterCache parameters, ExchangeRateCache rates, TimeProvider clock,
-    ILogger<TransactionHandler> logger)
+    ITransactionRepository repository, ParameterCache parameters, ExchangeRateCache rates, ITransactionEventPublisher events,
+    TimeProvider clock, ILogger<TransactionHandler> logger)
 {
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
@@ -27,6 +29,7 @@ public sealed class TransactionHandler(
     {
         public Guid? Id { get; set; }
         public string? AccountNo { get; set; }
+        public string? Email { get; set; }      // sadece olaya konur, exception'a değil
     }
 
     // Onay: F39. Red ya da teknik hata: TransactionException (F39, açıklama, maskeli kart no, işlem Guid'i, hesap no).
@@ -67,6 +70,7 @@ public sealed class TransactionHandler(
         // Aynı anda gelirse ilk transaction bitene kadar bekler, sonra hata alır; böylece aynı işlem asla iki kez karara bağlanmaz.
         var id = IdempotencyKey(request);
         trace.Id = id;
+        var transactionDate = ToTransactionDate(request.LocalDate);
         string? irc = null;
         InternalResponseCode? definition = null;
         await using (var session = await repository.BeginAsync())
@@ -77,7 +81,7 @@ public sealed class TransactionHandler(
                 request.CurrencyCode,
                 LocalAmount: lira,
                 request.LocalTime,
-                TransactionDate: ToTransactionDate(request.LocalDate),
+                TransactionDate: transactionDate,
                 request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor: request.CardAcceptor?.TrimEnd()));
             if (inserted)
             {
@@ -92,9 +96,16 @@ public sealed class TransactionHandler(
         if (irc is null)
             return await PreviousResponseAsync(request, id, trace);
 
+        var responseCode = definition?.ResponseCode ?? ResponseCodes.SystemMalfunction;
         logger.LogInformation("{Method}: {Type} {Id} TID {TerminalId} STAN {Stan} PAN {Pan} committed -> IRC {Irc} F39 {ResponseCode}",
             nameof(AuthorizeAsync), type.Name, id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), irc,
-            definition?.ResponseCode ?? ResponseCodes.SystemMalfunction);
+            responseCode);
+
+        // Sadece commit edilen karar yayımlanır: tekrar gelen istek ve kayıt açılmayan red (tanımsız tip) olay üretmez.
+        events.Publish(new TransactionCompleted(
+            id, clock.GetUtcNow(), request.Mti, type.Name, responseCode, irc, PanMask.Mask(request.CardNumber),
+            trace.AccountNo, trace.Email, ToAmount(request), request.CurrencyCode, lira, request.CardAcceptor?.TrimEnd(),
+            transactionDate, request.LocalTime, request.TerminalId, request.Stan));
 
         // Red kaydı commit edildi; exception ancak şimdi fırlatılır ki kayıt geri alınmasın.
         if (irc == InternalResponseCodes.Approved && definition is not null)
@@ -121,9 +132,11 @@ public sealed class TransactionHandler(
         if (IsExpired(card.ExpiryDate) || !ExpiryMatches(card.ExpiryDate, request.CardExpiry))
             return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardExpired, "card expired or F14 does not match");
 
-        var accountStatus = await session.GetAccountStatusAsync(card.AccountNo);
-        if (accountStatus != ActiveAccount)
-            return Decline(nameof(DecideAsync), request, InternalResponseCodes.AccountNotActive, $"account {card.AccountNo} is {accountStatus ?? "missing"}");
+        var account = await session.GetAccountAsync(card.AccountNo);
+        trace.Email = account?.Email;
+        if (account?.AccountStatus != ActiveAccount)
+            return Decline(nameof(DecideAsync), request, InternalResponseCodes.AccountNotActive,
+                $"account {card.AccountNo} is {account?.AccountStatus ?? "missing"}");
 
         return typeName switch
         {
