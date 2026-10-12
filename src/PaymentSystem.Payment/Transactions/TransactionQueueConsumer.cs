@@ -161,11 +161,12 @@ public sealed class TransactionQueueConsumer(
         }
     }
 
-    // Kuyruktan gelen isteğin JSON'ı, kart numarası maskeli.
+    // Kuyruktan gelen isteğin JSON'ı, kart numarası maskeli. CVV hiç yazılmaz (PCI DSS): sadece gelip gelmediği görünür.
     private static string MaskedJson(TransactionRequest request)
     {
         var json = JsonSerializer.SerializeToNode(request, Json)!;
         json["cardNumber"] = PanMask.Mask(request.CardNumber);
+        json["cvv"] = request.Cvv is null ? null : "***";
         return json.ToJsonString(Json);
     }
 

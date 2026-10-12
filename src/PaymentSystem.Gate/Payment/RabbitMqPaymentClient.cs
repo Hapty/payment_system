@@ -92,9 +92,13 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
         {
             var channel = await EnsureChannelAsync(cancellationToken);
             await channel.BasicPublishAsync(string.Empty, QueueName, mandatory: false, properties, body, cancellationToken);
-            // Kuyruğa giden gövdenin aynısı, sadece kart numarası maskeli.
+            // Kuyruğa giden gövdenin aynısı; kart numarası maskeli, CVV hiç yazılmaz (sadece gelip gelmediği görünür).
             logger.LogInformation("{Method}: sent {CorrelationId} to queue {Queue}: {Body}", nameof(PublishAsync), correlationId, QueueName,
-                JsonSerializer.Serialize(request with { CardNumber = PanMask.Mask(request.CardNumber) }, Json));
+                JsonSerializer.Serialize(request with
+                {
+                    CardNumber = PanMask.Mask(request.CardNumber),
+                    Cvv = request.Cvv is null ? null : "***"
+                }, Json));
         }
         finally
         {
