@@ -121,6 +121,19 @@ public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassF
         Assert.Contains("\"amountMinor\":15000", sent);
         Assert.Contains(Logger.Messages, m => m.StartsWith("AuthorizeAsync: reply") && m.Contains("F39 00"));
         Assert.DoesNotContain(Logger.Messages, m => m.Contains("4111111111111111"));
+        Assert.Contains("\"cvv\":null", sent);
+    }
+
+    [Fact]
+    public async Task Cvv_IsSentToPaymentButMaskedInLog()
+    {
+        await RespondWithAsync("""{ "responseCode": "00" }""");
+
+        await CreateClient().AuthorizeAsync(Request with { Cvv = "987" }, CancellationToken.None);
+
+        Assert.Contains("\"cvv\":\"987\"", Assert.Single(Received).Body);
+        Assert.Contains("\"cvv\":\"***\"", Assert.Single(Logger.Messages, m => m.StartsWith("PublishAsync: sent")));
+        Assert.DoesNotContain(Logger.Messages, m => m.Contains("987"));
     }
 
     [Fact]

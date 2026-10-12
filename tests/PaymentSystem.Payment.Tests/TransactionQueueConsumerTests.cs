@@ -162,6 +162,18 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
     }
 
     [Fact]
+    public async Task ReceivedRequestLog_ShowsOnlyThatCvvWasSent()
+    {
+        await SeedAsync();
+
+        await WithConsumerAsync(() => SendAsync(SaleJson().Replace("\"entryMode\": \"051\"", "\"entryMode\": \"051\", \"cvv\": \"987\"")));
+
+        var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
+        Assert.Contains("\"cvv\":\"***\"", received);
+        Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains("987"));
+    }
+
+    [Fact]
     public async Task Decline_IsAnsweredWithItsCode()
     {
         await SeedAsync();
