@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Events;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Models;
@@ -78,7 +79,8 @@ public class HandlerTests
         public Task<bool> TryInsertAsync(DebitTransaction transaction) => Task.FromResult(insertSucceeds);
         public Task<Card?> GetCardAsync(string cardNumber) =>
             Task.FromResult<Card?>(new Card { CardNumber = cardNumber, AccountNo = "ACC1", ExpiryDate = "1299" });
-        public Task<string?> GetAccountStatusAsync(string accountNo) => Task.FromResult<string?>("Active");
+        public Task<BankAccount?> GetAccountAsync(string accountNo) =>
+            Task.FromResult<BankAccount?>(new BankAccount { AccountNo = accountNo, AccountStatus = "Active", Email = "musteri@example.com" });
         public Task<bool> TryDebitAsync(string accountNo, decimal amount) => Task.FromResult(true);
         public Task SetCardLastTransactionAsync(string cardNumber, decimal amount) => Task.CompletedTask;
 
@@ -102,7 +104,9 @@ public class HandlerTests
     }
 
     // knownType false: 0200/000000 tanım tablosunda yok.
-    private static TransactionHandler TransactionHandler(ITransactionRepository repository, bool knownType = true) => new(
+    private RecordingEventPublisher Events { get; } = new();
+
+    private TransactionHandler TransactionHandler(ITransactionRepository repository, bool knownType = true) => new(
         repository,
         TestParameters.Create(new FakeParameterRepository
         {
@@ -110,6 +114,7 @@ public class HandlerTests
             ResponseCodes = [new("0000", "Approved", "00"), new("1001", "Transaction type not defined", "12")]
         }),
         new ExchangeRateCache(new MemoryCache(new MemoryCacheOptions()), TimeProvider.System, Options.Create(new ExchangeRateOptions())),
+        Events,
         TimeProvider.System,
         new ListLogger<TransactionHandler>());
 
@@ -128,6 +133,11 @@ public class HandlerTests
         Assert.Equal("00", repository.Session!.ResponseCode);
         Assert.True(repository.Session.Committed);
         Assert.True(repository.Session.Disposed);
+
+        var published = Assert.Single(Events.Events);
+        Assert.Equal(("Sale", "00", "0000", "ACC1", "musteri@example.com", "411111********11"),
+            (published.TransactionType, published.ResponseCode, published.Irc, published.AccountNo, published.Email, published.MaskedCardNumber));
+        Assert.Equal((TransactionCompleted.Type, 1), (published.EventType, published.Version));
     }
 
     [Fact]
@@ -140,6 +150,7 @@ public class HandlerTests
         Assert.Null(repository.Session!.ResponseCode);
         Assert.False(repository.Session.Committed);
         Assert.True(repository.Session.Disposed);
+        Assert.Empty(Events.Events);        // ilk istek olayını zaten yayımladı
     }
 
     [Fact]
@@ -150,5 +161,6 @@ public class HandlerTests
         var ex = await Assert.ThrowsAsync<TransactionException>(() => TransactionHandler(repository, knownType: false).ProcessAsync(Sale()));
         Assert.Equal(("12", "1001", "Transaction type not defined"), (ex.ResponseCode, ex.Irc, ex.Description));
         Assert.Null(repository.Session);
+        Assert.Empty(Events.Events);        // kayıt açılmadı, olay da yok
     }
 }

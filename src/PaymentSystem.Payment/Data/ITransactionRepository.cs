@@ -24,7 +24,8 @@ public interface IDebitSession : IAsyncDisposable
 
     Task<Card?> GetCardAsync(string cardNumber);
 
-    Task<string?> GetAccountStatusAsync(string accountNo);
+    // Durum ve e-posta (bildirim olayı için); bakiye okunmaz, TryDebitAsync'te kontrol edilir.
+    Task<BankAccount?> GetAccountAsync(string accountNo);
 
     // Bakiye kontrolü ve düşme tek sorguda; false: bakiye yetersiz.
     Task<bool> TryDebitAsync(string accountNo, decimal amount);

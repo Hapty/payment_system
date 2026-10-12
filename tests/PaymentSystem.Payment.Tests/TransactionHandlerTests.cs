@@ -14,6 +14,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
 {
     private const string Pan = "4111111111111111";
     private const string AccountNo = "ACC1";
+    private const string Email = "musteri@example.com";
 
     // Testler takvime bağlı olmasın diye "bugün" sabit: 15 Mart 2026.
     private FixedClock Clock { get; } = new(new DateTimeOffset(2026, 3, 15, 10, 0, 0, TimeSpan.Zero));
@@ -26,7 +27,10 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     private ParameterCache? _parameters;
     private ParameterCache Parameters => _parameters ??= TestParameters.Create(Db, Clock);
 
-    private TransactionHandler Handler => new(new TransactionRepository(Db), Parameters, Rates, Clock, NullLogger<TransactionHandler>.Instance);
+    // Yayımlanan olaylar Kafka yerine burada toplanır.
+    private RecordingEventPublisher Events { get; } = new();
+
+    private TransactionHandler Handler => new(new TransactionRepository(Db), Parameters, Rates, Events, Clock, NullLogger<TransactionHandler>.Instance);
 
     private void StoreRates(params (string Code, decimal Rate)[] rates) =>
         Rates.Store(new TcmbBulletin(new DateOnly(2026, 3, 13), rates.ToDictionary(r => r.Code, r => r.Rate)));
@@ -43,7 +47,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
 
     // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql, 03_seed_entry_modes.sql, 04_seed_internal_response_codes.sql) ve bir hesap + kartı yeniden ekler.
     private async Task SeedAsync(decimal balance = 1000m, string status = "Active", string? expiry = "1228",
-        bool contactless = true, decimal? contactlessLimit = 750m)
+        bool contactless = true, decimal? contactlessLimit = 750m, string? email = Email)
     {
         await using var connection = Db.Create();
         await connection.ExecuteAsync(
@@ -55,11 +59,11 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
                 VALUES ('00', 'Unknown', 0), ('01', 'Manual', 0), ('02', 'MagneticStripe', 0), ('05', 'Chip', 0),
                        ('07', 'ContactlessChip', 1), ('90', 'MagneticStripeFullTrack', 0), ('91', 'ContactlessMagneticStripe', 1);
             INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('9001', 'Exchange rate unavailable or stale', '91');
-            INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES (@AccountNo, @status, @balance);
+            INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance, Email) VALUES (@AccountNo, @status, @balance, @email);
             INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit)
                 VALUES (@Pan, @AccountNo, @expiry, @contactless, @contactlessLimit);
             """,
-            new { AccountNo, Pan, status, balance, expiry, contactless, contactlessLimit });
+            new { AccountNo, Pan, status, balance, expiry, contactless, contactlessLimit, email });
     }
 
     private static TransactionRequest Sale(long amountMinor = 15000, string localTime = "125959") => new()
@@ -169,6 +173,48 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
 
         Assert.Equal(850m, await BalanceAsync());
         Assert.Single(await TransactionsAsync());
+        Assert.Single(Events.Events);       // tekrar gelen istek ikinci olay üretmez
+    }
+
+    [Fact]
+    public async Task ApprovedSale_PublishesEventWithAccountEmailAndMaskedPan()
+    {
+        await SeedAsync();
+
+        Assert.Equal("00", await AuthorizeAsync(Sale(15000)));
+
+        var published = Assert.Single(Events.Events);
+        Assert.Equal(await StoredIdAsync(), published.TransactionId);
+        Assert.Equal(("0200", "Sale", "00", "0000"), (published.Mti, published.TransactionType, published.ResponseCode, published.Irc));
+        Assert.Equal(("411111********11", AccountNo, Email), (published.MaskedCardNumber, published.AccountNo, published.Email));
+        Assert.Equal((150m, "949", (decimal?)150m), (published.Amount, published.CurrencyCode, published.LocalAmount));
+        Assert.Equal(("PAYMENT SYSTEM POS SIMULATOR", "20260315", "125959", "TERM0001", "000001"),
+            (published.CardAcceptor, published.TransactionDate, published.LocalTime, published.TerminalId, published.Stan));
+        Assert.Equal(Clock.Now, published.OccurredAt);
+    }
+
+    [Fact]
+    public async Task DeclinedSale_PublishesEventWithItsCode()
+    {
+        await SeedAsync(balance: 100m, email: null);
+
+        Assert.Equal("51", await AuthorizeAsync(Sale(15000)));
+
+        var published = Assert.Single(Events.Events);
+        Assert.Equal(("51", "3002", AccountNo, (string?)null), (published.ResponseCode, published.Irc, published.AccountNo, published.Email));
+    }
+
+    [Fact]
+    public async Task UnknownCard_PublishesEventWithoutAccount()
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.CardNumber = "5555555555554444";
+
+        Assert.Equal("14", await AuthorizeAsync(request));
+
+        var published = Assert.Single(Events.Events);
+        Assert.Equal(("14", (string?)null, (string?)null), (published.ResponseCode, published.AccountNo, published.Email));
     }
 
     [Fact]
@@ -365,6 +411,8 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         Assert.Equal(507.85m, await BalanceAsync());
         var stored = Assert.Single(await TransactionsAsync());
         Assert.Equal((10m, 492.15m), (stored.F4_Amount, stored.LocalTxnAmount));
+        var published = Assert.Single(Events.Events);
+        Assert.Equal((10m, "840", (decimal?)492.15m), (published.Amount, published.CurrencyCode, published.LocalAmount));
         await using var connection = Db.Create();
         Assert.Equal(492.15m, await connection.ExecuteScalarAsync<decimal>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @Pan", new { Pan }));
     }
@@ -616,10 +664,11 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     public async Task DatabaseUnreachable_ThrowsTechnical91WithCause()
     {
         var unreachable = new SqlConnectionFactory("Server=127.0.0.1,1;Database=PaymentSystem;User Id=sa;Password=x;Connect Timeout=1;TrustServerCertificate=True");
-        var handler = new TransactionHandler(new TransactionRepository(unreachable), TestParameters.Create(unreachable), Rates, Clock,
+        var handler = new TransactionHandler(new TransactionRepository(unreachable), TestParameters.Create(unreachable), Rates, Events, Clock,
             NullLogger<TransactionHandler>.Instance);
 
         var ex = await Assert.ThrowsAsync<TransactionException>(() => handler.ProcessAsync(Sale()));
+        Assert.Empty(Events.Events);        // commit yok, olay yok
 
         Assert.Equal(("91", "System unavailable"), (ex.ResponseCode, ex.Description));
         Assert.True(ex.IsTechnical);

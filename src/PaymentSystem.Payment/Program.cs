@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using PaymentSystem.Payment.Data;
+using PaymentSystem.Payment.Events;
 using PaymentSystem.Payment.ExchangeRates;
 using PaymentSystem.Payment.Handlers;
 using PaymentSystem.Payment.Parameters;
@@ -38,6 +39,10 @@ builder.Services.AddSingleton<TransactionTypeHandler>();
 builder.Services.AddSingleton<MtiProcessingCodeHandler>();
 builder.Services.AddSingleton<ExchangeRateHandler>();
 builder.Services.AddSingleton<TransactionHandler>();
+
+// Karara bağlanan her işlem Kafka'ya olay olarak yazılır (Notification gibi servisler okur); işlem akışı Kafka'yı beklemez.
+builder.Services.Configure<KafkaOptions>(builder.Configuration.GetSection(KafkaOptions.SectionName));
+builder.Services.AddSingleton<ITransactionEventPublisher, KafkaTransactionEventPublisher>();
 
 // İşlemler HTTP'den değil, Gate'in RabbitMQ'ya yazdığı kuyruktan gelir (request-reply). Şifre RABBITMQ_PASSWORD'den gelir.
 builder.Services.AddSingleton<IConnectionFactory>(new ConnectionFactory
