@@ -10,7 +10,7 @@ public class IsoFramingTests
         var stream = new MemoryStream();
         await IsoFraming.WriteAsync(stream, [1, 2, 3]);
 
-        Assert.Equal(new byte[] { 0, 3, 1, 2, 3 }, stream.ToArray());   // 2-byte big-endian length header
+        Assert.Equal(new byte[] { 0, 3, 1, 2, 3 }, stream.ToArray());   // 2 baytlık big-endian uzunluk başlığı
 
         stream.Position = 0;
         Assert.Equal(new byte[] { 1, 2, 3 }, await IsoFraming.ReadAsync(stream));

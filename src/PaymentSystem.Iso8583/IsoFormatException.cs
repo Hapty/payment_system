@@ -1,8 +1,8 @@
 namespace PaymentSystem.Iso8583;
 
-// Thrown when bytes cannot be read as an ISO8583 message, or a message cannot be written as one.
-// FieldNumber is 0 for MTI/structure problems and 1 for bitmap problems.
-// Mti is set when the MTI itself was readable, so the receiver can still send a format-error response.
+// Baytlar ISO8583 mesajı olarak okunamadığında ya da bir mesaj ISO8583'e yazılamadığında fırlatılır.
+// FieldNumber: MTI/yapı sorunlarında 0, bitmap sorunlarında 1, aksi halde sorunlu alanın numarası.
+// Mti: MTI okunabildiyse doludur; böylece alıcı yine de "format hatası" cevabı gönderebilir.
 public sealed class IsoFormatException(int fieldNumber, string reason, string? mti = null)
     : Exception($"ISO8583 format error in field {fieldNumber}: {reason}")
 {
