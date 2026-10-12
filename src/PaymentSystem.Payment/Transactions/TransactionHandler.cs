@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using PaymentSystem.Iso8583;
+using PaymentSystem.Payment.Cards;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.Events;
 using PaymentSystem.Payment.ExchangeRates;
@@ -15,11 +16,15 @@ namespace PaymentSystem.Payment.Transactions;
 // Commit edilen her karar (onay da red de) TransactionCompleted olayı olarak yayımlanır; yayımlama işlemi bekletmez.
 // Onayda F39'u döner; onaylanmayan her işlem (red ya da teknik hata) TransactionException fırlatır.
 public sealed class TransactionHandler(
-    ITransactionRepository repository, ParameterCache parameters, ExchangeRateCache rates, ITransactionEventPublisher events,
-    TimeProvider clock, ILogger<TransactionHandler> logger)
+    ITransactionRepository repository, ParameterCache parameters, ExchangeRateCache rates, ICvvCalculator cvv,
+    ITransactionEventPublisher events, TimeProvider clock, ILogger<TransactionHandler> logger)
 {
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
+
+    // Kart fiziksel olarak okutulmadığında CVV2 zorunludur: elle giriş (F22 01x) ve e-ticaret (81x).
+    // Çip / temassız işlemde kartın kendisi kriptogram üretir, CVV2 istenmez.
+    private static readonly HashSet<string> CardNotPresentEntryModes = ["01", "81"];
 
     // UUID v5 için bu sisteme ait sabit namespace. Değiştirilirse eski kayıtların anahtarı yeniden hesaplanamaz.
     private static readonly Guid IdempotencyNamespace = new("6f1c2a7e-3b8d-4c5f-9a0e-2d7b8c1e4f35");
@@ -131,6 +136,15 @@ public sealed class TransactionHandler(
 
         if (IsExpired(card.ExpiryDate) || !ExpiryMatches(card.ExpiryDate, request.CardExpiry))
             return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardExpired, "card expired or F14 does not match");
+
+        // CVV2 kart fiziksel olarak yokken zorunlu; başka bir girişte de geldiyse kontrol edilir. Değeri asla loglanmaz.
+        if ((entryMode is not null && CardNotPresentEntryModes.Contains(entryMode.Code)) || request.Cvv is not null)
+        {
+            if (request.Cvv is null)
+                return Decline(nameof(DecideAsync), request, InternalResponseCodes.CvvMismatch, $"CVV2 required for entry mode {request.EntryMode}");
+            if (!CvvMatches(card, request.Cvv))
+                return Decline(nameof(DecideAsync), request, InternalResponseCodes.CvvMismatch, "CVV2 does not match");
+        }
 
         var account = await session.GetAccountAsync(card.AccountNo);
         trace.Email = account?.Email;
@@ -260,6 +274,12 @@ public sealed class TransactionHandler(
         var (month, year) = (int.Parse(expiryDate[..2]), 2000 + int.Parse(expiryDate[2..]));
         return (year, month).CompareTo((today.Year, today.Month)) < 0;
     }
+
+    // CVV saklanmaz: kart bilgilerinden yeniden hesaplanıp gelenle karşılaştırılır (sabit zamanlı; süre hangi hanenin
+    // tuttuğunu ele vermez). Son kullanma tarihi olmayan kartın CVV'si hesaplanamaz, eşleşmemiş sayılır.
+    private bool CvvMatches(Card card, string received) =>
+        cvv.CalculateCvv2(card.CardNumber, card.ExpiryDate) is { } expected
+        && CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(expected), Encoding.ASCII.GetBytes(received));
 
     // POS F14'ü YYMM, Card tablosu MMYY formatında tutar.
     private static bool ExpiryMatches(string? cardExpiry, string? requestExpiry) =>

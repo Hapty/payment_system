@@ -30,7 +30,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     // Yayımlanan olaylar Kafka yerine burada toplanır.
     private RecordingEventPublisher Events { get; } = new();
 
-    private TransactionHandler Handler => new(new TransactionRepository(Db), Parameters, Rates, Events, Clock, NullLogger<TransactionHandler>.Instance);
+    private TransactionHandler Handler => new(new TransactionRepository(Db), Parameters, Rates, TestCvv.Calculator, Events, Clock, NullLogger<TransactionHandler>.Instance);
 
     private void StoreRates(params (string Code, decimal Rate)[] rates) =>
         Rates.Store(new TcmbBulletin(new DateOnly(2026, 3, 13), rates.ToDictionary(r => r.Code, r => r.Rate)));
@@ -57,8 +57,8 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
                 VALUES ('0200', '000000', '10', '11'), ('0200', '400000', '11', '11'), ('0200', '310000', '40', '10');
             INSERT INTO dbo.EntryMode (Code, Name, IsContactless)
                 VALUES ('00', 'Unknown', 0), ('01', 'Manual', 0), ('02', 'MagneticStripe', 0), ('05', 'Chip', 0),
-                       ('07', 'ContactlessChip', 1), ('90', 'MagneticStripeFullTrack', 0), ('91', 'ContactlessMagneticStripe', 1);
-            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('9001', 'Exchange rate unavailable or stale', '91');
+                       ('07', 'ContactlessChip', 1), ('90', 'MagneticStripeFullTrack', 0), ('91', 'ContactlessMagneticStripe', 1), ('81', 'ECommerce', 0);
+            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('2006', 'CVV2 missing or does not match', 'N7'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('9001', 'Exchange rate unavailable or stale', '91');
             INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance, Email) VALUES (@AccountNo, @status, @balance, @email);
             INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit)
                 VALUES (@Pan, @AccountNo, @expiry, @contactless, @contactlessLimit);
@@ -530,6 +530,79 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         Assert.Equal("00", await AuthorizeAsync(request));
     }
 
+    // SeedAsync'in kartının (4111..., son kullanma 1228) gerçek CVV2'si; testler bir hane değiştirerek yanlışını üretir.
+    private static string CardCvv => TestCvv.Calculator.CalculateCvv2(Pan, "1228")!;
+    private static string WrongCvv => CardCvv[0] == '9' ? "0" + CardCvv[1..] : (char)(CardCvv[0] + 1) + CardCvv[1..];
+
+    [Theory]
+    [InlineData("812")]     // e-ticaret
+    [InlineData("011")]     // elle giriş
+    public async Task CardNotPresentSale_WithCorrectCvv_IsApproved(string entryMode)
+    {
+        await SeedAsync();
+        var request = Sale(15000);
+        request.EntryMode = entryMode;
+        request.Cvv = CardCvv;
+
+        Assert.Equal("00", await AuthorizeAsync(request));
+        Assert.Equal(850m, await BalanceAsync());
+    }
+
+    [Theory]
+    [InlineData("812")]
+    [InlineData("011")]
+    public async Task CardNotPresentSale_WithoutCvv_IsDeclinedN7(string entryMode)
+    {
+        await SeedAsync();
+        var request = Sale(15000);
+        request.EntryMode = entryMode;
+
+        Assert.Equal("N7", await AuthorizeAsync(request));
+        Assert.Equal("2006", LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+        Assert.Equal("N7", Assert.Single(await TransactionsAsync()).F39_ResponseCode);
+    }
+
+    [Fact]
+    public async Task CardNotPresentSale_WithWrongCvv_IsDeclinedN7AndCvvIsNotLogged()
+    {
+        await SeedAsync();
+        var logger = new ListLogger<TransactionHandler>();
+        var handler = new TransactionHandler(new TransactionRepository(Db), Parameters, Rates, TestCvv.Calculator, Events, Clock, logger);
+        var request = Sale(15000);
+        request.EntryMode = "812";
+        request.Cvv = WrongCvv;
+
+        var ex = await Assert.ThrowsAsync<TransactionException>(() => handler.ProcessAsync(request));
+
+        Assert.Equal(("N7", "2006", "CVV2 missing or does not match"), (ex.ResponseCode, ex.Irc, ex.Description));
+        Assert.Equal(1000m, await BalanceAsync());
+        // Red sebebi loglanır, CVV'nin kendisi (gelen ya da beklenen) loglanmaz.
+        Assert.Contains("DecideAsync: declined STAN 000001 PAN 411111********11 - CVV2 does not match -> IRC 2006", logger.Messages);
+    }
+
+    [Fact]
+    public async Task ChipSale_WithoutCvv_IsApprovedButWrongCvvIsStillChecked()
+    {
+        await SeedAsync();
+        Assert.Equal("00", await AuthorizeAsync(Sale(15000)));      // 051 çip: CVV istenmez
+
+        var request = Sale(15000, localTime: "130000");
+        request.Cvv = WrongCvv;                                       // yine de geldiyse doğrulanır
+        Assert.Equal("N7", await AuthorizeAsync(request));
+    }
+
+    [Fact]
+    public async Task CardNotPresentSale_OnCardWithoutExpiry_IsDeclinedN7()
+    {
+        await SeedAsync(expiry: null);
+        var request = Sale(15000);
+        request.EntryMode = "812";
+        request.Cvv = CardCvv;
+
+        Assert.Equal("N7", await AuthorizeAsync(request));          // CVV hesaplanamıyor: eşleşmemiş sayılır
+    }
+
     [Fact]
     public async Task ChipSale_OverContactlessLimit_IsApproved()
     {
@@ -664,7 +737,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     public async Task DatabaseUnreachable_ThrowsTechnical91WithCause()
     {
         var unreachable = new SqlConnectionFactory("Server=127.0.0.1,1;Database=PaymentSystem;User Id=sa;Password=x;Connect Timeout=1;TrustServerCertificate=True");
-        var handler = new TransactionHandler(new TransactionRepository(unreachable), TestParameters.Create(unreachable), Rates, Events, Clock,
+        var handler = new TransactionHandler(new TransactionRepository(unreachable), TestParameters.Create(unreachable), Rates, TestCvv.Calculator, Events, Clock,
             NullLogger<TransactionHandler>.Instance);
 
         var ex = await Assert.ThrowsAsync<TransactionException>(() => handler.ProcessAsync(Sale()));

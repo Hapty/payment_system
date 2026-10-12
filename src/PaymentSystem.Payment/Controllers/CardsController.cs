@@ -20,11 +20,12 @@ public class CardsController(CardHandler cards) : ControllerBase
     public async Task<ActionResult<Card>> GetByNumber(string cardNumber) =>
         await cards.GetByNumberAsync(cardNumber) is { } card ? card : NotFound();
 
+    // Cevapta kartın CVV2'si bir kez döner (kartın arkasına basılan değer); sonradan hiçbir endpoint göstermez.
     [HttpPost]
-    public async Task<ActionResult<Card>> Create(Card card) =>
+    public async Task<ActionResult<IssuedCard>> Create(Card card) =>
         await cards.CreateAsync(card) == WriteResult.Duplicate
             ? Conflict($"Card {card.CardNumber} already exists.")
-            : CreatedAtAction(nameof(Get), new { id = card.Id }, card);
+            : CreatedAtAction(nameof(Get), new { id = card.Id }, IssuedCard.From(card, cards.IssueCvv(card)));
 
     // Body'deki Id ve LastTransaction* alanları yok sayılır; kart URL'deki id ile bulunur.
     [HttpPut("{id:int}")]
