@@ -4,7 +4,7 @@ using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Data;
 
-// dbo.Card için SQL sorguları (Dapper). Cvv kolonu hiçbir sorguda yok (bkz. Card modeli).
+// dbo.Card için SQL sorguları (Dapper). Tabloda CVV yok: saklanmaz, hesaplanır (bkz. Card modeli).
 public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
 {
     private const string Columns =
