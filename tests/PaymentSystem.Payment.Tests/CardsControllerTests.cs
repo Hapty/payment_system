@@ -94,10 +94,10 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
         Assert.Equal(TestCvv.Calculator.CalculateCvv2("4111111111111111", "1228"), issued.Cvv);
         Assert.Equal(("4111111111111111", "ACC1", "Debit", "1228"), (issued.CardNumber, issued.AccountNo, issued.CardType, issued.ExpiryDate));
 
-        // GET kartın kendisini (Card) döner, CVV alanı yoktur; DB'deki Cvv kolonu boş kalır.
+        // GET kartın kendisini (Card) döner, CVV alanı yoktur; tabloda da CVV kolonu yoktur.
         Assert.IsNotType<IssuedCard>((await Controller.Get(issued.Id)).Value);
         await using var connection = Db.Create();
-        Assert.Null(await connection.ExecuteScalarAsync<string?>("SELECT Cvv FROM dbo.Card WHERE Id = @Id", new { issued.Id }));
+        Assert.Null(await connection.ExecuteScalarAsync<int?>("SELECT COL_LENGTH('dbo.Card', 'Cvv')"));
     }
 
     [Fact]

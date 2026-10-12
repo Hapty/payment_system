@@ -188,7 +188,7 @@ Kurallar:
 - `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus` ve `Email`'i değiştirir (`email` gönderilmezse silinir).
 - `BankAccount.Email` opsiyoneldir; doluysa onaylı satışlarda Notification servisi bu adrese e-posta atar (bkz. **Notification**).
 - `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
-- `Card.Cvv` kolonu API'de hiç yok ve hep boş kalır (PCI DSS: CVV saklanmamalı). CVV hesaplanır, bkz. **CVV2**.
+- `Card` tablosunda CVV kolonu yok (PCI DSS: CVV saklanmamalı). CVV hesaplanır, bkz. **CVV2**.
 - `POST /api/cards` cevabında kartın CVV2'si (`cvv`) **bir kez** döner: kartın arkasına basılan değerin karşılığı. Sonradan hiçbir endpoint göstermez; not alınmalı. Son kullanma tarihi olmayan kartta `null`. Son kullanma tarihi `PUT` ile değişirse CVV de değişir (gerçekte yeni kart basılır): yeni CVV için kart yeniden oluşturulmalı.
 - Aynı anahtar kontrolü önce "var mı?" diye sorarak değil, DB'nin unique hatası (2627/2601) yakalanarak yapılır; eşzamanlı isteklerde de doğru `409` döner.
 

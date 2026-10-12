@@ -41,13 +41,17 @@ BEGIN
         AccountNo               VARCHAR(34)     NOT NULL,
         CardType                VARCHAR(20)     NULL,
         ExpiryDate              CHAR(4)         NULL,           -- MMYY
-        Cvv                     CHAR(3)         NULL,
         LastTransactionDate     DATETIME2       NULL,
         LastTransactionAmount   DECIMAL(18,2)   NULL,
         ContactlessAllowed      BIT             NOT NULL DEFAULT 0,
         ContactlessLimit        DECIMAL(18,2)   NULL
     );
 END
+GO
+
+-- CVV saklanmaz (PCI DSS): kart bilgilerinden CVV_KEY ile hesaplanır. Eski şemadaki (hep boş) Cvv kolonu burada silinir.
+IF COL_LENGTH('dbo.Card', 'Cvv') IS NOT NULL
+    ALTER TABLE dbo.Card DROP COLUMN Cvv;
 GO
 
 -- 3) TransactionType (sözlük: otc/ots kombinasyonu -> işlem adı)
