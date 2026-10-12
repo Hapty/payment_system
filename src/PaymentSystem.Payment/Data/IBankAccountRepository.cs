@@ -11,7 +11,7 @@ public interface IBankAccountRepository
 
     Task<WriteResult> CreateAsync(BankAccount account);
 
-    Task<WriteResult> UpdateStatusAsync(string accountNo, string accountStatus);
+    Task<WriteResult> UpdateAsync(string accountNo, string accountStatus, string? email);
 
     Task<bool> DeleteAsync(string accountNo);
 }

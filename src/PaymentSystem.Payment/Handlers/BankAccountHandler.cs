@@ -28,12 +28,12 @@ public sealed class BankAccountHandler(IBankAccountRepository accounts, ILogger<
         return result;
     }
 
-    // Sadece durum değişir; bakiye hesap açılırken verilir, sonra yalnızca işlemlerle değişir.
-    public async Task<WriteResult> UpdateStatusAsync(string accountNo, string accountStatus)
+    // Durum ve e-posta değişir; bakiye hesap açılırken verilir, sonra yalnızca işlemlerle değişir.
+    public async Task<WriteResult> UpdateAsync(string accountNo, string accountStatus, string? email)
     {
-        var result = await accounts.UpdateStatusAsync(accountNo, accountStatus);
-        logger.LogInformation("{Method}: account {AccountNo} status {Status} -> {Result}",
-            nameof(UpdateStatusAsync), accountNo, accountStatus, result);
+        var result = await accounts.UpdateAsync(accountNo, accountStatus, email);
+        logger.LogInformation("{Method}: account {AccountNo} status {Status} email {Email} -> {Result}",
+            nameof(UpdateAsync), accountNo, accountStatus, email is null ? "none" : "set", result);
         return result;
     }
 

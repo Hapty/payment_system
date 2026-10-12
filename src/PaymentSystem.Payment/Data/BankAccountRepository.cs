@@ -7,7 +7,7 @@ namespace PaymentSystem.Payment.Data;
 // dbo.BankAccount için SQL sorguları (Dapper).
 public sealed class BankAccountRepository(SqlConnectionFactory db) : IBankAccountRepository
 {
-    private const string Columns = "AccountNo, AccountStatus, Balance";
+    private const string Columns = "AccountNo, AccountStatus, Balance, Email";
 
     public async Task<IReadOnlyList<BankAccount>> GetAllAsync()
     {
@@ -29,7 +29,7 @@ public sealed class BankAccountRepository(SqlConnectionFactory db) : IBankAccoun
         try
         {
             await connection.ExecuteAsync(
-                "INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES (@AccountNo, @AccountStatus, @Balance)",
+                "INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance, Email) VALUES (@AccountNo, @AccountStatus, @Balance, @Email)",
                 account);
             return WriteResult.Ok;
         }
@@ -39,13 +39,13 @@ public sealed class BankAccountRepository(SqlConnectionFactory db) : IBankAccoun
         }
     }
 
-    // Sadece durum değişir. Bakiye hesap açılırken verilir; sonrasında yalnızca işlemlerle (ISO8583 akışı) değişir.
-    public async Task<WriteResult> UpdateStatusAsync(string accountNo, string accountStatus)
+    // Durum ve e-posta değişir. Bakiye hesap açılırken verilir; sonrasında yalnızca işlemlerle (ISO8583 akışı) değişir.
+    public async Task<WriteResult> UpdateAsync(string accountNo, string accountStatus, string? email)
     {
         await using var connection = db.Create();
         var affected = await connection.ExecuteAsync(
-            "UPDATE dbo.BankAccount SET AccountStatus = @accountStatus WHERE AccountNo = @accountNo",
-            new { accountNo, accountStatus });
+            "UPDATE dbo.BankAccount SET AccountStatus = @accountStatus, Email = @email WHERE AccountNo = @accountNo",
+            new { accountNo, accountStatus, email });
         return affected == 0 ? WriteResult.NotFound : WriteResult.Ok;
     }
 

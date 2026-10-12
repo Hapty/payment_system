@@ -20,9 +20,15 @@ BEGIN
     (
         AccountNo       VARCHAR(34)     NOT NULL PRIMARY KEY,
         AccountStatus   VARCHAR(20)     NOT NULL,
-        Balance         DECIMAL(18,2)   NOT NULL DEFAULT 0
+        Balance         DECIMAL(18,2)   NOT NULL DEFAULT 0,
+        Email           VARCHAR(254)    NULL            -- onaylı satışta Notification servisi bu adrese e-posta atar
     );
 END
+GO
+
+-- Email kolonu sonradan eklendi: tablo bu kolondan önce oluşturulduysa (mevcut volume) burada eklenir.
+IF COL_LENGTH('dbo.BankAccount', 'Email') IS NULL
+    ALTER TABLE dbo.BankAccount ADD Email VARCHAR(254) NULL;
 GO
 
 -- 2) Card

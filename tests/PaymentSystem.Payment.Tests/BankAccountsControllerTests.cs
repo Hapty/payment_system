@@ -12,8 +12,8 @@ public class BankAccountsControllerTests(SqlServerFixture fixture) : DatabaseTes
     private BankAccountRepository Repository => new(Db);
     private BankAccountsController Controller => new(new BankAccountHandler(Repository, NullLogger<BankAccountHandler>.Instance));
 
-    private static BankAccount Account(string no = "ACC1", string status = "Active", decimal balance = 100m) =>
-        new() { AccountNo = no, AccountStatus = status, Balance = balance };
+    private static BankAccount Account(string no = "ACC1", string status = "Active", decimal balance = 100m, string? email = null) =>
+        new() { AccountNo = no, AccountStatus = status, Balance = balance, Email = email };
 
     [Fact]
     public async Task GetAll_ReturnsAllAccounts()
@@ -69,6 +69,26 @@ public class BankAccountsControllerTests(SqlServerFixture fixture) : DatabaseTes
         var saved = (await Repository.GetAsync("ACC1"))!;
         Assert.Equal("Blocked", saved.AccountStatus);
         Assert.Equal(100m, saved.Balance);
+    }
+
+    [Fact]
+    public async Task Create_WithEmail_PersistsIt()
+    {
+        await Controller.Create(Account(email: "musteri@example.com"));
+
+        Assert.Equal("musteri@example.com", (await Repository.GetAsync("ACC1"))!.Email);
+    }
+
+    [Fact]
+    public async Task Update_SetsAndClearsEmail()
+    {
+        await Repository.CreateAsync(Account());
+
+        await Controller.Update("ACC1", Account(email: "yeni@example.com"));
+        Assert.Equal("yeni@example.com", (await Repository.GetAsync("ACC1"))!.Email);
+
+        await Controller.Update("ACC1", Account());
+        Assert.Null((await Repository.GetAsync("ACC1"))!.Email);
     }
 
     [Fact]

@@ -18,6 +18,14 @@ public class ModelValidationTests
         Assert.False(IsValid(new BankAccount { AccountNo = new string('1', 35), AccountStatus = "Active" }));
 
     [Fact]
+    public void BankAccount_WithEmail_IsValid() =>
+        Assert.True(IsValid(new BankAccount { AccountNo = "ACC1", AccountStatus = "Active", Email = "musteri@example.com" }));
+
+    [Fact]
+    public void BankAccount_InvalidEmail_IsInvalid() =>
+        Assert.False(IsValid(new BankAccount { AccountNo = "ACC1", AccountStatus = "Active", Email = "not-an-email" }));
+
+    [Fact]
     public void Card_Valid() =>
         Assert.True(IsValid(new Card { CardNumber = "4111111111111111", AccountNo = "ACC1", ExpiryDate = "1228" }));
 
