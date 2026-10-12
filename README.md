@@ -57,7 +57,7 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 
 | Tablo | Açıklama |
 |---|---|
-| `BankAccount` | Hesap no, hesap durumu, bakiye |
+| `BankAccount` | Hesap no, hesap durumu, bakiye, e-posta (opsiyonel; bildirimler buraya gider) |
 | `Card` | Kart bilgileri, ilişkili hesap |
 | `TransactionType` | (Otc, Ots) kombinasyonundan işlem tipine lookup (Sale, MoneyTransfer, BalanceInquiry) |
 | `MtiProcessingCode` | Gelen mesajın (Mti, F3_ProcessingCode) değerinden (Otc, Ots)'ye lookup — örn. `0200`+`000000` → Sale |
@@ -175,7 +175,8 @@ Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `PO
 
 Kurallar:
 - Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır). Card'ın anahtarı `Id` olduğu için kart numarası değiştirilebilir (başka kartta varsa `409`).
-- `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus`'u değiştirir.
+- `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus` ve `Email`'i değiştirir (`email` gönderilmezse silinir).
+- `BankAccount.Email` opsiyoneldir; doluysa onaylı satışlarda Notification servisi bu adrese e-posta atar (bkz. **Notification**).
 - `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
 - `Card.Cvv` kolonu API'de hiç yok (PCI DSS: CVV saklanmamalı).
 - Aynı anahtar kontrolü önce "var mı?" diye sorarak değil, DB'nin unique hatası (2627/2601) yakalanarak yapılır; eşzamanlı isteklerde de doğru `409` döner.

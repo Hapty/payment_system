@@ -23,9 +23,10 @@ public class BankAccountsController(BankAccountHandler accounts) : ControllerBas
             : CreatedAtAction(nameof(Get), new { accountNo = account.AccountNo }, account);
 
     // Body'deki Balance yok sayılır: bakiye sadece hesap açılırken verilir, sonra işlemlerle değişir.
+    // Email body'de yoksa silinir (PUT tüm düzenlenebilir alanları yazar).
     [HttpPut("{accountNo}")]
     public async Task<IActionResult> Update(string accountNo, BankAccount input) =>
-        await accounts.UpdateStatusAsync(accountNo, input.AccountStatus) == WriteResult.NotFound ? NotFound() : NoContent();
+        await accounts.UpdateAsync(accountNo, input.AccountStatus, input.Email) == WriteResult.NotFound ? NotFound() : NoContent();
 
     [HttpDelete("{accountNo}")]
     public async Task<IActionResult> Delete(string accountNo) =>

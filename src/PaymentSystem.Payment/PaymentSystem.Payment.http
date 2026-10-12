@@ -7,17 +7,17 @@ GET {{host}}/api/bank-accounts
 POST {{host}}/api/bank-accounts
 Content-Type: application/json
 
-{ "accountNo": "TR01", "accountStatus": "Active", "balance": 1000.00 }
+{ "accountNo": "TR01", "accountStatus": "Active", "balance": 1000.00, "email": "musteri@example.com" }
 
 ###
 GET {{host}}/api/bank-accounts/TR01
 
 ###
-# Bakiye değişmez, sadece durum güncellenir
+# Bakiye değişmez, sadece durum ve e-posta güncellenir (email gönderilmezse silinir)
 PUT {{host}}/api/bank-accounts/TR01
 Content-Type: application/json
 
-{ "accountNo": "TR01", "accountStatus": "Blocked", "balance": 999999 }
+{ "accountNo": "TR01", "accountStatus": "Blocked", "balance": 999999, "email": "musteri@example.com" }
 
 ###
 DELETE {{host}}/api/bank-accounts/TR01
