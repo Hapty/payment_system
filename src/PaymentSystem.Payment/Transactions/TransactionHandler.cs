@@ -16,7 +16,7 @@ namespace PaymentSystem.Payment.Transactions;
 // Commit edilen her karar (onay da red de) TransactionCompleted olayı olarak yayımlanır; yayımlama işlemi bekletmez.
 // Onayda F39'u döner; onaylanmayan her işlem (red ya da teknik hata) TransactionException fırlatır.
 public sealed class TransactionHandler(
-    ITransactionRepository repository, ParameterCache parameters, ExchangeRateCache rates, ICvvCalculator cvv,
+    ITransactionRepository repository, ParameterCache parameters, ExchangeRateCache rates, ICardSecretHasher secrets,
     ITransactionEventPublisher events, TimeProvider clock, ILogger<TransactionHandler> logger)
 {
     private const string TurkishLira = "949";
@@ -142,7 +142,7 @@ public sealed class TransactionHandler(
         {
             if (request.Cvv is null)
                 return Decline(nameof(DecideAsync), request, InternalResponseCodes.CvvMismatch, $"CVV2 required for entry mode {request.EntryMode}");
-            if (!CvvMatches(card, request.Cvv))
+            if (!await CvvMatchesAsync(session, request.CardNumber, request.Cvv))
                 return Decline(nameof(DecideAsync), request, InternalResponseCodes.CvvMismatch, "CVV2 does not match");
         }
 
@@ -275,11 +275,11 @@ public sealed class TransactionHandler(
         return (year, month).CompareTo((today.Year, today.Month)) < 0;
     }
 
-    // CVV saklanmaz: kart bilgilerinden yeniden hesaplanıp gelenle karşılaştırılır (sabit zamanlı; süre hangi hanenin
-    // tuttuğunu ele vermez). Son kullanma tarihi olmayan kartın CVV'si hesaplanamaz, eşleşmemiş sayılır.
-    private bool CvvMatches(Card card, string received) =>
-        cvv.CalculateCvv2(card.CardNumber, card.ExpiryDate) is { } expected
-        && CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(expected), Encoding.ASCII.GetBytes(received));
+    // CVV düz saklanmaz: gelen değer hash'lenip dbo.CardSecret'taki hash ile karşılaştırılır (sabit zamanlı; süre hangi
+    // baytın tuttuğunu ele vermez). CardSecret'ı olmayan kart (bu tablodan önce açılmış) eşleşmemiş sayılır.
+    private async Task<bool> CvvMatchesAsync(IDebitSession session, string cardNumber, string received) =>
+        await session.GetCvvHashAsync(cardNumber) is { } stored
+        && CryptographicOperations.FixedTimeEquals(stored, secrets.HashCvv(cardNumber, received));
 
     // POS F14'ü YYMM, Card tablosu MMYY formatında tutar.
     private static bool ExpiryMatches(string? cardExpiry, string? requestExpiry) =>

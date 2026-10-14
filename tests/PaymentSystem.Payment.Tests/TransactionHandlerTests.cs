@@ -30,7 +30,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     // Yayımlanan olaylar Kafka yerine burada toplanır.
     private RecordingEventPublisher Events { get; } = new();
 
-    private TransactionHandler Handler => new(new TransactionRepository(Db), Parameters, Rates, TestCvv.Calculator, Events, Clock, NullLogger<TransactionHandler>.Instance);
+    private TransactionHandler Handler => new(new TransactionRepository(Db), Parameters, Rates, TestSecrets.Hasher, Events, Clock, NullLogger<TransactionHandler>.Instance);
 
     private void StoreRates(params (string Code, decimal Rate)[] rates) =>
         Rates.Store(new TcmbBulletin(new DateOnly(2026, 3, 13), rates.ToDictionary(r => r.Code, r => r.Rate)));
@@ -47,7 +47,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
 
     // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql, 03_seed_entry_modes.sql, 04_seed_internal_response_codes.sql) ve bir hesap + kartı yeniden ekler.
     private async Task SeedAsync(decimal balance = 1000m, string status = "Active", string? expiry = "1228",
-        bool contactless = true, decimal? contactlessLimit = 750m, string? email = Email)
+        bool contactless = true, decimal? contactlessLimit = 750m, string? email = Email, bool withSecret = true)
     {
         await using var connection = Db.Create();
         await connection.ExecuteAsync(
@@ -64,6 +64,10 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
                 VALUES (@Pan, @AccountNo, @expiry, @contactless, @contactlessLimit);
             """,
             new { AccountNo, Pan, status, balance, expiry, contactless, contactlessLimit, email });
+        if (withSecret)
+            await connection.ExecuteAsync(
+                "INSERT INTO dbo.CardSecret (CardNumber, CvvHash, PinHash) VALUES (@Pan, @cvvHash, @pinHash)",
+                new { Pan, cvvHash = TestSecrets.Hasher.HashCvv(Pan, CardCvv), pinHash = TestSecrets.Hasher.HashPin(Pan, "1234") });
     }
 
     private static TransactionRequest Sale(long amountMinor = 15000, string localTime = "125959") => new()
@@ -530,9 +534,9 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         Assert.Equal("00", await AuthorizeAsync(request));
     }
 
-    // SeedAsync'in kartının (4111..., son kullanma 1228) gerçek CVV2'si; testler bir hane değiştirerek yanlışını üretir.
-    private static string CardCvv => TestCvv.Calculator.CalculateCvv2(Pan, "1228")!;
-    private static string WrongCvv => CardCvv[0] == '9' ? "0" + CardCvv[1..] : (char)(CardCvv[0] + 1) + CardCvv[1..];
+    // SeedAsync'in kartının CVV2'si (CardSecret'a hash'i yazılır) ve yanlış bir CVV2.
+    private const string CardCvv = "123";
+    private const string WrongCvv = "124";
 
     [Theory]
     [InlineData("812")]     // e-ticaret
@@ -568,7 +572,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     {
         await SeedAsync();
         var logger = new ListLogger<TransactionHandler>();
-        var handler = new TransactionHandler(new TransactionRepository(Db), Parameters, Rates, TestCvv.Calculator, Events, Clock, logger);
+        var handler = new TransactionHandler(new TransactionRepository(Db), Parameters, Rates, TestSecrets.Hasher, Events, Clock, logger);
         var request = Sale(15000);
         request.EntryMode = "812";
         request.Cvv = WrongCvv;
@@ -593,14 +597,25 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     }
 
     [Fact]
-    public async Task CardNotPresentSale_OnCardWithoutExpiry_IsDeclinedN7()
+    public async Task CardNotPresentSale_OnCardWithoutSecret_IsDeclinedN7()
+    {
+        await SeedAsync(withSecret: false);                         // CardSecret tablosundan önce açılmış kart
+        var request = Sale(15000);
+        request.EntryMode = "812";
+        request.Cvv = CardCvv;
+
+        Assert.Equal("N7", await AuthorizeAsync(request));          // karşılaştırılacak hash yok: eşleşmemiş sayılır
+    }
+
+    [Fact]
+    public async Task CardNotPresentSale_OnCardWithoutExpiry_IsCheckedAgainstStoredCvv()
     {
         await SeedAsync(expiry: null);
         var request = Sale(15000);
         request.EntryMode = "812";
         request.Cvv = CardCvv;
 
-        Assert.Equal("N7", await AuthorizeAsync(request));          // CVV hesaplanamıyor: eşleşmemiş sayılır
+        Assert.Equal("00", await AuthorizeAsync(request));          // CVV artık son kullanma tarihine bağlı değil
     }
 
     [Fact]
@@ -737,7 +752,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     public async Task DatabaseUnreachable_ThrowsTechnical91WithCause()
     {
         var unreachable = new SqlConnectionFactory("Server=127.0.0.1,1;Database=PaymentSystem;User Id=sa;Password=x;Connect Timeout=1;TrustServerCertificate=True");
-        var handler = new TransactionHandler(new TransactionRepository(unreachable), TestParameters.Create(unreachable), Rates, TestCvv.Calculator, Events, Clock,
+        var handler = new TransactionHandler(new TransactionRepository(unreachable), TestParameters.Create(unreachable), Rates, TestSecrets.Hasher, Events, Clock,
             NullLogger<TransactionHandler>.Instance);
 
         var ex = await Assert.ThrowsAsync<TransactionException>(() => handler.ProcessAsync(Sale()));

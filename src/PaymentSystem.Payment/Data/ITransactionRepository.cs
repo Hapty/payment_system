@@ -24,6 +24,9 @@ public interface IDebitSession : IAsyncDisposable
 
     Task<Card?> GetCardAsync(string cardNumber);
 
+    // dbo.CardSecret'taki CVV2 hash'i; kartın CardSecret satırı yoksa null.
+    Task<byte[]?> GetCvvHashAsync(string cardNumber);
+
     // Durum ve e-posta (bildirim olayı için); bakiye okunmaz, TryDebitAsync'te kontrol edilir.
     Task<BankAccount?> GetAccountAsync(string accountNo);
 

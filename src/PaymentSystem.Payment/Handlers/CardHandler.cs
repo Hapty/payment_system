@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using PaymentSystem.Iso8583;
 using PaymentSystem.Payment.Cards;
 using PaymentSystem.Payment.Data;
@@ -5,11 +6,10 @@ using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Handlers;
 
-// Kart CRUD işlemleri: CardsController ile CardRepository arasında. Kart numarası loglara maskeli yazılır.
-public sealed class CardHandler(ICardRepository cards, ICvvCalculator cvv, ILogger<CardHandler> logger)
+// Kart CRUD işlemleri: CardsController ile CardRepository arasında. Kart numarası loglara maskeli yazılır,
+// CVV ve PIN hiçbir loga yazılmaz.
+public sealed class CardHandler(ICardRepository cards, ICardSecretHasher secrets, ILogger<CardHandler> logger)
 {
-    // Yeni kartın CVV2'si: kartın arkasına basılacak değer. Sadece kart oluşturulurken bir kez döner, hiçbir yere yazılmaz.
-    public string? IssueCvv(Card card) => cvv.CalculateCvv2(card.CardNumber, card.ExpiryDate);
 
     public async Task<IReadOnlyList<Card>> GetAllAsync()
     {
@@ -33,17 +33,29 @@ public sealed class CardHandler(ICardRepository cards, ICvvCalculator cvv, ILogg
         return card;
     }
 
-    public async Task<WriteResult> CreateAsync(Card card)
+    // Yeni kartın CVV2'si (3 hane) ve PIN'i (4 hane) rastgele üretilir; DB'ye sadece hash'leri yazılır.
+    // Düz halleri sadece burada, bir kez döner (kartın arkasına basılan değer / PIN zarfı). Duplicate'te Issued null.
+    public async Task<(WriteResult Result, IssuedCard? Issued)> CreateAsync(Card card)
     {
-        var result = await cards.CreateAsync(card);
+        var cvv = RandomDigits(3);
+        var pin = RandomDigits(4);
+        var result = await cards.CreateAsync(card,
+            new CardSecret(card.CardNumber, secrets.HashCvv(card.CardNumber, cvv), secrets.HashPin(card.CardNumber, pin)));
         logger.LogInformation("{Method}: card PAN {Pan} account {AccountNo} -> {Result} (id {Id})",
             nameof(CreateAsync), PanMask.Mask(card.CardNumber), card.AccountNo, result, card.Id);
-        return result;
+        return (result, result == WriteResult.Ok ? IssuedCard.From(card, cvv, pin) : null);
     }
 
+    // Kart numarası değiştirilemez: CVV / PIN hash'i numaraya bağlı, numara değişirse ikisi de geçersiz kalır.
+    // Gerçek bankalarda da numara değişince yeni kart çıkarılır (POST).
     public async Task<WriteResult> UpdateAsync(int id, Card input)
     {
-        var result = await cards.UpdateAsync(id, input);
+        var result = await cards.GetAsync(id) switch
+        {
+            null => WriteResult.NotFound,
+            { } existing when existing.CardNumber != input.CardNumber => WriteResult.CardNumberChanged,
+            _ => await cards.UpdateAsync(id, input)
+        };
         logger.LogInformation("{Method}: card {Id} PAN {Pan} -> {Result}", nameof(UpdateAsync), id, PanMask.Mask(input.CardNumber), result);
         return result;
     }
@@ -54,4 +66,8 @@ public sealed class CardHandler(ICardRepository cards, ICvvCalculator cvv, ILogg
         logger.LogInformation("{Method}: card {Id} {Result}", nameof(DeleteAsync), id, deleted ? "deleted" : "not found");
         return deleted;
     }
+
+    // Kriptografik rastgele, baştaki sıfırlar korunur (örn. "007").
+    private static string RandomDigits(int length) =>
+        RandomNumberGenerator.GetInt32((int)Math.Pow(10, length)).ToString($"D{length}");
 }

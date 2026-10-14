@@ -4,7 +4,7 @@ using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Data;
 
-// dbo.Card için SQL sorguları (Dapper). Tabloda CVV yok: saklanmaz, hesaplanır (bkz. Card modeli).
+// dbo.Card için SQL sorguları (Dapper). CVV ve PIN'in hash'leri dbo.CardSecret'tadır, sadece kart oluşturulurken yazılır.
 public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
 {
     private const string Columns =
@@ -31,10 +31,13 @@ public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
     }
 
     // Id'yi veritabanı verir (IDENTITY); OUTPUT INSERTED.Id ile aynı sorguda geri okunur.
+    // Kart ve CVV / PIN hash'leri tek transaction'da yazılır: CardSecret'ı olmayan kart oluşmaz.
     // LastTransaction* alanları yeni kartta her zaman boştur, gelen değerleri yok sayılır.
-    public async Task<WriteResult> CreateAsync(Card card)
+    public async Task<WriteResult> CreateAsync(Card card, CardSecret secret)
     {
         await using var connection = db.Create();
+        await connection.OpenAsync();
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         try
         {
             card.Id = await connection.ExecuteScalarAsync<int>(
@@ -43,7 +46,11 @@ public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
                 OUTPUT INSERTED.Id
                 VALUES (@CardNumber, @AccountNo, @CardType, @ExpiryDate, @ContactlessAllowed, @ContactlessLimit)
                 """,
-                card);
+                card, transaction);
+            await connection.ExecuteAsync(
+                "INSERT INTO dbo.CardSecret (CardNumber, CvvHash, PinHash) VALUES (@CardNumber, @CvvHash, @PinHash)",
+                secret, transaction);
+            await transaction.CommitAsync();
             card.LastTransactionDate = null;
             card.LastTransactionAmount = null;
             return WriteResult.Ok;
@@ -54,30 +61,20 @@ public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
         }
     }
 
-    // LastTransaction* alanlarını işlem akışı yazar, bu yüzden burada güncellenmez.
+    // Kart numarası ve LastTransaction* alanları güncellenmez: numara değiştirilemez (CardHandler kontrol eder),
+    // LastTransaction* alanlarını işlem akışı yazar.
     public async Task<WriteResult> UpdateAsync(int id, Card input)
     {
         await using var connection = db.Create();
-        try
-        {
-            var affected = await connection.ExecuteAsync(
-                """
-                UPDATE dbo.Card
-                SET CardNumber = @CardNumber, AccountNo = @AccountNo, CardType = @CardType, ExpiryDate = @ExpiryDate,
-                    ContactlessAllowed = @ContactlessAllowed, ContactlessLimit = @ContactlessLimit
-                WHERE Id = @Id
-                """,
-                new
-                {
-                    Id = id, input.CardNumber, input.AccountNo, input.CardType, input.ExpiryDate,
-                    input.ContactlessAllowed, input.ContactlessLimit
-                });
-            return affected == 0 ? WriteResult.NotFound : WriteResult.Ok;
-        }
-        catch (SqlException ex) when (SqlErrors.IsDuplicateKey(ex))
-        {
-            return WriteResult.Duplicate;   // kart numarası başka bir kartta zaten var
-        }
+        var affected = await connection.ExecuteAsync(
+            """
+            UPDATE dbo.Card
+            SET AccountNo = @AccountNo, CardType = @CardType, ExpiryDate = @ExpiryDate,
+                ContactlessAllowed = @ContactlessAllowed, ContactlessLimit = @ContactlessLimit
+            WHERE Id = @Id
+            """,
+            new { Id = id, input.AccountNo, input.CardType, input.ExpiryDate, input.ContactlessAllowed, input.ContactlessLimit });
+        return affected == 0 ? WriteResult.NotFound : WriteResult.Ok;
     }
 
     public async Task<bool> DeleteAsync(int id)

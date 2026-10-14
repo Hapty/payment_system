@@ -3,8 +3,8 @@ using System.ComponentModel.DataAnnotations;
 namespace PaymentSystem.Payment.Models;
 
 // dbo.Card tablosunun bir satırı.
-// CVV ne modelde ne tabloda var: PCI DSS'e göre CVV saklanmamalı. Bankalardaki gibi CVV_KEY ile kart bilgilerinden
-// hesaplanır (Cards/VisaCvvCalculator); sadece kart oluşturulurken bir kez döner (IssuedCard).
+// CVV ve PIN bu tabloda değil, hash'lenmiş olarak dbo.CardSecret'tadır (CardSecret); düz halleri sadece kart
+// oluşturulurken bir kez döner (IssuedCard). Kartın numarası oluşturulduktan sonra değiştirilemez.
 public class Card
 {
     public int Id { get; set; }

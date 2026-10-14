@@ -11,7 +11,7 @@ namespace PaymentSystem.Payment.Tests;
 public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private CardRepository Repository => new(Db);
-    private CardsController Controller => new(new CardHandler(Repository, TestCvv.Calculator, NullLogger<CardHandler>.Instance));
+    private CardsController Controller => new(new CardHandler(Repository, TestSecrets.Hasher, NullLogger<CardHandler>.Instance));
 
     private static Card NewCard(string number = "4111111111111111") => new()
     {
@@ -26,7 +26,7 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
     private async Task<int> SeedCardAsync(string number = "4111111111111111")
     {
         var card = NewCard(number);
-        await Repository.CreateAsync(card);
+        await Repository.CreateAsync(card, new CardSecret(number, TestSecrets.Hasher.HashCvv(number, "123"), TestSecrets.Hasher.HashPin(number, "1234")));
         return card.Id;
     }
 
@@ -86,29 +86,60 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
     }
 
     [Fact]
-    public async Task Create_ReturnsCvvOnceButItIsNeitherStoredNorReturnedLater()
+    public async Task Create_ReturnsCvvAndPinOnceAndStoresOnlyTheirHashes()
     {
         var created = Assert.IsType<CreatedAtActionResult>((await Controller.Create(NewCard())).Result);
         var issued = Assert.IsType<IssuedCard>(created.Value);
 
-        Assert.Equal(TestCvv.Calculator.CalculateCvv2("4111111111111111", "1228"), issued.Cvv);
+        Assert.Matches("^[0-9]{3}$", issued.Cvv);
+        Assert.Matches("^[0-9]{4}$", issued.Pin);
         Assert.Equal(("4111111111111111", "ACC1", "Debit", "1228"), (issued.CardNumber, issued.AccountNo, issued.CardType, issued.ExpiryDate));
 
-        // GET kartın kendisini (Card) döner, CVV alanı yoktur; tabloda da CVV kolonu yoktur.
-        Assert.IsNotType<IssuedCard>((await Controller.Get(issued.Id)).Value);
+        // CardSecret'ta düz değer değil, HMAC'leri durur.
         await using var connection = Db.Create();
+        var (cvvHash, pinHash) = await connection.QuerySingleAsync<(byte[], byte[])>(
+            "SELECT CvvHash, PinHash FROM dbo.CardSecret WHERE CardNumber = '4111111111111111'");
+        Assert.Equal(TestSecrets.Hasher.HashCvv("4111111111111111", issued.Cvv), cvvHash);
+        Assert.Equal(TestSecrets.Hasher.HashPin("4111111111111111", issued.Pin), pinHash);
+
+        // GET kartın kendisini (Card) döner, CVV / PIN alanı yoktur; Card tablosunda da kolonları yoktur.
+        Assert.IsNotType<IssuedCard>((await Controller.Get(issued.Id)).Value);
         Assert.Null(await connection.ExecuteScalarAsync<int?>("SELECT COL_LENGTH('dbo.Card', 'Cvv')"));
     }
 
     [Fact]
-    public async Task Create_WithoutExpiry_HasNoCvv()
+    public async Task Create_WithoutExpiry_StillGetsCvvAndPin()
     {
         var card = NewCard();
         card.ExpiryDate = null;
 
-        var created = Assert.IsType<CreatedAtActionResult>((await Controller.Create(card)).Result);
+        var issued = Assert.IsType<IssuedCard>(Assert.IsType<CreatedAtActionResult>((await Controller.Create(card)).Result).Value);
 
-        Assert.Null(Assert.IsType<IssuedCard>(created.Value).Cvv);
+        Assert.Matches("^[0-9]{3}$", issued.Cvv);
+        Assert.Matches("^[0-9]{4}$", issued.Pin);
+    }
+
+    [Fact]
+    public async Task Create_DuplicateCardNumber_KeepsTheFirstCardsSecret()
+    {
+        await SeedCardAsync();
+        await using var connection = Db.Create();
+        var before = await connection.QuerySingleAsync<byte[]>("SELECT CvvHash FROM dbo.CardSecret");
+
+        Assert.IsType<ConflictObjectResult>((await Controller.Create(NewCard())).Result);
+
+        Assert.Equal(before, await connection.QuerySingleAsync<byte[]>("SELECT CvvHash FROM dbo.CardSecret"));
+    }
+
+    [Fact]
+    public async Task Delete_RemovesTheCardsSecretToo()
+    {
+        var id = await SeedCardAsync();
+
+        Assert.IsType<NoContentResult>(await Controller.Delete(id));
+
+        await using var connection = Db.Create();
+        Assert.Equal(0, await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM dbo.CardSecret"));
     }
 
     [Fact]
@@ -127,7 +158,7 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
         await using (var connection = Db.Create())
             await connection.ExecuteAsync("UPDATE dbo.Card SET LastTransactionAmount = 10.50 WHERE Id = @id", new { id });
 
-        var input = NewCard("5555444433332222");
+        var input = NewCard();
         input.CardType = "Credit";
         input.ContactlessAllowed = false;
         input.ContactlessLimit = null;
@@ -136,19 +167,26 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
         Assert.IsType<NoContentResult>(await Controller.Update(id, input));
 
         var saved = (await Repository.GetAsync(id))!;
-        Assert.Equal(("5555444433332222", "Credit"), (saved.CardNumber, saved.CardType));
+        Assert.Equal(("4111111111111111", "Credit"), (saved.CardNumber, saved.CardType));
         Assert.False(saved.ContactlessAllowed);
         Assert.Null(saved.ContactlessLimit);
         Assert.Equal(10.50m, saved.LastTransactionAmount);   // CRUD ile değişmedi
     }
 
-    [Fact]
-    public async Task Update_ToAnotherCardsNumber_ReturnsConflict()
+    [Theory]
+    [InlineData("5555444433332222")]    // yeni bir numara
+    [InlineData("1111")]                // başka bir kartın numarası
+    public async Task Update_ChangingCardNumber_ReturnsBadRequestAndChangesNothing(string newNumber)
     {
         await SeedCardAsync("1111");
         var id = await SeedCardAsync("2222");
+        var input = NewCard(newNumber);
+        input.CardType = "Credit";
 
-        Assert.IsType<ConflictObjectResult>(await Controller.Update(id, NewCard("1111")));
+        Assert.IsType<BadRequestObjectResult>(await Controller.Update(id, input));
+
+        var saved = (await Repository.GetAsync(id))!;
+        Assert.Equal(("2222", "Debit"), (saved.CardNumber, saved.CardType));
     }
 
     [Fact]

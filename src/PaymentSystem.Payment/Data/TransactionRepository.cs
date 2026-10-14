@@ -64,6 +64,10 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
                 "SELECT CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit FROM dbo.Card WHERE CardNumber = @cardNumber",
                 new { cardNumber }, transaction);
 
+        public Task<byte[]?> GetCvvHashAsync(string cardNumber) =>
+            connection.QuerySingleOrDefaultAsync<byte[]?>(
+                "SELECT CvvHash FROM dbo.CardSecret WHERE CardNumber = @cardNumber", new { cardNumber }, transaction);
+
         public Task<BankAccount?> GetAccountAsync(string accountNo) =>
             connection.QuerySingleOrDefaultAsync<BankAccount>(
                 "SELECT AccountNo, AccountStatus, Email FROM dbo.BankAccount WHERE AccountNo = @accountNo", new { accountNo }, transaction);
