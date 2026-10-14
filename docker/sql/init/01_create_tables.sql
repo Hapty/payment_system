@@ -49,9 +49,25 @@ BEGIN
 END
 GO
 
--- CVV saklanmaz (PCI DSS): kart bilgilerinden CVV_KEY ile hesaplanır. Eski şemadaki (hep boş) Cvv kolonu burada silinir.
+-- CVV Card tablosunda durmaz, hash'lenmiş olarak CardSecret'tadır. Eski şemadaki (hep boş) Cvv kolonu burada silinir.
 IF COL_LENGTH('dbo.Card', 'Cvv') IS NOT NULL
     ALTER TABLE dbo.Card DROP COLUMN Cvv;
+GO
+
+-- 2b) CardSecret: kartın CVV2'si ve PIN'i, düz değil HMAC-SHA256(CARD_SECRET_KEY, kart no + değer) olarak.
+-- Kart oluşturulurken Card ile aynı transaction'da yazılır, kart silinince silinir. Kart numarası değiştirilemez
+-- (hash kart numarasına bağlı); FK'da ON UPDATE yok, değiştirilmeye çalışılırsa DB de reddeder.
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'CardSecret')
+BEGIN
+    CREATE TABLE dbo.CardSecret
+    (
+        CardNumber  VARCHAR(19)     NOT NULL PRIMARY KEY
+                    CONSTRAINT FK_CardSecret_Card REFERENCES dbo.Card (CardNumber) ON DELETE CASCADE,
+        CvvHash     VARBINARY(32)   NOT NULL,
+        PinHash     VARBINARY(32)   NOT NULL,
+        CreatedAt   DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+END
 GO
 
 -- 3) TransactionType (sözlük: otc/ots kombinasyonu -> işlem adı)

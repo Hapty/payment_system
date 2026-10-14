@@ -11,8 +11,10 @@ public interface ICardRepository
 
     Task<Card?> GetByNumberAsync(string cardNumber);
 
-    Task<WriteResult> CreateAsync(Card card);
+    // Kart ve CVV / PIN hash'leri birlikte yazılır; biri yazılamazsa hiçbiri yazılmaz.
+    Task<WriteResult> CreateAsync(Card card, CardSecret secret);
 
+    // Kart numarasını değiştirmez.
     Task<WriteResult> UpdateAsync(int id, Card input);
 
     Task<bool> DeleteAsync(int id);

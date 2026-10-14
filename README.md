@@ -184,12 +184,12 @@ Katmanlar: **Controller** (sadece HTTP: sonucu 200/201/204/404/409'a çevirir) �
 Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `POST` → `409`, geçersiz alan → `400`, bulunamayan kayıt → `404`.
 
 Kurallar:
-- Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır). Card'ın anahtarı `Id` olduğu için kart numarası değiştirilebilir (başka kartta varsa `409`).
+- Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır). Kartın numarası da değiştirilemez: farklı numara gönderilirse `400` (CVV / PIN hash'i numaraya bağlı; yeni numara için yeni kart oluşturulur).
 - `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus` ve `Email`'i değiştirir (`email` gönderilmezse silinir).
 - `BankAccount.Email` opsiyoneldir; doluysa onaylı satışlarda Notification servisi bu adrese e-posta atar (bkz. **Notification**).
 - `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
-- `Card` tablosunda CVV kolonu yok (PCI DSS: CVV saklanmamalı). CVV hesaplanır, bkz. **CVV2**.
-- `POST /api/cards` cevabında kartın CVV2'si (`cvv`) **bir kez** döner: kartın arkasına basılan değerin karşılığı. Sonradan hiçbir endpoint göstermez; not alınmalı. Son kullanma tarihi olmayan kartta `null`. Son kullanma tarihi `PUT` ile değişirse CVV de değişir (gerçekte yeni kart basılır): yeni CVV için kart yeniden oluşturulmalı.
+- `Card` tablosunda CVV / PIN kolonu yok; hash'leri `CardSecret` tablosundadır, bkz. **CVV2 ve PIN**.
+- `POST /api/cards` cevabında kartın CVV2'si (`cvv`, 3 hane) ve PIN'i (`pin`, 4 hane) **bir kez** döner: kartın arkasına basılan değer ve PIN zarfının karşılığı. Sonradan hiçbir endpoint göstermez; not alınmalı.
 - Aynı anahtar kontrolü önce "var mı?" diye sorarak değil, DB'nin unique hatası (2627/2601) yakalanarak yapılır; eşzamanlı isteklerde de doğru `409` döner.
 
 ### Çalıştırma
@@ -200,7 +200,7 @@ docker compose up -d --build
 # lokal (DB, RabbitMQ ve Kafka container'ları ayaktayken; payment container'ı durdurulmuş olmalı — ikisi de 5002'yi kullanır)
 $env:MSSQL_SA_PASSWORD = "<şifreniz>"
 $env:RABBITMQ_PASSWORD = "<şifreniz>"
-$env:CVV_KEY = "<32 hex>"
+$env:CARD_SECRET_KEY = "<64 hex>"
 dotnet run --project src/PaymentSystem.Payment --launch-profile http
 ```
 Örnek istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http`.
@@ -241,20 +241,22 @@ Red kaydı F39'u ile commit edildikten sonra fırlatılır, kayıt geri alınmaz
 
 Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzerinden yürür (hesaplar TL). Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 (MMDD) yıl eklenerek `yyyymmdd` saklanır; yılbaşında gelen Aralık tarihi önceki yıla yazılır.
 
-### CVV2 (`Cards/`)
-CVV **saklanmaz**, bankalardaki gibi gizli bir anahtarla (CVK) kart bilgilerinden **hesaplanır**. Doğrulamada aynı hesap tekrarlanıp gelen değerle karşılaştırılır; çözülecek bir şey yoktur.
+### CVV2 ve PIN (`Cards/`, `CardSecret` tablosu)
+Kart oluşturulurken CVV2 (3 hane) ve PIN (4 hane) **rastgele** üretilir (`RandomNumberGenerator`). Düz halleri sadece `POST` cevabında bir kez döner; DB'ye `CardSecret` tablosuna **hash'leri** yazılır. `Card` ve `CardSecret` aynı SQL transaction'ında yazılır, kart silinince `CardSecret` satırı da silinir (`ON DELETE CASCADE`).
 
 ```
-Kart oluşturulurken:  CVV_KEY + (PAN, son kullanma YYMM, servis kodu 000) ──Visa CVV algoritması──► 123   → POST cevabında bir kez, saklanmaz
-Satış sırasında:      CVV_KEY + (PAN, son kullanma YYMM, servis kodu 000) ──Visa CVV algoritması──► 123   == gelen cvv ?  hayır → N7
+Kart oluşturulurken:  rastgele 123 / 4821 ──HMAC-SHA256(CARD_SECRET_KEY, PAN:cvv:123 / PAN:pin:4821)──► CardSecret.CvvHash / PinHash
+Satış sırasında:      gelen cvv        ──HMAC-SHA256(CARD_SECRET_KEY, PAN:cvv:<gelen>)──────────────► == CardSecret.CvvHash ?  hayır → N7
 ```
 
-- **Algoritma** (`VisaCvvCalculator`): `PAN + YYMM + 000` sıfırla 32 haneye tamamlanır; ilk 16 hane KeyA ile DES, sonuç son 16 haneyle XOR, sonra KeyA + KeyB ile 3DES; çıkan hex'ten önce rakamlar, sonra A–F (0–5) alınır, ilk 3 hane CVV'dir. Visa'nın yayımlanmış test vektörüyle doğrulanır (testlerde).
-- **Ne zaman:** kart fiziksel olarak yokken zorunlu: elle giriş (F22 `01x`) ve e-ticaret (`81x`). Çipli / temassız işlemde CVV istenmez (kart kendisi kriptogram üretir); ama yine de geldiyse doğrulanır. Karşılaştırma sabit zamanlıdır.
-- **Anahtar:** `CVV_KEY` ortam değişkeni (`.env`), 32 hex = KeyA + KeyB. Payment açılışta anahtarın kendisini değil parmak izini (KCV) loglar: `Startup: CVV key loaded, KCV 1A2B3C`. Anahtar değişirse **tüm kartların CVV'si değişir**.
-- **Gerçek bankalarda** anahtar HSM'in içindedir ve dışarı çıkmaz; hesap da orada yapılır. Burada demo için yazılımla yapılıyor. Hesaplama `ICvvCalculator` arayüzünün arkasında: Vault / Azure Key Vault / AWS Payment Cryptography gibi bir hizmete geçmek kontrol mantığını değiştirmez.
-- CVV hiçbir yere yazılmaz: DB, loglar, Kafka olayı.
-- Bu özellikten önce oluşturulan kartların CVV'si kimseye gösterilmedi; onlarla elle giriş / e-ticaret yapılamaz (`N7`), çip / temassız işlemler etkilenmez. Yeni kart oluşturulmalı.
+- **Neden anahtarlı hash (HMAC):** CVV'nin 1000, PIN'in 10.000 olası değeri var; düz SHA-256 olsaydı DB'yi ele geçiren hepsini saniyeler içinde dener. Anahtar DB'de değil ortam değişkenindedir, DB tek başına sızarsa hash'ler işe yaramaz. Hash geri çözülemez; doğrulamada gelen değer aynı şekilde hash'lenip karşılaştırılır (sabit zamanlı).
+- **Kart numarası hash'e girer:** aynı CVV'li iki kartın hash'i farklıdır. Bu yüzden kart numarası `PUT` ile değiştirilemez (`400`).
+- **Ne zaman kontrol edilir (CVV2):** kart fiziksel olarak yokken zorunlu: elle giriş (F22 `01x`) ve e-ticaret (`81x`). Çipli / temassız işlemde CVV istenmez (kart kendisi kriptogram üretir); ama yine de geldiyse doğrulanır.
+- **PIN** şimdilik sadece saklanır; işlemlerde doğrulanmaz (ileride F52 PIN block ile).
+- **Anahtar:** `CARD_SECRET_KEY` ortam değişkeni (`.env`), 64 hex = 32 bayt. Anahtar değişirse **tüm kartların CVV / PIN hash'i geçersiz olur**.
+- **Gerçek bankalarda** anahtar HSM'in içindedir ve dışarı çıkmaz. Hash `ICardSecretHasher` arayüzünün arkasında: Vault / Azure Key Vault / AWS Payment Cryptography gibi bir hizmete geçmek kontrol mantığını değiştirmez.
+- Düz CVV / PIN hiçbir yere yazılmaz: DB, loglar, Kafka olayı.
+- `CardSecret` tablosundan önce oluşturulan kartların satırı yoktur; onlarla elle giriş / e-ticaret yapılamaz (`N7`), çip / temassız işlemler etkilenmez. Yeni kart oluşturulmalı.
 
 ### Tanım tabloları cache'i (`Parameters/`)
 `TransactionType` + `MtiProcessingCode` (işlem tipi yönlendirmesi) , `EntryMode` (F22) ve `InternalResponseCode` (IRC → F39) işlem başına DB'den okunmaz: `ParameterCache` dört tabloyu tek seferde `IMemoryCache`'e yükler, tanımsız bir kod da DB'ye gitmeden tanımsız sayılır.

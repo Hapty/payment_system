@@ -1,12 +1,13 @@
 namespace PaymentSystem.Payment.Models;
 
-// POST /api/cards cevabı: kartın kendisi + CVV2'si. CVV sadece burada, kart oluşturulurken bir kez görünür
-// (kartın arkasına basılmasının karşılığı); GET'lerde ve DB'de yoktur. Son kullanma tarihi olmayan kartta null.
+// POST /api/cards cevabı: kartın kendisi + CVV2'si ve PIN'i. İkisi de sadece burada, kart oluşturulurken bir kez görünür
+// (kartın arkasına basılmasının / PIN zarfının karşılığı); GET'lerde yoktur, DB'de sadece hash'leri durur (dbo.CardSecret).
 public sealed class IssuedCard : Card
 {
-    public string? Cvv { get; init; }
+    public required string Cvv { get; init; }
+    public required string Pin { get; init; }
 
-    public static IssuedCard From(Card card, string? cvv) => new()
+    public static IssuedCard From(Card card, string cvv, string pin) => new()
     {
         Id = card.Id,
         CardNumber = card.CardNumber,
@@ -17,6 +18,7 @@ public sealed class IssuedCard : Card
         LastTransactionAmount = card.LastTransactionAmount,
         ContactlessAllowed = card.ContactlessAllowed,
         ContactlessLimit = card.ContactlessLimit,
-        Cvv = cvv
+        Cvv = cvv,
+        Pin = pin
     };
 }
