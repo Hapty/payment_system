@@ -11,7 +11,7 @@ public sealed record PaymentRequest(
     string TransmissionDateTime,    // F7  MMDDhhmmss
     string Stan,                    // F11
     string LocalTime,               // F12 hhmmss
-    string LocalDate,               // F13 MMDD
+    string LocalDate,               // F13 yyyymmdd (ISO mesajında MMDD; yıl Gate'e gelen istekten)
     string TerminalId,              // F41
     string? CardExpiry,             // F14 YYMM
     string? MerchantType,           // F18
@@ -19,6 +19,7 @@ public sealed record PaymentRequest(
     string? Rrn,                    // F37
     string? MerchantId,             // F42
     string? CardAcceptor,           // F43
+    string? RecipientCardNumber,    // F48: para transferinde alıcı kart no
     string? Cvv);                   // CVV2; ISO alanı değil, Payment doğrular
 
 public sealed record PaymentResponse(string ResponseCode);

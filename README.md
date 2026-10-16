@@ -81,43 +81,44 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 .NET 9 Web API. İşlemlerin sisteme tek giriş noktası: `POST /api/transactions` (port `8080`). Örnek istekler: `src/PaymentSystem.Gate/PaymentSystem.Gate.http`.
 
 Her istek için:
-1. JSON gövdesi ISO8583 mesajına çevrilir ve her alan ISO8583 tanımına göre doğrulanır (aşağıdaki tablo). Bozuk ya da eksik alan → `400`; cevapta hangi alanda ne sorun olduğu yazar, istek Payment'a gitmez.
+1. JSON gövdesinde alanlar ISO8583 alan numarasıyla gelir (`"F2"`, `"F3"` ...). Gövde ISO8583 mesajına çevrilir ve her alan ISO8583 tanımına göre doğrulanır (aşağıdaki tablo). Bozuk ya da eksik alan → `400`; cevapta hangi alanda ne sorun olduğu yazar, istek Payment'a gitmez.
 2. `0200` (finansal) isteği RabbitMQ'daki `payment.transactions` kuyruğuna yazılır ve Payment'ın cevabı beklenir (bkz. **Gate ↔ Payment: RabbitMQ**). Diğer MTI'lar: F39=`12`.
-3. Cevap `200` ile döner; karar `responseCode` alanındadır (F39). Onay da red de (`51` yetersiz bakiye ...) `200`'dür.
+3. Cevap `200` ile döner; karar `F39` alanındadır. Onay da red de (`51` yetersiz bakiye ...) `200`'dür.
 
 ```json
 // istek
-{ "mti": "0200", "cardNumber": "4111111111111111", "processingCode": "000000", "amountMinor": 15000, "currencyCode": "949",
-  "transmissionDateTime": "0315095959", "stan": "000001", "localTime": "125959", "localDate": "0315", "terminalId": "TERM0001",
-  "cardExpiry": "2812", "entryMode": "051" }
+{ "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949",
+  "F7": "0315095959", "F11": "000001", "F12": "125959", "F13": "20260315", "F41": "TERM0001",
+  "F14": "2812", "F22": "051" }
 // cevap
-{ "mti": "0210", "responseCode": "00", "stan": "000001", "rrn": null }
+{ "mti": "0210", "F39": "00", "F11": "000001", "F37": null }
 ```
 
-Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi (`MtiProcessingCode` tablosu). Loglarda kart numarası maskelenir (`411111******1111`). Development modunda OpenAPI şeması `GET /openapi/v1.json`'dadır (Postman'a import edilebilir).
+Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi (`MtiProcessingCode` tablosu). Loglarda kart numaraları (F2 ve F48) maskelenir (`411111******1111`). Development modunda OpenAPI şeması `GET /openapi/v1.json`'dadır (Postman'a import edilebilir).
 
 ### Alanlar
-| JSON | F | Format | Zorunlu (`0200`) |
+| JSON | Alan | Format | Zorunlu (`0200`) |
 |---|---|---|---|
 | `mti` | — | 4 hane, istek MTI'ı (`0200`) | evet |
-| `cardNumber` | 2 | rakam, 1–19 | evet |
-| `processingCode` | 3 | n6 (`000000` satış, `310000` bakiye sorgu) | evet |
-| `amountMinor` | 4 | sayı, kuruş cinsinden (150,00 → `15000`), en fazla 12 hane | evet |
-| `transmissionDateTime` | 7 | n10 MMDDhhmmss | evet |
-| `stan` | 11 | n6 | evet |
-| `localTime` | 12 | n6 hhmmss | evet |
-| `localDate` | 13 | n4 MMDD | evet |
-| `terminalId` | 41 | ans8 | evet |
-| `currencyCode` | 49 | n3 (949 = TRY, 840 = USD) | evet |
-| `cardExpiry` | 14 | n4 YYMM | |
-| `merchantType` | 18 | n4 | |
-| `entryMode` | 22 | n3 (`051` çip, `071` temassız) | |
-| `rrn` | 37 | an12 | |
-| `merchantId` | 42 | ans15 | |
-| `cardAcceptor` | 43 | ans40 (tam 40 karakter) | |
+| `F2` | kart no (PAN) | rakam, 1–19 | evet |
+| `F3` | işlem kodu | n6 (`000000` satış, `310000` bakiye sorgu, `400000` para transferi) | evet |
+| `F4` | tutar | sayı, kuruş cinsinden (150,00 → `15000`), en fazla 12 hane | evet |
+| `F7` | gönderim zamanı | n10 MMDDhhmmss | evet |
+| `F11` | STAN | n6 | evet |
+| `F12` | yerel saat | n6 hhmmss | evet |
+| `F13` | yerel tarih | **n8 yyyymmdd** (gerçek bir tarih olmalı) | evet |
+| `F41` | terminal no | ans8 | evet |
+| `F49` | para birimi | n3 (949 = TRY, 840 = USD) | evet |
+| `F14` | son kullanma | n4 YYMM | |
+| `F18` | işyeri tipi | n4 | |
+| `F22` | giriş yöntemi | n3 (`051` çip, `071` temassız, `812` e-ticaret) | |
+| `F37` | RRN | an12 | |
+| `F42` | işyeri no | ans15 | |
+| `F43` | işyeri adı / yeri | ans40 (tam 40 karakter) | |
+| `F48` | ek veri | ans..999 (LLLVAR); bu sistemde **alıcı kart no** | para transferinde |
 | `cvv` | — | 3 ya da 4 rakam (CVV2, kartın arkası) | elle girişte (`01x`) ve e-ticarette (`81x`) |
 
-Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir. `cvv` bir ISO8583:1987 alanı değildir (gerçek ağlarda markaya özel alt alanda taşınır, örn. Visa F126.10); Gate onu ISO mesajının dışında, ayrı alan olarak Payment'a iletir ve hiçbir yere loglamaz.
+Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir. **F13** ISO8583'te n4 MMDD'dir: Gate JSON'da yıllı halini (`yyyymmdd`) alır, ISO mesajına MMDD olarak koyar, yıllı halini Payment'a ayrıca iletir (Payment tarihi yıl tahmin etmeden olduğu gibi saklar). `cvv` bir ISO8583:1987 alanı değildir (gerçek ağlarda markaya özel alt alanda taşınır, örn. Visa F126.10); Gate onu ISO mesajının dışında, ayrı alan olarak Payment'a iletir ve hiçbir yere loglamaz.
 
 ### F39 (cevap kodu)
 | Kod | Kim üretir | Anlamı |
@@ -231,15 +232,27 @@ Red kaydı F39'u ile commit edildikten sonra fırlatılır, kayıt geri alınmaz
 | `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `2002` | `54` |
 | Kart fiziksel olarak yok (F22 `01x` elle giriş / `81x` e-ticaret) ama CVV2 gelmedi; ya da (hangi girişte olursa olsun) gelen CVV2 tutmuyor | `2006` | `N7` |
 | Hesap yok ya da `AccountStatus` `Active` değil | `2003` | `62` |
-| **Satış:** para birimi için TCMB kuru yok (ör. `999`) | `1004` | `12` |
-| **Satış:** döviz ama cache'te kur yok ya da bayat (bkz. Döviz kurları) | `9001` | `91` |
-| **Satış:** tutar 0 | `3001` | `13` |
+| **Transfer:** F48 yok ya da kart numarası değil (1–19 rakam) | `1005` | `30` |
+| **Transfer:** alıcı kart (F48) yok | `2007` | `14` |
+| **Transfer:** alıcı kart gönderenle aynı hesapta (aynı kart dahil) | `1006` | `12` |
+| **Transfer:** alıcı kartın hesabı yok ya da `Active` değil | `2008` | `62` |
+| **Satış / transfer:** para birimi için TCMB kuru yok (ör. `999`) | `1004` | `12` |
+| **Satış / transfer:** döviz ama cache'te kur yok ya da bayat (bkz. Döviz kurları) | `9001` | `91` |
+| **Satış / transfer:** tutar 0 | `3001` | `13` |
 | **Satış:** temassız (`EntryMode.IsContactless`, seed'de `07x`/`91x`) ama kart temassıza kapalı | `2004` | `57` |
 | **Satış:** temassız limit (TL karşılık üzerinden) aşıldı (terminal çip + PIN ile tekrar dener) | `2005` | `65` |
-| **Satış:** bakiye yetersiz | `3002` | `51` |
-| Onay — satışta bakiye düşer, `Card.LastTransaction*` güncellenir | `0000` | `00` |
+| **Satış / transfer:** bakiye yetersiz | `3002` | `51` |
+| Onay — satışta bakiye düşer; transferde gönderenden düşer, alıcıya eklenir; gönderen kartın `Card.LastTransaction*`'ı güncellenir | `0000` | `00` |
 
-Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzerinden yürür (hesaplar TL). Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 (MMDD) yıl eklenerek `yyyymmdd` saklanır; yılbaşında gelen Aralık tarihi önceki yıla yazılır.
+Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzerinden yürür (hesaplar TL). Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 Gate'ten `yyyymmdd` gelir ve olduğu gibi saklanır.
+
+### Karttan karta para transferi (`0200` + F3 `400000`)
+Sadece bu sistemdeki kartlar arasında (on-us). Alıcı kart numarası **F48**'de gelir.
+- Gönderen kart için satıştaki ortak kontroller aynen yapılır: F22, kart, son kullanma (F14), CVV2 (elle giriş / e-ticarette zorunlu), hesap aktif mi.
+- Alıcı kart bulunmalı, gönderenle aynı hesapta olmamalı, hesabı `Active` olmalı. Alıcı kartın son kullanma tarihine bakılmaz.
+- Döviz de olabilir: iki hesap da TL olduğu için **TL karşılığı** (satıştaki kurla) gönderenden düşülür, alıcıya eklenir. Temassız limit uygulanmaz.
+- Düşme ve ekleme, `DebitTransaction` kaydıyla aynı SQL transaction'ındadır: ya ikisi birden olur ya hiçbiri. İki hesabın satırı önce PK sırasıyla kilitlenir; A→B ve B→A transferleri aynı anda gelse de deadlock olmaz.
+- Kayıt tek satırdır: gönderen `F2_CardNo`'da, alıcı `RecipientCardNumber`'da (reddedilen transferde de yazılır).
 
 ### CVV2 ve PIN (`Cards/`, `CardSecret` tablosu)
 Kart oluşturulurken CVV2 (3 hane) ve PIN (4 hane) **rastgele** üretilir (`RandomNumberGenerator`). Düz halleri sadece `POST` cevabında bir kez döner; DB'ye `CardSecret` tablosuna **hash'leri** yazılır. `Card` ve `CardSecret` aynı SQL transaction'ında yazılır, kart silinince `CardSecret` satırı da silinir (`ON DELETE CASCADE`).
@@ -364,4 +377,4 @@ GitHub Actions (`.github/workflows/ci.yml`), `master`'a açılan her pull reques
 - Diğer asenkron işler (mutabakat, fraud) `payment.transaction-events`'i kendi consumer group'larıyla okuyabilir.
 - Bildirim geçmişi: gönderilen / gönderilemeyen e-postaların kaydı (web arayüzünde göstermek için).
 - DB şemasını ISO formatına uydurmak: `DebitTransaction.F13_TransactionDate` şu an `CHAR(8)` yyyymmdd (ISO: MMDD), `Card.ExpiryDate` MMYY (ISO F14: YYMM).
-- Para transferi şu an `12` döner: alıcı kart numarası ISO mesajında / Gate sözleşmesinde henüz yok.
+- Para transferinde e-posta bildirimi (Notification şu an sadece onaylı satışı bildirir); başka bankanın kartına transfer (off-us).

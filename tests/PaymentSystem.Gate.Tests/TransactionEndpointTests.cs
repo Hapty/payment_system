@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -11,7 +12,7 @@ public class TransactionEndpointTests
 
     private static TransactionRequest Sale() => new(
         Mti: "0200", CardNumber: "4111111111111111", ProcessingCode: "000000", AmountMinor: 15000, CurrencyCode: "949",
-        TransmissionDateTime: "1002143015", Stan: "123456", LocalTime: "173015", LocalDate: "1002", TerminalId: "TERM0001",
+        TransmissionDateTime: "1002143015", Stan: "123456", LocalTime: "173015", LocalDate: "20261002", TerminalId: "TERM0001",
         CardExpiry: "2812", MerchantType: "5999", EntryMode: "051", Rrn: "261002123456", MerchantId: "MERCHANT0000001",
         CardAcceptor: null);
 
@@ -81,7 +82,7 @@ public class TransactionEndpointTests
         await PostAsync(Sale() with { Stan = "12" });
 
         var failed = Assert.Single(_logger.Messages, m => m.StartsWith("HandleAsync: validation failed"));
-        Assert.Contains("stan", failed);
+        Assert.Contains("F11", failed);
         Assert.Contains("PAN 411111********11", failed);
     }
 
@@ -104,15 +105,15 @@ public class TransactionEndpointTests
         _payment.Requests.Clear();
 
         var errors = await ValidationErrorsAsync(Sale() with { CardAcceptor = "TOO SHORT" });
-        Assert.Contains("F43", Assert.Single(errors["cardAcceptor"]));
+        Assert.Contains("F43", Assert.Single(errors["F43"]));
     }
 
     [Fact]
-    public async Task MalformedFields_AreAllReportedByName()
+    public async Task MalformedFields_AreAllReportedByFieldNumber()
     {
         var errors = await ValidationErrorsAsync(Sale() with { CardNumber = "4111-1111", LocalDate = "12", CurrencyCode = "TRY" });
 
-        Assert.Equal(["cardNumber", "currencyCode", "localDate"], errors.Keys.Order());
+        Assert.Equal(["F13", "F2", "F49"], errors.Keys.Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -120,15 +121,71 @@ public class TransactionEndpointTests
     {
         var errors = await ValidationErrorsAsync(Sale() with { AmountMinor = null, Stan = null });
 
-        Assert.Equal("F4 is required.", Assert.Single(errors["amountMinor"]));
-        Assert.Equal("F11 is required.", Assert.Single(errors["stan"]));
+        Assert.Equal("F4 is required.", Assert.Single(errors["F4"]));
+        Assert.Equal("F11 is required.", Assert.Single(errors["F11"]));
+    }
+
+    [Fact]
+    public async Task MissingLocalDate_IsReported() =>
+        Assert.Equal("F13 is required.", Assert.Single((await ValidationErrorsAsync(Sale() with { LocalDate = null }))["F13"]));
+
+    [Fact]
+    public async Task LocalDate_IsForwardedWithYear()
+    {
+        var ok = Assert.IsType<Ok<TransactionResponse>>(await PostAsync(Sale() with { LocalDate = "20261231" }));
+
+        Assert.Equal("00", ok.Value!.ResponseCode);
+        Assert.Equal("20261231", Assert.Single(_payment.Requests).LocalDate);
+    }
+
+    [Theory]
+    [InlineData("1002")]        // yılsız MMDD
+    [InlineData("20261302")]    // ay 13
+    [InlineData("20260230")]    // 30 Şubat
+    [InlineData("2026-10-02")]
+    [InlineData("２０２６１００２")]  // ASCII olmayan rakamlar
+    public async Task InvalidLocalDate_IsRejected(string localDate) =>
+        Assert.StartsWith("F13: Must be a date in yyyymmdd format",
+            Assert.Single((await ValidationErrorsAsync(Sale() with { LocalDate = localDate }))["F13"]));
+
+    [Fact]
+    public async Task Transfer_ForwardsF48AsRecipientCard()
+    {
+        Assert.IsType<Ok<TransactionResponse>>(await PostAsync(Sale() with { ProcessingCode = "400000", RecipientCardNumber = "5406680000000002" }));
+
+        Assert.Equal("5406680000000002", Assert.Single(_payment.Requests).RecipientCardNumber);
+    }
+
+    [Fact]
+    public async Task TooLongF48_IsRejected() =>
+        Assert.True((await ValidationErrorsAsync(Sale() with { RecipientCardNumber = new string('1', 1000) })).ContainsKey("F48"));
+
+    // JSON sözleşmesi: istek ve cevap alanları ISO8583 alan numarasıyla ("F2", "F39" ...) yazılır.
+    [Fact]
+    public void Json_UsesFieldNumbers()
+    {
+        var request = JsonSerializer.Deserialize<TransactionRequest>(
+            """
+            { "mti": "0200", "F2": "5406680000000001", "F3": "400000", "F4": 15000, "F7": "1002143025", "F11": "000001",
+              "F12": "143025", "F13": "20261002", "F14": "2712", "F22": "051", "F41": "TERM0001", "F48": "5406680000000002",
+              "F49": "949", "cvv": "123" }
+            """, JsonSerializerOptions.Web)!;
+
+        Assert.Equal(Sale() with
+        {
+            CardNumber = "5406680000000001", ProcessingCode = "400000", TransmissionDateTime = "1002143025", Stan = "000001",
+            LocalTime = "143025", CardExpiry = "2712", MerchantType = null, Rrn = null, MerchantId = null,
+            RecipientCardNumber = "5406680000000002", Cvv = "123"
+        }, request);
+        Assert.Equal("""{"mti":"0210","F39":"00","F11":"000001","F37":null}""",
+            JsonSerializer.Serialize(new TransactionResponse("0210", "00", "000001", null), JsonSerializerOptions.Web));
     }
 
     [Theory]
     [InlineData(-1L)]
     [InlineData(1_000_000_000_000L)]   // 12 haneye sığmaz
     public async Task AmountOutOfRange_IsRejected(long amount) =>
-        Assert.True((await ValidationErrorsAsync(Sale() with { AmountMinor = amount })).ContainsKey("amountMinor"));
+        Assert.True((await ValidationErrorsAsync(Sale() with { AmountMinor = amount })).ContainsKey("F4"));
 
     [Theory]
     [InlineData(null)]

@@ -58,7 +58,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
             INSERT INTO dbo.EntryMode (Code, Name, IsContactless)
                 VALUES ('00', 'Unknown', 0), ('01', 'Manual', 0), ('02', 'MagneticStripe', 0), ('05', 'Chip', 0),
                        ('07', 'ContactlessChip', 1), ('90', 'MagneticStripeFullTrack', 0), ('91', 'ContactlessMagneticStripe', 1), ('81', 'ECommerce', 0);
-            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('2006', 'CVV2 missing or does not match', 'N7'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('9001', 'Exchange rate unavailable or stale', '91');
+            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('1005', 'Recipient card (F48) missing or invalid', '30'), ('1006', 'Transfer to the same account', '12'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('2006', 'CVV2 missing or does not match', 'N7'), ('2007', 'Recipient card not found', '14'), ('2008', 'Recipient account not active', '62'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('9001', 'Exchange rate unavailable or stale', '91');
             INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance, Email) VALUES (@AccountNo, @status, @balance, @email);
             INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit)
                 VALUES (@Pan, @AccountNo, @expiry, @contactless, @contactlessLimit);
@@ -80,7 +80,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         TransmissionDateTime = "0315095959",
         Stan = "000001",
         LocalTime = localTime,
-        LocalDate = "0315",
+        LocalDate = "20260315",
         TerminalId = "TERM0001",
         CardExpiry = "2812",
         MerchantType = "5999",
@@ -482,7 +482,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         Clock.Now = Clock.Now.AddHours(25);     // son başarılı çekimden bu yana MaxAgeHours (24) geçti
         var request = Sale();
         request.CurrencyCode = "840";
-        request.LocalDate = "0316";
+        request.LocalDate = "20260316";
 
         Assert.Equal("91", await AuthorizeAsync(request));
         Assert.Equal(1000m, await BalanceAsync());
@@ -779,39 +779,273 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     }
 
     [Fact]
-    public async Task MoneyTransfer_IsNotSupportedYet()
-    {
-        await SeedAsync();
-        var request = Sale();
-        request.ProcessingCode = "400000";
-
-        Assert.Equal("12", await AuthorizeAsync(request));
-        Assert.Equal(1000m, await BalanceAsync());
-    }
-
-    [Fact]
-    public async Task DecemberDateReceivedInJanuary_IsStoredWithPreviousYear()
+    public async Task TransactionDate_IsStoredAsSentByGate()
     {
         await SeedAsync(expiry: "1228");
         Clock.Now = new DateTimeOffset(2027, 1, 1, 0, 0, 5, TimeSpan.Zero);
         var request = Sale();
-        request.LocalDate = "1231";
+        request.LocalDate = "20261231";     // POS'ta hâlâ yılbaşı öncesi: yıl tahmin edilmez, gelen tarih yazılır
 
         await AuthorizeAsync(request);
 
         Assert.Equal("20261231", Assert.Single(await TransactionsAsync()).F13_TransactionDate);
     }
 
+    // ---------- Karttan karta para transferi (F3 400000, alıcı kart F48) ----------
+
+    private const string RecipientPan = "5406680000000002";
+    private const string RecipientAccountNo = "ACC2";
+
+    private async Task SeedRecipientAsync(string accountNo = RecipientAccountNo, string status = "Active", decimal balance = 200m,
+        bool withAccount = true)
+    {
+        await using var connection = Db.Create();
+        if (withAccount && accountNo != AccountNo)
+            await connection.ExecuteAsync(
+                "INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES (@accountNo, @status, @balance)",
+                new { accountNo, status, balance });
+        await connection.ExecuteAsync(
+            "INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed) VALUES (@RecipientPan, @accountNo, '1228', 1)",
+            new { RecipientPan, accountNo });
+    }
+
+    private static TransactionRequest Transfer(long amountMinor = 15000, string? recipient = RecipientPan, string localTime = "143025")
+    {
+        var request = Sale(amountMinor, localTime);
+        request.ProcessingCode = "400000";
+        request.RecipientCardNumber = recipient;
+        return request;
+    }
+
+    private async Task<decimal> BalanceOfAsync(string accountNo)
+    {
+        await using var connection = Db.Create();
+        return await connection.ExecuteScalarAsync<decimal>("SELECT Balance FROM dbo.BankAccount WHERE AccountNo = @accountNo", new { accountNo });
+    }
+
+    private async Task<string?> StoredRecipientAsync()
+    {
+        await using var connection = Db.Create();
+        return await connection.ExecuteScalarAsync<string?>("SELECT RecipientCardNumber FROM dbo.DebitTransaction");
+    }
+
     [Fact]
-    public async Task NextMonthDate_KeepsCurrentYear()
+    public async Task Transfer_MovesMoneyBetweenAccountsAndRecordsRecipient()
     {
         await SeedAsync();
-        Clock.Now = new DateTimeOffset(2026, 3, 31, 23, 59, 0, TimeSpan.Zero);
+        await SeedRecipientAsync();
+
+        Assert.Equal("00", await AuthorizeAsync(Transfer(15000)));
+
+        Assert.Equal((850m, 350m), (await BalanceOfAsync(AccountNo), await BalanceOfAsync(RecipientAccountNo)));
+        var stored = Assert.Single(await TransactionsAsync());
+        Assert.Equal(("11", "11", 150m, "00"), (stored.Otc, stored.Ots, stored.F4_Amount, stored.F39_ResponseCode));
+        Assert.Equal(RecipientPan, await StoredRecipientAsync());
+        var published = Assert.Single(Events.Events);
+        Assert.Equal(("MoneyTransfer", "00"), (published.TransactionType, published.ResponseCode));
+
+        await using var connection = Db.Create();
+        Assert.Equal(150m, await connection.ExecuteScalarAsync<decimal>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @Pan", new { Pan }));
+        Assert.Null(await connection.ExecuteScalarAsync<decimal?>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @RecipientPan", new { RecipientPan }));
+    }
+
+    [Fact]
+    public async Task Transfer_Duplicate_MovesMoneyOnce()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync();
+
+        Assert.Equal("00", await AuthorizeAsync(Transfer()));
+        Assert.Equal("00", await AuthorizeAsync(Transfer()));
+
+        Assert.Equal((850m, 350m), (await BalanceOfAsync(AccountNo), await BalanceOfAsync(RecipientAccountNo)));
+    }
+
+    [Fact]
+    public async Task Transfer_OverBalance_IsDeclinedWithoutMovingMoney()
+    {
+        await SeedAsync(balance: 100m);
+        await SeedRecipientAsync();
+
+        Assert.Equal("51", await AuthorizeAsync(Transfer(15000)));
+
+        Assert.Equal((100m, 200m), (await BalanceOfAsync(AccountNo), await BalanceOfAsync(RecipientAccountNo)));
+    }
+
+    [Fact]
+    public async Task Transfer_InForeignCurrency_MovesLiraEquivalent()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync();
+        StoreRates(("USD", 49.2152m));
+        var request = Transfer(1000);       // 10,00 USD -> 492,15 TL
+        request.CurrencyCode = "840";
+
+        Assert.Equal("00", await AuthorizeAsync(request));
+
+        Assert.Equal((507.85m, 692.15m), (await BalanceOfAsync(AccountNo), await BalanceOfAsync(RecipientAccountNo)));
+        Assert.Equal(492.15m, Assert.Single(await TransactionsAsync()).LocalTxnAmount);
+    }
+
+    [Fact]
+    public async Task Transfer_InForeignCurrencyWithoutRate_IsDeclined91()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync();
+        var request = Transfer(1000);
+        request.CurrencyCode = "840";
+
+        Assert.Equal("91", await AuthorizeAsync(request));
+        Assert.Equal((1000m, 200m), (await BalanceOfAsync(AccountNo), await BalanceOfAsync(RecipientAccountNo)));
+    }
+
+    [Fact]
+    public async Task Transfer_InCurrencyWithoutTcmbRate_IsNotSupported()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync();
+        var request = Transfer();
+        request.CurrencyCode = "999";
+
+        Assert.Equal("12", await AuthorizeAsync(request));
+        Assert.Equal(InternalResponseCodes.CurrencyNotSupported, LastFailure!.Irc);
+    }
+
+    [Fact]
+    public async Task Transfer_ZeroAmount_IsInvalidAmount()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync();
+
+        Assert.Equal("13", await AuthorizeAsync(Transfer(0)));
+    }
+
+    [Fact]
+    public async Task Transfer_ContactlessLimitDoesNotApply()
+    {
+        await SeedAsync(contactlessLimit: 100m);
+        await SeedRecipientAsync();
+        var request = Transfer(15000);
+        request.EntryMode = "071";
+
+        Assert.Equal("00", await AuthorizeAsync(request));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("5406-6800")]
+    [InlineData("54066800000000020000")]    // 20 hane: kart numarası olamaz
+    public async Task Transfer_WithoutValidRecipientCard_IsFormatError(string? recipient)
+    {
+        await SeedAsync();
+
+        Assert.Equal("30", await AuthorizeAsync(Transfer(recipient: recipient)));
+
+        Assert.Equal(InternalResponseCodes.RecipientCardInvalid, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task Transfer_ToUnknownCard_IsDeclined14()
+    {
+        await SeedAsync();
+
+        Assert.Equal("14", await AuthorizeAsync(Transfer()));
+
+        Assert.Equal(InternalResponseCodes.RecipientCardNotFound, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+        Assert.Equal(RecipientPan, await StoredRecipientAsync());     // reddedilen transfer de alıcısıyla kaydedilir
+    }
+
+    [Fact]
+    public async Task Transfer_ToSameCard_IsDeclined()
+    {
+        await SeedAsync();
+
+        Assert.Equal("12", await AuthorizeAsync(Transfer(recipient: Pan)));
+        Assert.Equal(InternalResponseCodes.SameAccountTransfer, LastFailure!.Irc);
+    }
+
+    [Fact]
+    public async Task Transfer_ToAnotherCardOfSameAccount_IsDeclined()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync(accountNo: AccountNo);
+
+        Assert.Equal("12", await AuthorizeAsync(Transfer()));
+
+        Assert.Equal(InternalResponseCodes.SameAccountTransfer, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Theory]
+    [InlineData("Blocked", true)]
+    [InlineData("Active", false)]       // alıcı kartın hesabı hiç yok
+    public async Task Transfer_ToInactiveOrMissingAccount_IsDeclined62(string status, bool withAccount)
+    {
+        await SeedAsync();
+        await SeedRecipientAsync(status: status, withAccount: withAccount);
+
+        Assert.Equal("62", await AuthorizeAsync(Transfer()));
+
+        Assert.Equal(InternalResponseCodes.RecipientAccountNotActive, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task Transfer_FromInactiveAccount_IsDeclinedBeforeRecipientIsChecked()
+    {
+        await SeedAsync(status: "Blocked");
+
+        Assert.Equal("62", await AuthorizeAsync(Transfer()));
+        Assert.Equal(InternalResponseCodes.AccountNotActive, LastFailure!.Irc);
+    }
+
+    [Fact]
+    public async Task Transfer_CardNotPresent_RequiresCvv()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync();
+        var request = Transfer();
+        request.EntryMode = "812";
+
+        Assert.Equal("N7", await AuthorizeAsync(request));
+
+        request.Cvv = CardCvv;
+        request.LocalTime = "143026";
+        Assert.Equal("00", await AuthorizeAsync(request));
+    }
+
+    [Fact]
+    public async Task Sale_DoesNotStoreF48()
+    {
+        await SeedAsync();
         var request = Sale();
-        request.LocalDate = "0401";     // POS'un saat dilimi UTC'nin ilerisinde
+        request.RecipientCardNumber = RecipientPan;
 
-        await AuthorizeAsync(request);
+        Assert.Equal("00", await AuthorizeAsync(request));
+        Assert.Null(await StoredRecipientAsync());
+    }
 
-        Assert.Equal("20260401", Assert.Single(await TransactionsAsync()).F13_TransactionDate);
+    // A->B ve B->A transferleri aynı anda: hesap satırları aynı sırayla kilitlendiği için deadlock (91) olmaz.
+    [Fact]
+    public async Task ConcurrentOppositeTransfers_AllComplete()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync(balance: 1000m);
+
+        TransactionRequest Back(int i)
+        {
+            var request = Transfer(10000, recipient: Pan, localTime: $"1600{i:D2}");
+            request.CardNumber = RecipientPan;
+            return request;
+        }
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 10).SelectMany(i =>
+            new[] { Handler.ProcessAsync(Transfer(10000, localTime: $"1500{i:D2}")), Handler.ProcessAsync(Back(i)) }));
+
+        Assert.All(results, code => Assert.Equal("00", code));
+        Assert.Equal((1000m, 1000m), (await BalanceOfAsync(AccountNo), await BalanceOfAsync(RecipientAccountNo)));
     }
 }

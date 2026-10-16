@@ -33,6 +33,9 @@ public interface IDebitSession : IAsyncDisposable
     // Bakiye kontrolü ve düşme tek sorguda; false: bakiye yetersiz.
     Task<bool> TryDebitAsync(string accountNo, decimal amount);
 
+    // Para transferi: gönderenden düşme ve alıcıya ekleme bu transaction'da birlikte; false: gönderenin bakiyesi yetersiz.
+    Task<bool> TryTransferAsync(string fromAccountNo, string toAccountNo, decimal amount);
+
     Task SetCardLastTransactionAsync(string cardNumber, decimal amount);
 
     Task SetResponseCodeAsync(Guid id, string responseCode);

@@ -30,8 +30,8 @@ public class TransactionRequest
     [Required, StringLength(6, MinimumLength = 6)]
     public string LocalTime { get; set; } = null!;              // F12 hhmmss
 
-    [Required, RegularExpression("^(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$")]
-    public string LocalDate { get; set; } = null!;              // F13 MMDD
+    [Required, RegularExpression("^[0-9]{4}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$")]
+    public string LocalDate { get; set; } = null!;              // F13 yyyymmdd (Gate yılıyla birlikte gönderir)
 
     [Required, StringLength(8)]
     public string TerminalId { get; set; } = null!;             // F41
@@ -53,6 +53,10 @@ public class TransactionRequest
 
     [StringLength(40)]
     public string? CardAcceptor { get; set; }                   // F43
+
+    // F48. Para transferinde alıcı kart no; formatını TransactionHandler kontrol eder (diğer işlemlerde kullanılmaz).
+    [StringLength(999)]
+    public string? RecipientCardNumber { get; set; }
 
     // CVV2 (kartın arkası). ISO8583:1987'de standart alanı yok; Gate ayrı bir alan olarak iletir. Asla loglanmaz / saklanmaz.
     [RegularExpression("^[0-9]{3,4}$")]

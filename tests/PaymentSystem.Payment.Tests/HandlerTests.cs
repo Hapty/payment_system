@@ -93,6 +93,7 @@ public class HandlerTests
         public Task<BankAccount?> GetAccountAsync(string accountNo) =>
             Task.FromResult<BankAccount?>(new BankAccount { AccountNo = accountNo, AccountStatus = "Active", Email = "musteri@example.com" });
         public Task<bool> TryDebitAsync(string accountNo, decimal amount) => Task.FromResult(true);
+        public Task<bool> TryTransferAsync(string fromAccountNo, string toAccountNo, decimal amount) => Task.FromResult(true);
         public Task SetCardLastTransactionAsync(string cardNumber, decimal amount) => Task.CompletedTask;
 
         public Task SetResponseCodeAsync(Guid id, string responseCode)
@@ -133,7 +134,7 @@ public class HandlerTests
     private static TransactionRequest Sale() => new()
     {
         Mti = "0200", CardNumber = Pan, ProcessingCode = "000000", AmountMinor = 15000, CurrencyCode = "949",
-        TransmissionDateTime = "0315095959", Stan = "000001", LocalTime = "125959", LocalDate = "0315", TerminalId = "TERM0001"
+        TransmissionDateTime = "0315095959", Stan = "000001", LocalTime = "125959", LocalDate = "20260315", TerminalId = "TERM0001"
     };
 
     [Fact]

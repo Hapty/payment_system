@@ -5,10 +5,11 @@ namespace PaymentSystem.Gate.Tests;
 
 public class TransactionHandlerTests
 {
+    private const string TransactionDate = "20261002";      // TestMessages.Sale()'daki F13 (1002) yılıyla
     private readonly FakePaymentClient _payment = new();
 
     private Task<IsoMessage> ProcessAsync(IsoMessage request) =>
-        new TransactionHandler(_payment, NullLogger<TransactionHandler>.Instance).ProcessAsync(request, cvv: null, CancellationToken.None);
+        new TransactionHandler(_payment, NullLogger<TransactionHandler>.Instance).ProcessAsync(request, cvv: null, TransactionDate, CancellationToken.None);
 
     [Fact]
     public async Task Sale_IsForwardedToPaymentWithReadableFields()
@@ -23,7 +24,28 @@ public class TransactionHandlerTests
         Assert.Equal("123456", forwarded.Stan);
         Assert.Equal("TERM0001", forwarded.TerminalId);
         Assert.Equal("2812", forwarded.CardExpiry);
+        Assert.Equal("20261002", forwarded.LocalDate);      // ISO mesajındaki MMDD değil, yıllı hali
         Assert.Null(forwarded.CardAcceptor);   // F43 gönderilmedi
+        Assert.Null(forwarded.RecipientCardNumber);
+    }
+
+    [Fact]
+    public async Task Transfer_ForwardsF48AsRecipientCard()
+    {
+        await ProcessAsync(TestMessages.Sale().Set(3, "400000").Set(48, "5406680000000002"));
+
+        var forwarded = Assert.Single(_payment.Requests);
+        Assert.Equal(("400000", "5406680000000002"), (forwarded.ProcessingCode, forwarded.RecipientCardNumber));
+    }
+
+    [Fact]
+    public async Task Sale_WithoutFullTransactionDate_IsFormatErrorAndNotForwarded()
+    {
+        var response = await new TransactionHandler(_payment, NullLogger<TransactionHandler>.Instance)
+            .ProcessAsync(TestMessages.Sale(), cvv: null, transactionDate: null, CancellationToken.None);
+
+        Assert.Equal("30", response[39]);
+        Assert.Empty(_payment.Requests);
     }
 
     [Theory]
@@ -35,7 +57,7 @@ public class TransactionHandlerTests
         var handler = new TransactionHandler(new FakePaymentClient(paymentCode), NullLogger<TransactionHandler>.Instance);
         var request = TestMessages.Sale();
 
-        var response = await handler.ProcessAsync(request, cvv: null, CancellationToken.None);
+        var response = await handler.ProcessAsync(request, cvv: null, TransactionDate, CancellationToken.None);
 
         Assert.Equal("0210", response.Mti);
         Assert.Equal(paymentCode, response[39]);
@@ -49,7 +71,7 @@ public class TransactionHandlerTests
     {
         var logger = new ListLogger<TransactionHandler>();
 
-        await new TransactionHandler(_payment, logger).ProcessAsync(TestMessages.Sale(), cvv: null, CancellationToken.None);
+        await new TransactionHandler(_payment, logger).ProcessAsync(TestMessages.Sale(), cvv: null, TransactionDate, CancellationToken.None);
 
         Assert.Contains(logger.Messages, m => m.StartsWith("AuthorizeAsync: forwarding to Payment") && m.Contains("PAN 411111********11"));
         Assert.Contains(logger.Messages, m => m.StartsWith("AuthorizeAsync: Payment answered"));
