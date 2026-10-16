@@ -73,10 +73,42 @@ public class TransactionHandlerTests
 
         await new TransactionHandler(_payment, logger).ProcessAsync(TestMessages.Sale(), cvv: null, TransactionDate, CancellationToken.None);
 
-        Assert.Contains(logger.Messages, m => m.StartsWith("AuthorizeAsync: forwarding to Payment") && m.Contains("PAN 411111********11"));
-        Assert.Contains(logger.Messages, m => m.StartsWith("AuthorizeAsync: Payment answered"));
-        Assert.Contains(logger.Messages, m => m.StartsWith("ProcessAsync: 0200 -> 0210") && m.Contains("PAN 411111********11"));
+        // Payment'a giden alanların hepsi, numara sırasıyla ve ne olduklarıyla; F13 yıllı haliyle.
+        Assert.Contains(
+            "AuthorizeAsync: forwarding to Payment MTI 0200 | F2 (Kart No)=411111********11 F3 (İşlem Kodu)=000000 " +
+            "F4 (Tutar, kuruş)=000000015000 F7 (Gönderim Zamanı)=1002143015 F11 (STAN)=123456 F12 (Yerel Saat)=173015 " +
+            "F13 (Yerel Tarih)=20261002 F14 (Son Kullanma)=2812 F22 (Giriş Yöntemi)=051 F37 (RRN)=261002123456 " +
+            "F41 (Terminal No)=TERM0001 F42 (İşyeri No)=MERCHANT0000001 F49 (Para Birimi)=949",
+            logger.Messages);
+        Assert.Contains("AuthorizeAsync: Payment answered F11 (STAN)=123456 F39 (Cevap Kodu)=00", logger.Messages);
+        Assert.Contains(logger.Messages, m => m.StartsWith("ProcessAsync: 0200 -> 0210 F11 (STAN)=123456 F2 (Kart No)=411111********11 F39 (Cevap Kodu)=00 in "));
         Assert.DoesNotContain(logger.Messages, m => m.Contains("4111111111111111"));
+    }
+
+    [Fact]
+    public async Task Transfer_LogsRecipientCardMaskedAndCvvHidden()
+    {
+        var logger = new ListLogger<TransactionHandler>();
+
+        await new TransactionHandler(_payment, logger).ProcessAsync(
+            TestMessages.Sale().Set(3, "400000").Set(48, "5406680000000002"), cvv: "987", TransactionDate, CancellationToken.None);
+
+        var forwarding = Assert.Single(logger.Messages, m => m.StartsWith("AuthorizeAsync: forwarding to Payment"));
+        Assert.Contains("F48 (Alıcı Kart No)=540668********02 F49 (Para Birimi)=949 cvv=***", forwarding);
+        Assert.DoesNotContain(logger.Messages, m => m.Contains("5406680000000002") || m.Contains("987"));
+    }
+
+    [Fact]
+    public async Task MissingRequiredField_IsLoggedWithItsLabel()
+    {
+        var logger = new ListLogger<TransactionHandler>();
+        var request = new IsoMessage("0200");
+        foreach (var (field, value) in TestMessages.Sale().Fields.Where(f => f.Key != 4))
+            request.Set(field, value);
+
+        await new TransactionHandler(_payment, logger).ProcessAsync(request, cvv: null, TransactionDate, CancellationToken.None);
+
+        Assert.Contains("AuthorizeAsync: 0200 F11 (STAN)=123456 is missing required fields F4 (Tutar, kuruş) - responding 30", logger.Messages);
     }
 
     [Fact]

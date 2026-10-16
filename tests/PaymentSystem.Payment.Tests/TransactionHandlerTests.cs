@@ -582,7 +582,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         Assert.Equal(("N7", "2006", "CVV2 missing or does not match"), (ex.ResponseCode, ex.Irc, ex.Description));
         Assert.Equal(1000m, await BalanceAsync());
         // Red sebebi loglanır, CVV'nin kendisi (gelen ya da beklenen) loglanmaz.
-        Assert.Contains("DecideAsync: declined STAN 000001 PAN 411111********11 - CVV2 does not match -> IRC 2006", logger.Messages);
+        Assert.Contains("DecideAsync: declined F11 (STAN)=000001 F2 (Kart No)=411111********11 - CVV2 does not match -> IRC 2006", logger.Messages);
     }
 
     [Fact]

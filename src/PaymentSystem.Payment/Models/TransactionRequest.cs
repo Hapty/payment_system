@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 
 namespace PaymentSystem.Payment.Models;
 
@@ -61,6 +62,15 @@ public class TransactionRequest
     // CVV2 (kartın arkası). ISO8583:1987'de standart alanı yok; Gate ayrı bir alan olarak iletir. Asla loglanmaz / saklanmaz.
     [RegularExpression("^[0-9]{3,4}$")]
     public string? Cvv { get; set; }
+
+    // Loglar için alan numarasıyla (bkz. IsoLog). CVV ISO alanı değildir, burada yoktur.
+    public IEnumerable<KeyValuePair<int, string?>> IsoFields() =>
+    [
+        new(2, CardNumber), new(3, ProcessingCode), new(4, AmountMinor.ToString(CultureInfo.InvariantCulture)),
+        new(7, TransmissionDateTime), new(11, Stan), new(12, LocalTime), new(13, LocalDate), new(14, CardExpiry),
+        new(18, MerchantType), new(22, EntryMode), new(37, Rrn), new(41, TerminalId), new(42, MerchantId),
+        new(43, CardAcceptor), new(48, RecipientCardNumber), new(49, CurrencyCode)
+    ];
 }
 
 // Sonuç ne olursa olsun (onay ya da red) 200 ile döner; Gate ResponseCode'u F39'a yazar.

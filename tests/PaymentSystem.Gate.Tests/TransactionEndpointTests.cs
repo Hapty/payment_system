@@ -49,8 +49,8 @@ public class TransactionEndpointTests
     {
         await PostAsync(Sale());
 
-        Assert.Contains(_logger.Messages, m => m.StartsWith("HandleAsync: request received") && m.Contains("PAN 411111********11"));
-        Assert.Contains(_logger.Messages, m => m.StartsWith("HandleAsync: responding 0210"));
+        Assert.Contains("HandleAsync: request received MTI 0200 F11 (STAN)=123456 F41 (Terminal No)=TERM0001 F2 (Kart No)=411111********11", _logger.Messages);
+        Assert.Contains("HandleAsync: responding 0210 F11 (STAN)=123456 F39 (Cevap Kodu)=00", _logger.Messages);
         Assert.DoesNotContain(_logger.Messages, m => m.Contains("4111111111111111"));
     }
 
@@ -82,8 +82,8 @@ public class TransactionEndpointTests
         await PostAsync(Sale() with { Stan = "12" });
 
         var failed = Assert.Single(_logger.Messages, m => m.StartsWith("HandleAsync: validation failed"));
-        Assert.Contains("F11", failed);
-        Assert.Contains("PAN 411111********11", failed);
+        Assert.Contains("fields F11 (STAN) - responding 400", failed);
+        Assert.Contains("F2 (Kart No)=411111********11", failed);
     }
 
     [Fact]
