@@ -59,7 +59,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         {
           "mti": "0200", "cardNumber": "{{Pan}}", "processingCode": "000000", "amountMinor": {{amountMinor}},
           "currencyCode": "949", "transmissionDateTime": "0315095959", "stan": "{{stan}}", "localTime": "125959",
-          "localDate": "0315", "terminalId": "TERM0001", "cardExpiry": "2812", "entryMode": "051"
+          "localDate": "20260315", "terminalId": "TERM0001", "cardExpiry": "2812", "entryMode": "051"
         }
         """;
 
@@ -171,6 +171,20 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
         Assert.Contains("\"cvv\":\"***\"", received);
         Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains("987"));
+    }
+
+    [Fact]
+    public async Task ReceivedRequestLog_MasksRecipientCard()
+    {
+        await SeedAsync();
+        const string recipient = "5406680000000002";
+
+        await WithConsumerAsync(() => SendAsync(SaleJson()
+            .Replace("\"processingCode\": \"000000\"", $"\"processingCode\": \"400000\", \"recipientCardNumber\": \"{recipient}\"")));
+
+        var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
+        Assert.Contains("\"recipientCardNumber\":\"540668********02\"", received);
+        Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains(recipient));
     }
 
     [Fact]

@@ -21,6 +21,7 @@ public sealed class TransactionHandler(
 {
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
+    private const string MoneyTransfer = "MoneyTransfer";
 
     // Kart fiziksel olarak okutulmadığında CVV2 zorunludur: elle giriş (F22 01x) ve e-ticaret (81x).
     // Çip / temassız işlemde kartın kendisi kriptogram üretir, CVV2 istenmez.
@@ -75,7 +76,7 @@ public sealed class TransactionHandler(
         // Aynı anda gelirse ilk transaction bitene kadar bekler, sonra hata alır; böylece aynı işlem asla iki kez karara bağlanmaz.
         var id = IdempotencyKey(request);
         trace.Id = id;
-        var transactionDate = ToTransactionDate(request.LocalDate);
+        var transactionDate = request.LocalDate;     // yyyymmdd: Gate yılıyla birlikte gönderir
         string? irc = null;
         InternalResponseCode? definition = null;
         await using (var session = await repository.BeginAsync())
@@ -87,7 +88,9 @@ public sealed class TransactionHandler(
                 LocalAmount: lira,
                 request.LocalTime,
                 TransactionDate: transactionDate,
-                request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor: request.CardAcceptor?.TrimEnd()));
+                request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor: request.CardAcceptor?.TrimEnd(),
+                // Kolon VARCHAR(19): kart numarası olmayan F48 yazılmaz, transfer 1005 ile reddedilir.
+                RecipientCardNumber: type.Name == MoneyTransfer && IsCardNumber(request.RecipientCardNumber) ? request.RecipientCardNumber : null));
             if (inserted)
             {
                 irc = await DecideAsync(session, request, type.Name, lira, trace);
@@ -156,7 +159,7 @@ public sealed class TransactionHandler(
         {
             "BalanceInquiry" => InternalResponseCodes.Approved,     // bakiye cevaba (F54) sonraki adımda eklenecek
             "Sale" => await SaleAsync(session, request, card, lira, entryMode),
-            // MoneyTransfer: alıcı kart numarası henüz ISO mesajında / Gate sözleşmesinde yok.
+            MoneyTransfer => await TransferAsync(session, request, card, lira),
             _ => Decline(nameof(DecideAsync), request, InternalResponseCodes.TransactionNotSupported, $"{typeName} is not supported")
         };
     }
@@ -164,14 +167,9 @@ public sealed class TransactionHandler(
     // Limit, bakiye ve kartın son işlem tutarı hep TL karşılık (lira) üzerinden yürür; hesaplar TL'dir.
     private async Task<string> SaleAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira, EntryMode? entryMode)
     {
-        // Kur yok: ya bu para birimi için TCMB kuru hiç yok (1004) ya da cache'te kur yok / bayat (9001, sonra tekrar denenebilir).
-        if (lira is not { } amount)
-            return ExchangeRateCache.IsSupported(request.CurrencyCode)
-                ? Decline(nameof(SaleAsync), request, InternalResponseCodes.ExchangeRateUnavailable, $"no fresh rate for currency {request.CurrencyCode}")
-                : Decline(nameof(SaleAsync), request, InternalResponseCodes.CurrencyNotSupported, $"currency {request.CurrencyCode} is not supported");
-
-        if (amount <= 0)
-            return Decline(nameof(SaleAsync), request, InternalResponseCodes.ZeroAmount, "amount is zero");
+        var (amount, declined) = CheckAmount(nameof(SaleAsync), request, lira);
+        if (declined is not null)
+            return declined;
 
         // Temassız olup olmadığı EntryMode.IsContactless'tan gelir; F22 yoksa temassız sayılmaz.
         if (entryMode is { IsContactless: true })
@@ -190,6 +188,55 @@ public sealed class TransactionHandler(
         logger.LogInformation("{Method}: debited TRY {Amount} from account {AccountNo} STAN {Stan} PAN {Pan}",
             nameof(SaleAsync), amount, card.AccountNo, request.Stan, PanMask.Mask(request.CardNumber));
         return InternalResponseCodes.Approved;
+    }
+
+    // Karttan karta para transferi (sadece bu sistemdeki kartlar arası): F48'deki alıcı kartın hesabına, gönderenin hesabından.
+    // Döviz de olabilir; iki hesap da TL olduğu için TL karşılığı düşülür ve eklenir. Temassız limit uygulanmaz,
+    // alıcı kartın son kullanma tarihine bakılmaz. Gönderen kartın kontrolleri (kart, F14, CVV2, hesap) DecideAsync'te yapıldı.
+    private async Task<string> TransferAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira)
+    {
+        if (request.RecipientCardNumber is not { } recipientNumber || !IsCardNumber(recipientNumber))
+            return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientCardInvalid, "F48 recipient card number missing or invalid");
+
+        var recipient = await session.GetCardAsync(recipientNumber);
+        if (recipient is null)
+            return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientCardNotFound,
+                $"recipient card {PanMask.Mask(recipientNumber)} not found");
+        if (recipient.AccountNo == card.AccountNo)
+            return Decline(nameof(TransferAsync), request, InternalResponseCodes.SameAccountTransfer,
+                $"recipient card {PanMask.Mask(recipientNumber)} is on the same account {card.AccountNo}");
+
+        var recipientAccount = await session.GetAccountAsync(recipient.AccountNo);
+        if (recipientAccount?.AccountStatus != ActiveAccount)
+            return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientAccountNotActive,
+                $"recipient account {recipient.AccountNo} is {recipientAccount?.AccountStatus ?? "missing"}");
+
+        var (amount, declined) = CheckAmount(nameof(TransferAsync), request, lira);
+        if (declined is not null)
+            return declined;
+
+        if (!await session.TryTransferAsync(card.AccountNo, recipient.AccountNo, amount))
+            return Decline(nameof(TransferAsync), request, InternalResponseCodes.InsufficientFunds, $"insufficient funds for TRY {amount}");
+
+        await session.SetCardLastTransactionAsync(card.CardNumber, amount);
+        logger.LogInformation("{Method}: transferred TRY {Amount} from account {FromAccountNo} to account {ToAccountNo} STAN {Stan} PAN {Pan} -> {RecipientPan}",
+            nameof(TransferAsync), amount, card.AccountNo, recipient.AccountNo, request.Stan, PanMask.Mask(request.CardNumber),
+            PanMask.Mask(recipientNumber));
+        return InternalResponseCodes.Approved;
+    }
+
+    // Satış ve transferde tutar: kur yoksa ya bu para birimi için TCMB kuru hiç yok (1004) ya da cache'te kur yok / bayat
+    // (9001, sonra tekrar denenebilir); TL karşılığı 0 olamaz. Geçerliyse TL karşılığı, değilse red IRC'si döner.
+    private (decimal Lira, string? Declined) CheckAmount(string method, TransactionRequest request, decimal? lira)
+    {
+        if (lira is not { } amount)
+            return (0, ExchangeRateCache.IsSupported(request.CurrencyCode)
+                ? Decline(method, request, InternalResponseCodes.ExchangeRateUnavailable, $"no fresh rate for currency {request.CurrencyCode}")
+                : Decline(method, request, InternalResponseCodes.CurrencyNotSupported, $"currency {request.CurrencyCode} is not supported"));
+
+        if (amount <= 0)
+            return (0, Decline(method, request, InternalResponseCodes.ZeroAmount, "amount is zero"));
+        return (amount, null);
     }
 
     // Red kararını sebebiyle loglar ve iç kodu (IRC) döner; F39 InternalResponseCode tablosundan bulunur.
@@ -281,16 +328,10 @@ public sealed class TransactionHandler(
         await session.GetCvvHashAsync(cardNumber) is { } stored
         && CryptographicOperations.FixedTimeEquals(stored, secrets.HashCvv(cardNumber, received));
 
+    // ISO8583 F2 ile aynı kural: 1-19 rakam.
+    private static bool IsCardNumber(string? value) => value is { Length: > 0 and <= 19 } && value.All(char.IsAsciiDigit);
+
     // POS F14'ü YYMM, Card tablosu MMYY formatında tutar.
     private static bool ExpiryMatches(string? cardExpiry, string? requestExpiry) =>
         cardExpiry is null || requestExpiry is null || requestExpiry == cardExpiry[2..] + cardExpiry[..2];
-
-    // F13 sadece MMDD taşır, kolon yyyymmdd ister. Yıl bugünün yılıdır; yılbaşı civarında POS'un tarihi hâlâ
-    // geçen yılın Aralık'ıysa (bugünden 1 aydan fazla ileride görünen ay) bir önceki yıl alınır.
-    private string ToTransactionDate(string mmdd)
-    {
-        var today = clock.GetUtcNow();
-        var year = int.Parse(mmdd[..2]) > today.Month + 1 ? today.Year - 1 : today.Year;
-        return $"{year:D4}{mmdd}";
-    }
 }

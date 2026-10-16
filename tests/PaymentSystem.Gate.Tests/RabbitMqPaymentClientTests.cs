@@ -33,8 +33,8 @@ public sealed class RabbitMqFixture : IAsyncLifetime
 public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassFixture<RabbitMqFixture>, IAsyncLifetime
 {
     private static readonly PaymentRequest Request = new(
-        "0200", "4111111111111111", "000000", 15000, "949", "1002143015", "123456", "173015", "1002", "TERM0001",
-        "2812", null, "051", "261002123456", "MERCHANT0000001", null, Cvv: null);
+        "0200", "4111111111111111", "000000", 15000, "949", "1002143015", "123456", "173015", "20261002", "TERM0001",
+        "2812", null, "051", "261002123456", "MERCHANT0000001", null, RecipientCardNumber: null, Cvv: null);
 
     private readonly List<IAsyncDisposable> _disposables = [];
     private IChannel _admin = null!;
@@ -134,6 +134,19 @@ public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassF
         Assert.Contains("\"cvv\":\"987\"", Assert.Single(Received).Body);
         Assert.Contains("\"cvv\":\"***\"", Assert.Single(Logger.Messages, m => m.StartsWith("PublishAsync: sent")));
         Assert.DoesNotContain(Logger.Messages, m => m.Contains("987"));
+    }
+
+    [Fact]
+    public async Task RecipientCard_IsSentToPaymentButMaskedInLog()
+    {
+        await RespondWithAsync("""{ "responseCode": "00" }""");
+
+        await CreateClient().AuthorizeAsync(Request with { ProcessingCode = "400000", RecipientCardNumber = "5406680000000002" },
+            CancellationToken.None);
+
+        Assert.Contains("\"recipientCardNumber\":\"5406680000000002\"", Assert.Single(Received).Body);
+        Assert.Contains("\"recipientCardNumber\":\"540668********02\"", Assert.Single(Logger.Messages, m => m.StartsWith("PublishAsync: sent")));
+        Assert.DoesNotContain(Logger.Messages, m => m.Contains("5406680000000002"));
     }
 
     [Fact]

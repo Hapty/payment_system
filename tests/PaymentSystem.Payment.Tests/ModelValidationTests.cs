@@ -56,17 +56,18 @@ public class ModelValidationTests
     private static TransactionRequest ValidTransaction() => new()
     {
         Mti = "0200", CardNumber = "4111111111111111", ProcessingCode = "000000", AmountMinor = 15000, CurrencyCode = "949",
-        TransmissionDateTime = "0315095959", Stan = "000001", LocalTime = "125959", LocalDate = "0315", TerminalId = "TERM0001"
+        TransmissionDateTime = "0315095959", Stan = "000001", LocalTime = "125959", LocalDate = "20260315", TerminalId = "TERM0001"
     };
 
     [Fact]
     public void TransactionRequest_Valid() => Assert.True(IsValid(ValidTransaction()));
 
     [Theory]
-    [InlineData("1315")]    // ay 13
-    [InlineData("0300")]    // gün 00
-    [InlineData("0332")]
-    [InlineData("315")]
+    [InlineData("20261315")]    // ay 13
+    [InlineData("20260300")]    // gün 00
+    [InlineData("20260332")]
+    [InlineData("0315")]        // yılsız MMDD
+    [InlineData("2026315")]
     public void TransactionRequest_InvalidLocalDate_IsInvalid(string localDate)
     {
         var request = ValidTransaction();

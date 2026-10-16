@@ -40,6 +40,26 @@ Content-Type: application/json
 }
 
 ###
+# Para transferi için alıcı: başka bir hesap ve kart (Gate'te F48'e bu kart no yazılır)
+POST {{host}}/api/bank-accounts
+Content-Type: application/json
+
+{ "accountNo": "TR02", "accountStatus": "Active", "balance": 0 }
+
+###
+POST {{host}}/api/cards
+Content-Type: application/json
+
+{
+  "cardNumber": "5406680000000002",
+  "accountNo": "TR02",
+  "cardType": "Debit",
+  "expiryDate": "1228",
+  "contactlessAllowed": true,
+  "contactlessLimit": 750.00
+}
+
+###
 GET {{host}}/api/cards/by-number/4111111111111111
 
 ###

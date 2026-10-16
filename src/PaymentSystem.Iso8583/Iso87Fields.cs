@@ -24,6 +24,7 @@ public static class Iso87Fields
         new(41, "Card acceptor terminal ID", Fixed, 8, Any),
         new(42, "Card acceptor ID code", Fixed, 15, Any),
         new(43, "Card acceptor name/location", Fixed, 40, Any),
+        new(48, "Additional data - private", LLLVar, 999, Any),
         new(49, "Currency code, transaction", Fixed, 3, Numeric),
         new(70, "Network management information code", Fixed, 3, Numeric),
     }.ToDictionary(f => f.Number);

@@ -45,10 +45,12 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
                     """
                     INSERT INTO dbo.DebitTransaction
                         (Guid, Mti, F2_CardNo, F3_ProcessingCode, Otc, Ots, F4_Amount, F49_CurrencyCode, LocalTxnAmount,
-                         F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F43_Description)
+                         F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F43_Description,
+                         RecipientCardNumber)
                     VALUES
                         (@Id, @Mti, @CardNumber, @ProcessingCode, @Otc, @Ots, @Amount, @CurrencyCode, @LocalAmount,
-                         @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @CardAcceptor)
+                         @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @CardAcceptor,
+                         @RecipientCardNumber)
                     """,
                     t, transaction);
                 return true;
@@ -77,6 +79,21 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
             await connection.ExecuteAsync(
                 "UPDATE dbo.BankAccount SET Balance = Balance - @amount WHERE AccountNo = @accountNo AND Balance >= @amount",
                 new { amount, accountNo }, transaction) > 0;
+
+        // İki hesabın satırı önce PK sırasıyla kilitlenir: A->B ve B->A transferleri aynı anda gelse de kilitler aynı sırayla
+        // alınır, deadlock olmaz. Sonra düşme (bakiye kontrolüyle aynı UPDATE'te) ve ekleme.
+        public async Task<bool> TryTransferAsync(string fromAccountNo, string toAccountNo, decimal amount)
+        {
+            await connection.ExecuteAsync(
+                "SELECT AccountNo FROM dbo.BankAccount WITH (UPDLOCK, ROWLOCK) WHERE AccountNo IN (@fromAccountNo, @toAccountNo) ORDER BY AccountNo",
+                new { fromAccountNo, toAccountNo }, transaction);
+            if (!await TryDebitAsync(fromAccountNo, amount))
+                return false;
+            await connection.ExecuteAsync(
+                "UPDATE dbo.BankAccount SET Balance = Balance + @amount WHERE AccountNo = @toAccountNo",
+                new { amount, toAccountNo }, transaction);
+            return true;
+        }
 
         public Task SetCardLastTransactionAsync(string cardNumber, decimal amount) =>
             connection.ExecuteAsync(

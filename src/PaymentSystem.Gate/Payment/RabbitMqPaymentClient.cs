@@ -97,6 +97,7 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
                 JsonSerializer.Serialize(request with
                 {
                     CardNumber = PanMask.Mask(request.CardNumber),
+                    RecipientCardNumber = request.RecipientCardNumber is null ? null : PanMask.Mask(request.RecipientCardNumber),
                     Cvv = request.Cvv is null ? null : "***"
                 }, Json));
         }

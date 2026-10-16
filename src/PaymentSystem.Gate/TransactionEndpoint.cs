@@ -1,53 +1,62 @@
 using System.Globalization;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http.HttpResults;
 using PaymentSystem.Iso8583;
 
 namespace PaymentSystem.Gate;
 
-// POST /api/transactions gövdesi: bir finansal isteğin ISO8583 alanları, okunabilir isimlerle.
+// POST /api/transactions gövdesi: bir finansal isteğin ISO8583 alanları. JSON'da alan numarasıyla gelir ("F2", "F3" ...);
+// C# tarafında okunabilir isimler kullanılır. cvv ISO alanı olmadığı için adıyla gelir.
 public sealed record TransactionRequest(
-    string? Mti,
-    string? CardNumber,             // F2
-    string? ProcessingCode,         // F3: 000000 satış, 310000 bakiye sorgu ...
-    long? AmountMinor,              // F4, kuruş cinsinden: 15000 = 150,00
-    string? CurrencyCode,           // F49, örn. 949 = TRY
-    string? TransmissionDateTime,   // F7  MMDDhhmmss
-    string? Stan,                   // F11
-    string? LocalTime,              // F12 hhmmss
-    string? LocalDate,              // F13 MMDD
-    string? TerminalId,             // F41
-    string? CardExpiry,             // F14 YYMM
-    string? MerchantType,           // F18
-    string? EntryMode,              // F22
-    string? Rrn,                    // F37
-    string? MerchantId,             // F42
-    string? CardAcceptor,           // F43
-    string? Cvv = null);            // CVV2 (kartın arkası): ISO8583:1987'de standart alanı yok, Payment'a ayrı alan olarak gider
+    [property: JsonPropertyName("mti")] string? Mti,
+    [property: JsonPropertyName("F2")] string? CardNumber,
+    [property: JsonPropertyName("F3")] string? ProcessingCode,          // 000000 satış, 310000 bakiye sorgu, 400000 transfer
+    [property: JsonPropertyName("F4")] long? AmountMinor,               // kuruş cinsinden: 15000 = 150,00
+    [property: JsonPropertyName("F49")] string? CurrencyCode,           // örn. 949 = TRY
+    [property: JsonPropertyName("F7")] string? TransmissionDateTime,    // MMDDhhmmss
+    [property: JsonPropertyName("F11")] string? Stan,
+    [property: JsonPropertyName("F12")] string? LocalTime,              // hhmmss
+    [property: JsonPropertyName("F13")] string? LocalDate,              // yyyymmdd; ISO mesajına MMDD olarak girer
+    [property: JsonPropertyName("F41")] string? TerminalId,
+    [property: JsonPropertyName("F14")] string? CardExpiry,             // YYMM
+    [property: JsonPropertyName("F18")] string? MerchantType,
+    [property: JsonPropertyName("F22")] string? EntryMode,
+    [property: JsonPropertyName("F37")] string? Rrn,
+    [property: JsonPropertyName("F42")] string? MerchantId,
+    [property: JsonPropertyName("F43")] string? CardAcceptor,
+    [property: JsonPropertyName("F48")] string? RecipientCardNumber = null,     // bu sistemde: para transferinde alıcı kart no
+    // CVV2 (kartın arkası): ISO8583:1987'de standart alanı yok, Payment'a ayrı alan olarak gider
+    [property: JsonPropertyName("cvv")] string? Cvv = null);
 
 // ResponseCode = F39. Onay da red de (örn. 51 yetersiz bakiye) 200 ile döner.
-public sealed record TransactionResponse(string Mti, string ResponseCode, string? Stan, string? Rrn);
+public sealed record TransactionResponse(
+    [property: JsonPropertyName("mti")] string Mti,
+    [property: JsonPropertyName("F39")] string ResponseCode,
+    [property: JsonPropertyName("F11")] string? Stan,
+    [property: JsonPropertyName("F37")] string? Rrn);
 
 // İşlemlerin sisteme tek giriş noktası. İstek ISO8583 mesajına çevrilir ve her alan ISO8583 tanımına göre doğrulanır;
 // bozuk ya da eksik alan 400 ile, hangi alanda ne sorun olduğu yazılarak döner. Geçerli istek TransactionHandler'a gider.
 public static class TransactionEndpoint
 {
-    private static readonly (string Name, int Field, Func<TransactionRequest, string?> Value)[] Fields =
+    // F13 ayrıca ele alınır (bkz. LocalDate): JSON'da yyyymmdd, ISO mesajında MMDD.
+    private static readonly (int Field, Func<TransactionRequest, string?> Value)[] Fields =
     [
-        ("cardNumber", 2, r => r.CardNumber),
-        ("processingCode", 3, r => r.ProcessingCode),
-        ("amountMinor", 4, r => r.AmountMinor?.ToString("D12", CultureInfo.InvariantCulture)),
-        ("transmissionDateTime", 7, r => r.TransmissionDateTime),
-        ("stan", 11, r => r.Stan),
-        ("localTime", 12, r => r.LocalTime),
-        ("localDate", 13, r => r.LocalDate),
-        ("cardExpiry", 14, r => r.CardExpiry),
-        ("merchantType", 18, r => r.MerchantType),
-        ("entryMode", 22, r => r.EntryMode),
-        ("rrn", 37, r => r.Rrn),
-        ("terminalId", 41, r => r.TerminalId),
-        ("merchantId", 42, r => r.MerchantId),
-        ("cardAcceptor", 43, r => r.CardAcceptor),
-        ("currencyCode", 49, r => r.CurrencyCode),
+        (2, r => r.CardNumber),
+        (3, r => r.ProcessingCode),
+        (4, r => r.AmountMinor?.ToString("D12", CultureInfo.InvariantCulture)),
+        (7, r => r.TransmissionDateTime),
+        (11, r => r.Stan),
+        (12, r => r.LocalTime),
+        (14, r => r.CardExpiry),
+        (18, r => r.MerchantType),
+        (22, r => r.EntryMode),
+        (37, r => r.Rrn),
+        (41, r => r.TerminalId),
+        (42, r => r.MerchantId),
+        (43, r => r.CardAcceptor),
+        (48, r => r.RecipientCardNumber),
+        (49, r => r.CurrencyCode),
     ];
 
     public static async Task<Results<Ok<TransactionResponse>, ValidationProblem>> HandleAsync(
@@ -69,20 +78,33 @@ public static class TransactionEndpoint
         }
 
         var message = new IsoMessage(mti);
-        foreach (var (name, field, read) in Fields)
+        var financial = mti == TransactionHandler.FinancialRequestMti;
+        foreach (var (field, read) in Fields)
         {
             if (read(request) is not { } value)
             {
-                if (mti == TransactionHandler.FinancialRequestMti && TransactionHandler.RequiredFinancialFields.Contains(field))
-                    errors[name] = [$"F{field} is required."];
+                if (financial && TransactionHandler.RequiredFinancialFields.Contains(field))
+                    errors[$"F{field}"] = [$"F{field} is required."];
                 continue;
             }
 
             if (Iso87Fields.Default[field].Validate(value) is { } reason)
-                errors[name] = [$"F{field}: {reason}"];
+                errors[$"F{field}"] = [$"F{field}: {reason}"];
             else
                 message.Set(field, value);
         }
+
+        // F13 JSON'da tam tarih (yyyymmdd) gelir: ISO mesajına standart MMDD hali girer, tam hali Payment'a ayrıca gider.
+        if (request.LocalDate is { } localDate)
+        {
+            if (localDate.Length == 8 && localDate.All(char.IsAsciiDigit)
+                && DateOnly.TryParseExact(localDate, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                message.Set(13, localDate[4..]);
+            else
+                errors["F13"] = ["F13: Must be a date in yyyymmdd format, e.g. 20261002."];
+        }
+        else if (financial)
+            errors["F13"] = ["F13 is required."];
 
         // CVV2 3 hane (Visa, Mastercard, Troy) ya da 4 hane (Amex). Değeri hiçbir yere loglanmaz.
         if (request.Cvv is { } cvv && (cvv.Length is not (3 or 4) || !cvv.All(char.IsAsciiDigit)))
@@ -95,7 +117,7 @@ public static class TransactionEndpoint
             return TypedResults.ValidationProblem(errors);
         }
 
-        var response = await handler.ProcessAsync(message, request.Cvv, cancellationToken);
+        var response = await handler.ProcessAsync(message, request.Cvv, request.LocalDate, cancellationToken);
         logger.LogInformation("{Method}: responding {ResponseMti} STAN {Stan} F39 {ResponseCode}",
             nameof(HandleAsync), response.Mti, response[11], response[39]);
         return TypedResults.Ok(new TransactionResponse(response.Mti, response[39]!, response[11], response[37]));
