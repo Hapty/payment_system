@@ -14,8 +14,8 @@ public enum IsoCharset
     Any             // ans : yazdırılabilir her ASCII karakter (harf, rakam, boşluk, sembol)
 }
 
-// Bir ISO8583 alanının mesaj içinde nasıl yer aldığını tarif eder.
-public sealed record IsoFieldDefinition(int Number, string Name, IsoLengthType LengthType, int Length, IsoCharset Charset)
+// Bir ISO8583 alanının mesaj içinde nasıl yer aldığını tarif eder. Label: loglarda alan numarasının yanına yazılan kısa ad.
+public sealed record IsoFieldDefinition(int Number, string Name, IsoLengthType LengthType, int Length, IsoCharset Charset, string Label)
 {
     public int PrefixDigits => LengthType switch
     {

@@ -60,17 +60,17 @@ public sealed class TransactionHandler(
         var type = await parameters.FindTypeAsync(request.Mti, request.ProcessingCode);
         if (type is null)
         {
-            logger.LogWarning("{Method}: no transaction type for MTI {Mti} F3 {ProcessingCode} (TID {TerminalId} STAN {Stan}) - IRC {Irc}",
-                nameof(AuthorizeAsync), request.Mti, request.ProcessingCode, request.TerminalId, request.Stan,
-                InternalResponseCodes.TransactionTypeNotDefined);
+            logger.LogWarning("{Method}: no transaction type for MTI {Mti} {ProcessingCode} ({TerminalId} {Stan}) - IRC {Irc}",
+                nameof(AuthorizeAsync), request.Mti, IsoLog.Field(3, request.ProcessingCode), IsoLog.Field(41, request.TerminalId),
+                IsoLog.Field(11, request.Stan), InternalResponseCodes.TransactionTypeNotDefined);
             throw await FailureAsync(request, InternalResponseCodes.TransactionTypeNotDefined, trace);
         }
 
         // TL karşılığı bir kez, kayıt açılmadan hesaplanır: aynı kur hem LocalTxnAmount'a yazılır hem bakiyeden düşülür.
         var lira = ToLira(request);
-        logger.LogInformation("{Method}: {Type} TID {TerminalId} STAN {Stan} PAN {Pan} amount {Amount} {Currency} (TRY {Lira})",
-            nameof(AuthorizeAsync), type.Name, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber),
-            ToAmount(request), request.CurrencyCode, lira);
+        logger.LogInformation("{Method}: {Type} {TerminalId} {Stan} {Pan} amount {Amount} {Currency} (TRY {Lira})",
+            nameof(AuthorizeAsync), type.Name, IsoLog.Field(41, request.TerminalId), IsoLog.Field(11, request.Stan),
+            IsoLog.Field(2, request.CardNumber), ToAmount(request), IsoLog.Field(49, request.CurrencyCode), lira);
 
         // Kaydın Guid'i isteğin kendisinden türetilir (bkz. IdempotencyKey): tekrar gelen istek aynı Guid'i üretir ve PK'ya takılır.
         // Aynı anda gelirse ilk transaction bitene kadar bekler, sonra hata alır; böylece aynı işlem asla iki kez karara bağlanmaz.
@@ -105,9 +105,9 @@ public sealed class TransactionHandler(
             return await PreviousResponseAsync(request, id, trace);
 
         var responseCode = definition?.ResponseCode ?? ResponseCodes.SystemMalfunction;
-        logger.LogInformation("{Method}: {Type} {Id} TID {TerminalId} STAN {Stan} PAN {Pan} committed -> IRC {Irc} F39 {ResponseCode}",
-            nameof(AuthorizeAsync), type.Name, id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), irc,
-            responseCode);
+        logger.LogInformation("{Method}: {Type} {Id} {TerminalId} {Stan} {Pan} committed -> IRC {Irc} {ResponseCode}",
+            nameof(AuthorizeAsync), type.Name, id, IsoLog.Field(41, request.TerminalId), IsoLog.Field(11, request.Stan),
+            IsoLog.Field(2, request.CardNumber), irc, IsoLog.Field(39, responseCode));
 
         // Sadece commit edilen karar yayımlanır: tekrar gelen istek ve kayıt açılmayan red (tanımsız tip) olay üretmez.
         events.Publish(new TransactionCompleted(
@@ -129,7 +129,7 @@ public sealed class TransactionHandler(
         {
             entryMode = f22.Length == 3 ? await parameters.FindEntryModeAsync(f22[..2]) : null;
             if (entryMode is null)
-                return Decline(nameof(DecideAsync), request, InternalResponseCodes.EntryModeNotDefined, $"F22 entry mode {f22} is not defined");
+                return Decline(nameof(DecideAsync), request, InternalResponseCodes.EntryModeNotDefined, $"{IsoLog.Field(22, f22)} is not defined");
         }
 
         var card = await session.GetCardAsync(request.CardNumber);
@@ -138,13 +138,13 @@ public sealed class TransactionHandler(
         trace.AccountNo = card.AccountNo;
 
         if (IsExpired(card.ExpiryDate) || !ExpiryMatches(card.ExpiryDate, request.CardExpiry))
-            return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardExpired, "card expired or F14 does not match");
+            return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardExpired, $"card expired or {IsoLog.Field(14, request.CardExpiry)} does not match");
 
         // CVV2 kart fiziksel olarak yokken zorunlu; başka bir girişte de geldiyse kontrol edilir. Değeri asla loglanmaz.
         if ((entryMode is not null && CardNotPresentEntryModes.Contains(entryMode.Code)) || request.Cvv is not null)
         {
             if (request.Cvv is null)
-                return Decline(nameof(DecideAsync), request, InternalResponseCodes.CvvMismatch, $"CVV2 required for entry mode {request.EntryMode}");
+                return Decline(nameof(DecideAsync), request, InternalResponseCodes.CvvMismatch, $"CVV2 required for {IsoLog.Field(22, request.EntryMode)}");
             if (!await CvvMatchesAsync(session, request.CardNumber, request.Cvv))
                 return Decline(nameof(DecideAsync), request, InternalResponseCodes.CvvMismatch, "CVV2 does not match");
         }
@@ -185,8 +185,8 @@ public sealed class TransactionHandler(
             return Decline(nameof(SaleAsync), request, InternalResponseCodes.InsufficientFunds, $"insufficient funds for TRY {amount}");
 
         await session.SetCardLastTransactionAsync(card.CardNumber, amount);
-        logger.LogInformation("{Method}: debited TRY {Amount} from account {AccountNo} STAN {Stan} PAN {Pan}",
-            nameof(SaleAsync), amount, card.AccountNo, request.Stan, PanMask.Mask(request.CardNumber));
+        logger.LogInformation("{Method}: debited TRY {Amount} from account {AccountNo} {Stan} {Pan}",
+            nameof(SaleAsync), amount, card.AccountNo, IsoLog.Field(11, request.Stan), IsoLog.Field(2, request.CardNumber));
         return InternalResponseCodes.Approved;
     }
 
@@ -196,15 +196,15 @@ public sealed class TransactionHandler(
     private async Task<string> TransferAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira)
     {
         if (request.RecipientCardNumber is not { } recipientNumber || !IsCardNumber(recipientNumber))
-            return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientCardInvalid, "F48 recipient card number missing or invalid");
+            return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientCardInvalid, $"{IsoLog.Label(48)} missing or not a card number");
 
         var recipient = await session.GetCardAsync(recipientNumber);
         if (recipient is null)
             return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientCardNotFound,
-                $"recipient card {PanMask.Mask(recipientNumber)} not found");
+                $"{IsoLog.Field(48, recipientNumber)} not found");
         if (recipient.AccountNo == card.AccountNo)
             return Decline(nameof(TransferAsync), request, InternalResponseCodes.SameAccountTransfer,
-                $"recipient card {PanMask.Mask(recipientNumber)} is on the same account {card.AccountNo}");
+                $"{IsoLog.Field(48, recipientNumber)} is on the same account {card.AccountNo}");
 
         var recipientAccount = await session.GetAccountAsync(recipient.AccountNo);
         if (recipientAccount?.AccountStatus != ActiveAccount)
@@ -219,9 +219,9 @@ public sealed class TransactionHandler(
             return Decline(nameof(TransferAsync), request, InternalResponseCodes.InsufficientFunds, $"insufficient funds for TRY {amount}");
 
         await session.SetCardLastTransactionAsync(card.CardNumber, amount);
-        logger.LogInformation("{Method}: transferred TRY {Amount} from account {FromAccountNo} to account {ToAccountNo} STAN {Stan} PAN {Pan} -> {RecipientPan}",
-            nameof(TransferAsync), amount, card.AccountNo, recipient.AccountNo, request.Stan, PanMask.Mask(request.CardNumber),
-            PanMask.Mask(recipientNumber));
+        logger.LogInformation("{Method}: transferred TRY {Amount} from account {FromAccountNo} to account {ToAccountNo} {Stan} {Pan} -> {RecipientPan}",
+            nameof(TransferAsync), amount, card.AccountNo, recipient.AccountNo, IsoLog.Field(11, request.Stan),
+            IsoLog.Field(2, request.CardNumber), IsoLog.Field(48, recipientNumber));
         return InternalResponseCodes.Approved;
     }
 
@@ -231,8 +231,8 @@ public sealed class TransactionHandler(
     {
         if (lira is not { } amount)
             return (0, ExchangeRateCache.IsSupported(request.CurrencyCode)
-                ? Decline(method, request, InternalResponseCodes.ExchangeRateUnavailable, $"no fresh rate for currency {request.CurrencyCode}")
-                : Decline(method, request, InternalResponseCodes.CurrencyNotSupported, $"currency {request.CurrencyCode} is not supported"));
+                ? Decline(method, request, InternalResponseCodes.ExchangeRateUnavailable, $"no fresh rate for {IsoLog.Field(49, request.CurrencyCode)}")
+                : Decline(method, request, InternalResponseCodes.CurrencyNotSupported, $"{IsoLog.Field(49, request.CurrencyCode)} is not supported"));
 
         if (amount <= 0)
             return (0, Decline(method, request, InternalResponseCodes.ZeroAmount, "amount is zero"));
@@ -242,8 +242,8 @@ public sealed class TransactionHandler(
     // Red kararını sebebiyle loglar ve iç kodu (IRC) döner; F39 InternalResponseCode tablosundan bulunur.
     private string Decline(string method, TransactionRequest request, string irc, string reason)
     {
-        logger.LogWarning("{Method}: declined STAN {Stan} PAN {Pan} - {Reason} -> IRC {Irc}",
-            method, request.Stan, PanMask.Mask(request.CardNumber), reason, irc);
+        logger.LogWarning("{Method}: declined {Stan} {Pan} - {Reason} -> IRC {Irc}",
+            method, IsoLog.Field(11, request.Stan), IsoLog.Field(2, request.CardNumber), reason, irc);
         return irc;
     }
 
@@ -256,8 +256,9 @@ public sealed class TransactionHandler(
         if (definition is not null)
             return new TransactionException(definition.ResponseCode, irc, definition.Description, request.CardNumber, trace.Id, trace.AccountNo);
 
-        logger.LogError("{Method}: IRC {Irc} is not defined in InternalResponseCode (STAN {Stan} PAN {Pan}) - responding {ResponseCode}",
-            nameof(Failure), irc, request.Stan, PanMask.Mask(request.CardNumber), ResponseCodes.SystemMalfunction);
+        logger.LogError("{Method}: IRC {Irc} is not defined in InternalResponseCode ({Stan} {Pan}) - responding {ResponseCode}",
+            nameof(Failure), irc, IsoLog.Field(11, request.Stan), IsoLog.Field(2, request.CardNumber),
+            IsoLog.Field(39, ResponseCodes.SystemMalfunction));
         return new TransactionException(
             ResponseCodes.SystemMalfunction, irc, $"IRC {irc} is not defined", request.CardNumber, trace.Id, trace.AccountNo);
     }
@@ -269,8 +270,9 @@ public sealed class TransactionHandler(
         var previous = (await repository.GetPreviousAsync(id))!;   // kayıt sadece F39 yazılarak commit edildiği için boş olamaz
         trace.AccountNo = previous.AccountNo;
 
-        logger.LogWarning("{Method}: duplicate request {Id} (TID {TerminalId} STAN {Stan} PAN {Pan}) - returning previous F39 {ResponseCode}",
-            nameof(PreviousResponseAsync), id, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber), previous.ResponseCode);
+        logger.LogWarning("{Method}: duplicate request {Id} ({TerminalId} {Stan} {Pan}) - returning previous {ResponseCode}",
+            nameof(PreviousResponseAsync), id, IsoLog.Field(41, request.TerminalId), IsoLog.Field(11, request.Stan),
+            IsoLog.Field(2, request.CardNumber), IsoLog.Field(39, previous.ResponseCode));
 
         var approved = await parameters.FindInternalResponseCodeAsync(InternalResponseCodes.Approved);
         if (previous.ResponseCode == approved?.ResponseCode)

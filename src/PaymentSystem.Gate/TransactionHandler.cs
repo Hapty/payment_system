@@ -20,13 +20,14 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
     {
         var stopwatch = Stopwatch.StartNew();
         if (request.Mti != FinancialRequestMti)
-            logger.LogWarning("{Method}: unsupported MTI {Mti} STAN {Stan} - responding 12", nameof(ProcessAsync), request.Mti, request[11]);
+            logger.LogWarning("{Method}: unsupported MTI {Mti} {Stan} - responding 12", nameof(ProcessAsync), request.Mti, IsoLog.Field(11, request[11]));
         var response = request.Mti == FinancialRequestMti
             ? await AuthorizeAsync(request, cvv, transactionDate, cancellationToken)
             : new IsoMessage(request.ToResponseMti()).Set(39, ResponseCodes.InvalidTransaction);
 
-        logger.LogInformation("{Method}: {RequestMti} -> {ResponseMti} STAN {Stan} PAN {Pan} F39 {ResponseCode} in {ElapsedMs} ms",
-            nameof(ProcessAsync), request.Mti, response.Mti, request[11], PanMask.Mask(request[2]), response[39], stopwatch.ElapsedMilliseconds);
+        logger.LogInformation("{Method}: {RequestMti} -> {ResponseMti} {Stan} {Pan} {ResponseCode} in {ElapsedMs} ms",
+            nameof(ProcessAsync), request.Mti, response.Mti, IsoLog.Field(11, request[11]), IsoLog.Field(2, request[2]),
+            IsoLog.Field(39, response[39]), stopwatch.ElapsedMilliseconds);
         return response;
     }
 
@@ -36,15 +37,19 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         var missing = RequiredFinancialFields.Where(f => !request.Has(f) || (f == 13 && transactionDate is null)).ToArray();
         if (missing.Length > 0)
         {
-            logger.LogWarning("{Method}: 0200 STAN {Stan} is missing required fields {Fields} - responding 30",
-                nameof(AuthorizeAsync), request[11], string.Join(", ", missing));
+            logger.LogWarning("{Method}: 0200 {Stan} is missing required fields {Fields} - responding 30",
+                nameof(AuthorizeAsync), IsoLog.Field(11, request[11]), string.Join(", ", missing.Select(IsoLog.Label)));
             return Echo(request).Set(39, ResponseCodes.FormatError);
         }
 
-        logger.LogInformation("{Method}: forwarding to Payment STAN {Stan} TID {TerminalId} PAN {Pan} F3 {ProcessingCode} F4 {Amount} F49 {Currency}",
-            nameof(AuthorizeAsync), request[11], request[41], PanMask.Mask(request[2]), request[3], request[4], request[49]);
+        // Payment'a giden alanların tamamı; F13 yıllı haliyle (Payment'a giden değer), CVV sadece geldiyse "***".
+        logger.LogInformation("{Method}: forwarding to Payment MTI {Mti} | {Fields}{Cvv}",
+            nameof(AuthorizeAsync), request.Mti,
+            IsoLog.Fields(request.Fields.Select(f => KeyValuePair.Create(f.Key, (string?)(f.Key == 13 ? transactionDate : f.Value)))),
+            cvv is null ? "" : " cvv=***");
         var result = await paymentClient.AuthorizeAsync(ToPaymentRequest(request, cvv, transactionDate!), cancellationToken);
-        logger.LogInformation("{Method}: Payment answered STAN {Stan} F39 {ResponseCode}", nameof(AuthorizeAsync), request[11], result.ResponseCode);
+        logger.LogInformation("{Method}: Payment answered {Stan} {ResponseCode}", nameof(AuthorizeAsync),
+            IsoLog.Field(11, request[11]), IsoLog.Field(39, result.ResponseCode));
         return Echo(request).Set(39, result.ResponseCode);
     }
 

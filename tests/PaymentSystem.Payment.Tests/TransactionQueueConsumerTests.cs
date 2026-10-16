@@ -153,11 +153,15 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
 
         await WithConsumerAsync(() => SendAsync(SaleJson()));
 
-        var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
-        Assert.Contains("\"cardNumber\":\"411111********11\"", received);
-        Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("HandleAsync: replied request-1 F39 00"));
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: debited TRY 150") && m.Contains("PAN 411111********11"));
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.Contains("F39 00"));
+        // Gelen isteğin bütün alanları, numara sırasıyla ve ne olduklarıyla (Gate'in "forwarding to Payment" satırıyla aynı biçim).
+        Assert.Contains(
+            "DecideAsync: received request-1 MTI 0200 | F2 (Kart No)=411111********11 F3 (İşlem Kodu)=000000 F4 (Tutar, kuruş)=15000 " +
+            "F7 (Gönderim Zamanı)=0315095959 F11 (STAN)=000001 F12 (Yerel Saat)=125959 F13 (Yerel Tarih)=20260315 " +
+            "F14 (Son Kullanma)=2812 F22 (Giriş Yöntemi)=051 F41 (Terminal No)=TERM0001 F49 (Para Birimi)=949",
+            ConsumerLogger.Messages);
+        Assert.Contains("HandleAsync: replied request-1 F39 (Cevap Kodu)=00", ConsumerLogger.Messages);
+        Assert.Contains("SaleAsync: debited TRY 150 from account ACC1 F11 (STAN)=000001 F2 (Kart No)=411111********11", HandlerLogger.Messages);
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale ") && m.EndsWith("F41 (Terminal No)=TERM0001 F11 (STAN)=000001 F2 (Kart No)=411111********11 committed -> IRC 0000 F39 (Cevap Kodu)=00"));
         Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains(Pan));
     }
 
@@ -169,7 +173,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         await WithConsumerAsync(() => SendAsync(SaleJson().Replace("\"entryMode\": \"051\"", "\"entryMode\": \"051\", \"cvv\": \"987\"")));
 
         var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
-        Assert.Contains("\"cvv\":\"***\"", received);
+        Assert.EndsWith("F49 (Para Birimi)=949 cvv=***", received);
         Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains("987"));
     }
 
@@ -183,7 +187,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
             .Replace("\"processingCode\": \"000000\"", $"\"processingCode\": \"400000\", \"recipientCardNumber\": \"{recipient}\"")));
 
         var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
-        Assert.Contains("\"recipientCardNumber\":\"540668********02\"", received);
+        Assert.Contains("F48 (Alıcı Kart No)=540668********02", received);
         Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains(recipient));
     }
 
@@ -197,9 +201,10 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         Assert.Equal("""{"responseCode":"51"}""", reply?.Body);
         Assert.Equal(1000m, await BalanceAsync());
         Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: declined") && m.Contains("insufficient funds") && m.Contains("IRC 3002"));
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.Contains("IRC 3002 F39 51"));
-        Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: transaction") && m.Contains("not approved: F39 51 Insufficient funds (IRC 3002)")
-            && m.Contains("PAN 411111********11 account ACC1"));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.EndsWith("IRC 3002 F39 (Cevap Kodu)=51"));
+        Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: transaction request-1 F41 (Terminal No)=TERM0001 F11 (STAN)=000001")
+            && m.Contains("not approved: F39 (Cevap Kodu)=51 Insufficient funds (IRC 3002)")
+            && m.EndsWith("F2 (Kart No)=411111********11 account ACC1"));
     }
 
     [Theory]

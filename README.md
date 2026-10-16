@@ -94,7 +94,7 @@ Her istek için:
 { "mti": "0210", "F39": "00", "F11": "000001", "F37": null }
 ```
 
-Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi (`MtiProcessingCode` tablosu). Loglarda kart numaraları (F2 ve F48) maskelenir (`411111******1111`). Development modunda OpenAPI şeması `GET /openapi/v1.json`'dadır (Postman'a import edilebilir).
+Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi (`MtiProcessingCode` tablosu). Loglarda alanlar Gate'te de Payment'ta da `F2 (Kart No)=411111********11` biçiminde, numarası ve ne olduğuyla yazılır (etiketler `Iso87Fields`'ta, biçim `IsoLog`'da); kart numaraları (F2, F48) maskelenir, CVV sadece `cvv=***` olarak görünür. Development modunda OpenAPI şeması `GET /openapi/v1.json`'dadır (Postman'a import edilebilir).
 
 ### Alanlar
 | JSON | Alan | Format | Zorunlu (`0200`) |

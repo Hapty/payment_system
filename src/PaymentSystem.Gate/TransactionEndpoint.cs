@@ -64,8 +64,9 @@ public static class TransactionEndpoint
     {
         // Static sınıf ILogger<T>'ye tip olarak verilemediği için kategori adı elle verilir.
         var logger = loggerFactory.CreateLogger(typeof(TransactionEndpoint).FullName!);
-        logger.LogInformation("{Method}: request received MTI {Mti} TID {TerminalId} STAN {Stan} PAN {Pan}",
-            nameof(HandleAsync), request.Mti, request.TerminalId, request.Stan, PanMask.Mask(request.CardNumber));
+        logger.LogInformation("{Method}: request received MTI {Mti} {Stan} {TerminalId} {Pan}",
+            nameof(HandleAsync), request.Mti, IsoLog.Field(11, request.Stan), IsoLog.Field(41, request.TerminalId),
+            IsoLog.Field(2, request.CardNumber));
 
         var errors = new Dictionary<string, string[]>();
         if (request.Mti is not { } mti || !IsoMessage.IsValidMti(mti) || !new IsoMessage(mti).IsRequest)
@@ -112,14 +113,14 @@ public static class TransactionEndpoint
 
         if (errors.Count > 0)
         {
-            logger.LogWarning("{Method}: validation failed STAN {Stan} PAN {Pan} fields {Fields} - responding 400",
-                nameof(HandleAsync), request.Stan, PanMask.Mask(request.CardNumber), string.Join(", ", errors.Keys));
+            logger.LogWarning("{Method}: validation failed {Stan} {Pan} fields {Fields} - responding 400",
+                nameof(HandleAsync), IsoLog.Field(11, request.Stan), IsoLog.Field(2, request.CardNumber), IsoLog.Keys(errors.Keys));
             return TypedResults.ValidationProblem(errors);
         }
 
         var response = await handler.ProcessAsync(message, request.Cvv, request.LocalDate, cancellationToken);
-        logger.LogInformation("{Method}: responding {ResponseMti} STAN {Stan} F39 {ResponseCode}",
-            nameof(HandleAsync), response.Mti, response[11], response[39]);
+        logger.LogInformation("{Method}: responding {ResponseMti} {Stan} {ResponseCode}",
+            nameof(HandleAsync), response.Mti, IsoLog.Field(11, response[11]), IsoLog.Field(39, response[39]));
         return TypedResults.Ok(new TransactionResponse(response.Mti, response[39]!, response[11], response[37]));
     }
 }
