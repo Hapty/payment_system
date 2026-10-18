@@ -11,33 +11,43 @@ public class ModelValidationTests
 
     [Fact]
     public void BankAccount_Valid() =>
-        Assert.True(IsValid(new BankAccount { AccountNo = "ACC1", AccountStatus = "Active" }));
+        Assert.True(IsValid(new BankAccount { AccountNo = 1000000001, AccountStatus = "Active" }));
 
-    [Fact]
-    public void BankAccount_AccountNoTooLong_IsInvalid() =>
-        Assert.False(IsValid(new BankAccount { AccountNo = new string('1', 35), AccountStatus = "Active" }));
+    [Theory]
+    [InlineData(0L)]                // body'de yok
+    [InlineData(999999999L)]        // 9 hane (ya da 0 ile başlayan 10 hane)
+    [InlineData(10000000000L)]      // 11 hane
+    [InlineData(-1000000001L)]
+    public void BankAccount_AccountNoNotTenDigits_IsInvalid(long accountNo) =>
+        Assert.False(IsValid(new BankAccount { AccountNo = accountNo, AccountStatus = "Active" }));
+
+    [Theory]
+    [InlineData(999999999L)]
+    [InlineData(10000000000L)]
+    public void Card_AccountNoNotTenDigits_IsInvalid(long accountNo) =>
+        Assert.False(IsValid(new Card { CardNumber = "4111111111111111", AccountNo = accountNo }));
 
     [Fact]
     public void BankAccount_WithEmail_IsValid() =>
-        Assert.True(IsValid(new BankAccount { AccountNo = "ACC1", AccountStatus = "Active", Email = "musteri@example.com" }));
+        Assert.True(IsValid(new BankAccount { AccountNo = 1000000001, AccountStatus = "Active", Email = "musteri@example.com" }));
 
     [Fact]
     public void BankAccount_InvalidEmail_IsInvalid() =>
-        Assert.False(IsValid(new BankAccount { AccountNo = "ACC1", AccountStatus = "Active", Email = "not-an-email" }));
+        Assert.False(IsValid(new BankAccount { AccountNo = 1000000001, AccountStatus = "Active", Email = "not-an-email" }));
 
     [Fact]
     public void Card_Valid() =>
-        Assert.True(IsValid(new Card { CardNumber = "4111111111111111", AccountNo = "ACC1", ExpiryDate = "1228" }));
+        Assert.True(IsValid(new Card { CardNumber = "4111111111111111", AccountNo = 1000000001, ExpiryDate = "1228" }));
 
     [Theory]
     [InlineData("128")]     // ExpiryDate MMYY: tam 4 karakter olmalı
     [InlineData("12280")]
     public void Card_ExpiryDateNotFourChars_IsInvalid(string expiry) =>
-        Assert.False(IsValid(new Card { CardNumber = "4111", AccountNo = "ACC1", ExpiryDate = expiry }));
+        Assert.False(IsValid(new Card { CardNumber = "4111", AccountNo = 1000000001, ExpiryDate = expiry }));
 
     [Fact]
     public void Card_CardNumberTooLong_IsInvalid() =>
-        Assert.False(IsValid(new Card { CardNumber = new string('4', 20), AccountNo = "ACC1" }));
+        Assert.False(IsValid(new Card { CardNumber = new string('4', 20), AccountNo = 1000000001 }));
 
     [Fact]
     public void TransactionType_OtcNotTwoChars_IsInvalid() =>

@@ -7,11 +7,11 @@ public interface IBankAccountRepository
 {
     Task<IReadOnlyList<BankAccount>> GetAllAsync();
 
-    Task<BankAccount?> GetAsync(string accountNo);
+    Task<BankAccount?> GetAsync(long accountNo);
 
     Task<WriteResult> CreateAsync(BankAccount account);
 
-    Task<WriteResult> UpdateAsync(string accountNo, string accountStatus, string? email);
+    Task<WriteResult> UpdateAsync(long accountNo, string accountStatus, string? email);
 
-    Task<bool> DeleteAsync(string accountNo);
+    Task<bool> DeleteAsync(long accountNo);
 }
