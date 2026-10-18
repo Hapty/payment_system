@@ -66,7 +66,7 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 
 | Tablo | Açıklama |
 |---|---|
-| `BankAccount` | Hesap no, hesap durumu, bakiye, e-posta (opsiyonel; bildirimler buraya gider) |
+| `BankAccount` | Hesap no (10 haneli sayı, `BIGINT`), hesap durumu, bakiye, e-posta (opsiyonel; bildirimler buraya gider) |
 | `Card` | Kart bilgileri, ilişkili hesap |
 | `TransactionType` | (Otc, Ots) kombinasyonundan işlem tipine lookup (Sale, MoneyTransfer, BalanceInquiry) |
 | `MtiProcessingCode` | Gelen mesajın (Mti, F3_ProcessingCode) değerinden (Otc, Ots)'ye lookup — örn. `0200`+`000000` → Sale |
@@ -186,6 +186,7 @@ Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `PO
 
 Kurallar:
 - Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır). Kartın numarası da değiştirilemez: farklı numara gönderilirse `400` (CVV / PIN hash'i numaraya bağlı; yeni numara için yeni kart oluşturulur).
+- `AccountNo` (BankAccount ve Card) 10 haneli bir sayıdır (`1000000000`–`9999999999`, ilk hane 0 olamaz); JSON'da string değil sayı olarak gönderilir. Aralık dışı değer `400`, route'ta sayısal olmayan hesap no `404` döner.
 - `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus` ve `Email`'i değiştirir (`email` gönderilmezse silinir).
 - `BankAccount.Email` opsiyoneldir; doluysa onaylı satışlarda Notification servisi bu adrese e-posta atar (bkz. **Notification**).
 - `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
@@ -307,7 +308,7 @@ Commit edilen her karar (onay da red de) Kafka'daki `payment.transaction-events`
 
 ```json
 { "transactionId": "…", "occurredAt": "2026-03-15T10:00:00+00:00", "mti": "0200", "transactionType": "Sale",
-  "responseCode": "00", "irc": "0000", "maskedCardNumber": "411111********11", "accountNo": "TR01",
+  "responseCode": "00", "irc": "0000", "maskedCardNumber": "411111********11", "accountNo": 1000000001,
   "email": "musteri@example.com", "amount": 10.00, "currencyCode": "840", "localAmount": 492.15,
   "cardAcceptor": "PAYMENT SYSTEM POS SIMULATOR", "transactionDate": "20260315", "localTime": "125959",
   "terminalId": "TERM0001", "stan": "000001", "eventType": "TransactionCompleted", "version": 1 }

@@ -70,19 +70,19 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
             connection.QuerySingleOrDefaultAsync<byte[]?>(
                 "SELECT CvvHash FROM dbo.CardSecret WHERE CardNumber = @cardNumber", new { cardNumber }, transaction);
 
-        public Task<BankAccount?> GetAccountAsync(string accountNo) =>
+        public Task<BankAccount?> GetAccountAsync(long accountNo) =>
             connection.QuerySingleOrDefaultAsync<BankAccount>(
                 "SELECT AccountNo, AccountStatus, Email FROM dbo.BankAccount WHERE AccountNo = @accountNo", new { accountNo }, transaction);
 
         // Aynı hesaba aynı anda gelen iki satış bakiyeyi eksiye düşüremez: kontrol ve düşme aynı UPDATE'te.
-        public async Task<bool> TryDebitAsync(string accountNo, decimal amount) =>
+        public async Task<bool> TryDebitAsync(long accountNo, decimal amount) =>
             await connection.ExecuteAsync(
                 "UPDATE dbo.BankAccount SET Balance = Balance - @amount WHERE AccountNo = @accountNo AND Balance >= @amount",
                 new { amount, accountNo }, transaction) > 0;
 
         // İki hesabın satırı önce PK sırasıyla kilitlenir: A->B ve B->A transferleri aynı anda gelse de kilitler aynı sırayla
         // alınır, deadlock olmaz. Sonra düşme (bakiye kontrolüyle aynı UPDATE'te) ve ekleme.
-        public async Task<bool> TryTransferAsync(string fromAccountNo, string toAccountNo, decimal amount)
+        public async Task<bool> TryTransferAsync(long fromAccountNo, long toAccountNo, decimal amount)
         {
             await connection.ExecuteAsync(
                 "SELECT AccountNo FROM dbo.BankAccount WITH (UPDLOCK, ROWLOCK) WHERE AccountNo IN (@fromAccountNo, @toAccountNo) ORDER BY AccountNo",

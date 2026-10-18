@@ -18,7 +18,8 @@ IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'BankAccount')
 BEGIN
     CREATE TABLE dbo.BankAccount
     (
-        AccountNo       VARCHAR(34)     NOT NULL PRIMARY KEY,
+        AccountNo       BIGINT          NOT NULL PRIMARY KEY
+                        CONSTRAINT CK_BankAccount_AccountNo CHECK (AccountNo BETWEEN 1000000000 AND 9999999999),   -- 10 hane
         AccountStatus   VARCHAR(20)     NOT NULL,
         Balance         DECIMAL(18,2)   NOT NULL DEFAULT 0,
         Email           VARCHAR(254)    NULL            -- onaylı satışta Notification servisi bu adrese e-posta atar
@@ -38,7 +39,8 @@ BEGIN
     (
         Id                      INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
         CardNumber              VARCHAR(19)     NOT NULL UNIQUE,
-        AccountNo               VARCHAR(34)     NOT NULL,
+        AccountNo               BIGINT          NOT NULL
+                                CONSTRAINT CK_Card_AccountNo CHECK (AccountNo BETWEEN 1000000000 AND 9999999999),   -- 10 hane
         CardType                VARCHAR(20)     NULL,
         ExpiryDate              CHAR(4)         NULL,           -- MMYY
         LastTransactionDate     DATETIME2       NULL,

@@ -34,7 +34,7 @@ public sealed class TransactionHandler(
     private sealed class Trace
     {
         public Guid? Id { get; set; }
-        public string? AccountNo { get; set; }
+        public long? AccountNo { get; set; }
         public string? Email { get; set; }      // sadece olaya konur, exception'a değil
     }
 

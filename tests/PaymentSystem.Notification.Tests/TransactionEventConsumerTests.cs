@@ -39,7 +39,7 @@ public class TransactionEventConsumerTests(KafkaFixture kafka) : IClassFixture<K
     {
         using var producer = new ProducerBuilder<string?, string>(new ProducerConfig { BootstrapServers = kafka.BootstrapServers }).Build();
         foreach (var value in values)
-            await producer.ProduceAsync(_topic, new Message<string?, string> { Key = "ACC1", Value = value });
+            await producer.ProduceAsync(_topic, new Message<string?, string> { Key = "1000000001", Value = value });
     }
 
     private static string Event(TransactionCompleted transaction) => JsonSerializer.Serialize(transaction, Json);

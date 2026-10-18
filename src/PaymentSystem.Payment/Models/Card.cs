@@ -12,8 +12,8 @@ public class Card
     [Required, StringLength(19)]
     public string CardNumber { get; set; } = null!;
 
-    [Required, StringLength(34)]
-    public string AccountNo { get; set; } = null!;
+    [Range(1000000000, 9999999999)]     // 10 hane; ilk hane 0 olamaz (DB'de BIGINT)
+    public long AccountNo { get; set; }
 
     [StringLength(20)]
     public string? CardType { get; set; }

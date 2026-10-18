@@ -45,20 +45,20 @@ public class HandlerTests
         var repository = new FakeCardRepository();
         var logger = new ListLogger<CardHandler>();
         var handler = new CardHandler(repository, TestSecrets.Hasher, logger);
-        var card = new Card { CardNumber = Pan, AccountNo = "ACC1" };
+        var card = new Card { CardNumber = Pan, AccountNo = 1000000001 };
 
         var (created, issued) = await handler.CreateAsync(card);
         Assert.Equal(WriteResult.Ok, created);
         Assert.Equal(TestSecrets.Hasher.HashCvv(Pan, issued!.Cvv), repository.StoredSecret!.CvvHash);
         Assert.Equal(TestSecrets.Hasher.HashPin(Pan, issued.Pin), repository.StoredSecret.PinHash);
-        Assert.Equal((WriteResult.Duplicate, null), await handler.CreateAsync(new Card { CardNumber = Pan, AccountNo = "ACC1" }));
+        Assert.Equal((WriteResult.Duplicate, null), await handler.CreateAsync(new Card { CardNumber = Pan, AccountNo = 1000000001 }));
         Assert.Same(card, await handler.GetByNumberAsync(Pan));
         Assert.Equal(WriteResult.NotFound, await handler.UpdateAsync(99, card));
-        Assert.Equal(WriteResult.CardNumberChanged, await handler.UpdateAsync(7, new Card { CardNumber = "5555444433332222", AccountNo = "ACC1" }));
-        Assert.Equal(WriteResult.Ok, await handler.UpdateAsync(7, new Card { CardNumber = Pan, AccountNo = "ACC2" }));
+        Assert.Equal(WriteResult.CardNumberChanged, await handler.UpdateAsync(7, new Card { CardNumber = "5555444433332222", AccountNo = 1000000001 }));
+        Assert.Equal(WriteResult.Ok, await handler.UpdateAsync(7, new Card { CardNumber = Pan, AccountNo = 1000000002 }));
         Assert.True(await handler.DeleteAsync(7));
 
-        Assert.Contains(logger.Messages, m => m.StartsWith("CreateAsync: card PAN 411111********11 account ACC1 -> Ok (id 7)"));
+        Assert.Contains(logger.Messages, m => m.StartsWith("CreateAsync: card PAN 411111********11 account 1000000001 -> Ok (id 7)"));
         Assert.Contains(logger.Messages, m => m.StartsWith("CreateAsync:") && m.Contains("-> Duplicate"));
         Assert.Contains(logger.Messages, m => m.StartsWith("GetByNumberAsync: card PAN 411111********11 found"));
         Assert.Contains(logger.Messages, m => m.StartsWith("UpdateAsync: card 99") && m.Contains("-> NotFound"));
@@ -77,7 +77,7 @@ public class HandlerTests
 
         public Task<IDebitSession> BeginAsync() => Task.FromResult<IDebitSession>(Session = new FakeSession(!Duplicate));
         public Task<PreviousResponse?> GetPreviousAsync(Guid id) =>
-            Task.FromResult<PreviousResponse?>(PreviousResponseCode is null ? null : new(PreviousResponseCode, "ACC1"));
+            Task.FromResult<PreviousResponse?>(PreviousResponseCode is null ? null : new(PreviousResponseCode, 1000000001));
     }
 
     private sealed class FakeSession(bool insertSucceeds) : IDebitSession
@@ -88,12 +88,12 @@ public class HandlerTests
 
         public Task<bool> TryInsertAsync(DebitTransaction transaction) => Task.FromResult(insertSucceeds);
         public Task<Card?> GetCardAsync(string cardNumber) =>
-            Task.FromResult<Card?>(new Card { CardNumber = cardNumber, AccountNo = "ACC1", ExpiryDate = "1299" });
+            Task.FromResult<Card?>(new Card { CardNumber = cardNumber, AccountNo = 1000000001, ExpiryDate = "1299" });
         public Task<byte[]?> GetCvvHashAsync(string cardNumber) => Task.FromResult<byte[]?>(null);
-        public Task<BankAccount?> GetAccountAsync(string accountNo) =>
+        public Task<BankAccount?> GetAccountAsync(long accountNo) =>
             Task.FromResult<BankAccount?>(new BankAccount { AccountNo = accountNo, AccountStatus = "Active", Email = "musteri@example.com" });
-        public Task<bool> TryDebitAsync(string accountNo, decimal amount) => Task.FromResult(true);
-        public Task<bool> TryTransferAsync(string fromAccountNo, string toAccountNo, decimal amount) => Task.FromResult(true);
+        public Task<bool> TryDebitAsync(long accountNo, decimal amount) => Task.FromResult(true);
+        public Task<bool> TryTransferAsync(long fromAccountNo, long toAccountNo, decimal amount) => Task.FromResult(true);
         public Task SetCardLastTransactionAsync(string cardNumber, decimal amount) => Task.CompletedTask;
 
         public Task SetResponseCodeAsync(Guid id, string responseCode)
@@ -148,7 +148,7 @@ public class HandlerTests
         Assert.True(repository.Session.Disposed);
 
         var published = Assert.Single(Events.Events);
-        Assert.Equal(("Sale", "00", "0000", "ACC1", "musteri@example.com", "411111********11"),
+        Assert.Equal(("Sale", "00", "0000", 1000000001, "musteri@example.com", "411111********11"),
             (published.TransactionType, published.ResponseCode, published.Irc, published.AccountNo, published.Email, published.MaskedCardNumber));
         Assert.Equal((TransactionCompleted.Type, 1), (published.EventType, published.Version));
     }
@@ -159,7 +159,7 @@ public class HandlerTests
         var repository = new FakeTransactionRepository { Duplicate = true, PreviousResponseCode = "51" };
 
         var ex = await Assert.ThrowsAsync<TransactionException>(() => TransactionHandler(repository).ProcessAsync(Sale()));
-        Assert.Equal(("51", "Duplicate request: Declined with F39 51", "ACC1"), (ex.ResponseCode, ex.Description, ex.AccountNo));
+        Assert.Equal(("51", "Duplicate request: Declined with F39 51", 1000000001), (ex.ResponseCode, ex.Description, ex.AccountNo));
         Assert.Null(repository.Session!.ResponseCode);
         Assert.False(repository.Session.Committed);
         Assert.True(repository.Session.Disposed);

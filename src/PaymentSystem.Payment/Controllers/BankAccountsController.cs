@@ -12,8 +12,8 @@ public class BankAccountsController(BankAccountHandler accounts) : ControllerBas
     [HttpGet]
     public Task<IReadOnlyList<BankAccount>> GetAll() => accounts.GetAllAsync();
 
-    [HttpGet("{accountNo}")]
-    public async Task<ActionResult<BankAccount>> Get(string accountNo) =>
+    [HttpGet("{accountNo:long}")]
+    public async Task<ActionResult<BankAccount>> Get(long accountNo) =>
         await accounts.GetAsync(accountNo) is { } account ? account : NotFound();
 
     [HttpPost]
@@ -24,11 +24,11 @@ public class BankAccountsController(BankAccountHandler accounts) : ControllerBas
 
     // Body'deki Balance yok sayılır: bakiye sadece hesap açılırken verilir, sonra işlemlerle değişir.
     // Email body'de yoksa silinir (PUT tüm düzenlenebilir alanları yazar).
-    [HttpPut("{accountNo}")]
-    public async Task<IActionResult> Update(string accountNo, BankAccount input) =>
+    [HttpPut("{accountNo:long}")]
+    public async Task<IActionResult> Update(long accountNo, BankAccount input) =>
         await accounts.UpdateAsync(accountNo, input.AccountStatus, input.Email) == WriteResult.NotFound ? NotFound() : NoContent();
 
-    [HttpDelete("{accountNo}")]
-    public async Task<IActionResult> Delete(string accountNo) =>
+    [HttpDelete("{accountNo:long}")]
+    public async Task<IActionResult> Delete(long accountNo) =>
         await accounts.DeleteAsync(accountNo) ? NoContent() : NotFound();
 }

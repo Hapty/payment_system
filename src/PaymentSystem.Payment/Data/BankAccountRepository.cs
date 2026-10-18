@@ -16,7 +16,7 @@ public sealed class BankAccountRepository(SqlConnectionFactory db) : IBankAccoun
         return rows.AsList();
     }
 
-    public async Task<BankAccount?> GetAsync(string accountNo)
+    public async Task<BankAccount?> GetAsync(long accountNo)
     {
         await using var connection = db.Create();
         return await connection.QuerySingleOrDefaultAsync<BankAccount>(
@@ -40,7 +40,7 @@ public sealed class BankAccountRepository(SqlConnectionFactory db) : IBankAccoun
     }
 
     // Durum ve e-posta değişir. Bakiye hesap açılırken verilir; sonrasında yalnızca işlemlerle (ISO8583 akışı) değişir.
-    public async Task<WriteResult> UpdateAsync(string accountNo, string accountStatus, string? email)
+    public async Task<WriteResult> UpdateAsync(long accountNo, string accountStatus, string? email)
     {
         await using var connection = db.Create();
         var affected = await connection.ExecuteAsync(
@@ -49,7 +49,7 @@ public sealed class BankAccountRepository(SqlConnectionFactory db) : IBankAccoun
         return affected == 0 ? WriteResult.NotFound : WriteResult.Ok;
     }
 
-    public async Task<bool> DeleteAsync(string accountNo)
+    public async Task<bool> DeleteAsync(long accountNo)
     {
         await using var connection = db.Create();
         return await connection.ExecuteAsync("DELETE FROM dbo.BankAccount WHERE AccountNo = @accountNo", new { accountNo }) > 0;

@@ -12,7 +12,7 @@ public sealed record TransactionCompleted(
     string ResponseCode,            // F39
     string Irc,                     // iç karar kodu
     string MaskedCardNumber,
-    string? AccountNo,              // kart bulunamadıysa null
+    long? AccountNo,                // kart bulunamadıysa null
     string? Email,                  // hesabın e-postası; hesap / e-posta yoksa null
     decimal Amount,                 // F4, işlemin kendi para biriminde
     string CurrencyCode,            // F49, ISO 4217 sayısal (949 = TRY)

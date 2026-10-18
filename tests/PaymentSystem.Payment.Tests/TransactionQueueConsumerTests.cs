@@ -48,8 +48,8 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
             INSERT INTO dbo.MtiProcessingCode (Mti, F3_ProcessingCode, Otc, Ots) VALUES ('0200', '000000', '10', '11');
             INSERT INTO dbo.EntryMode (Code, Name, IsContactless) VALUES ('05', 'Chip', 0);
             INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('3002', 'Insufficient funds', '51');
-            INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES ('ACC1', 'Active', 1000);
-            INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed) VALUES (@Pan, 'ACC1', '1228', 1);
+            INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES (1000000001, 'Active', 1000);
+            INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed) VALUES (@Pan, 1000000001, '1228', 1);
             """,
             new { Pan });
     }
@@ -126,7 +126,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
     private async Task<decimal> BalanceAsync()
     {
         await using var connection = Db.Create();
-        return await connection.ExecuteScalarAsync<decimal>("SELECT Balance FROM dbo.BankAccount WHERE AccountNo = 'ACC1'");
+        return await connection.ExecuteScalarAsync<decimal>("SELECT Balance FROM dbo.BankAccount WHERE AccountNo = 1000000001");
     }
 
     private async Task<int> TransactionCountAsync()
@@ -160,7 +160,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
             "F14 (Son Kullanma)=2812 F22 (Giriş Yöntemi)=051 F41 (Terminal No)=TERM0001 F49 (Para Birimi)=949",
             ConsumerLogger.Messages);
         Assert.Contains("HandleAsync: replied request-1 F39 (Cevap Kodu)=00", ConsumerLogger.Messages);
-        Assert.Contains("SaleAsync: debited TRY 150 from account ACC1 F11 (STAN)=000001 F2 (Kart No)=411111********11", HandlerLogger.Messages);
+        Assert.Contains("SaleAsync: debited TRY 150 from account 1000000001 F11 (STAN)=000001 F2 (Kart No)=411111********11", HandlerLogger.Messages);
         Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale ") && m.EndsWith("F41 (Terminal No)=TERM0001 F11 (STAN)=000001 F2 (Kart No)=411111********11 committed -> IRC 0000 F39 (Cevap Kodu)=00"));
         Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains(Pan));
     }
@@ -204,7 +204,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.EndsWith("IRC 3002 F39 (Cevap Kodu)=51"));
         Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: transaction request-1 F41 (Terminal No)=TERM0001 F11 (STAN)=000001")
             && m.Contains("not approved: F39 (Cevap Kodu)=51 Insufficient funds (IRC 3002)")
-            && m.EndsWith("F2 (Kart No)=411111********11 account ACC1"));
+            && m.EndsWith("F2 (Kart No)=411111********11 account 1000000001"));
     }
 
     [Theory]

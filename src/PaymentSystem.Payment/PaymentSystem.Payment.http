@@ -7,20 +7,20 @@ GET {{host}}/api/bank-accounts
 POST {{host}}/api/bank-accounts
 Content-Type: application/json
 
-{ "accountNo": "TR01", "accountStatus": "Active", "balance": 1000.00, "email": "musteri@example.com" }
+{ "accountNo": 1000000001, "accountStatus": "Active", "balance": 1000.00, "email": "musteri@example.com" }
 
 ###
-GET {{host}}/api/bank-accounts/TR01
+GET {{host}}/api/bank-accounts/1000000001
 
 ###
 # Bakiye değişmez, sadece durum ve e-posta güncellenir (email gönderilmezse silinir)
-PUT {{host}}/api/bank-accounts/TR01
+PUT {{host}}/api/bank-accounts/1000000001
 Content-Type: application/json
 
-{ "accountNo": "TR01", "accountStatus": "Blocked", "balance": 999999, "email": "musteri@example.com" }
+{ "accountNo": 1000000001, "accountStatus": "Blocked", "balance": 999999, "email": "musteri@example.com" }
 
 ###
-DELETE {{host}}/api/bank-accounts/TR01
+DELETE {{host}}/api/bank-accounts/1000000001
 
 ### ---------- Card ----------
 GET {{host}}/api/cards
@@ -32,7 +32,7 @@ Content-Type: application/json
 
 {
   "cardNumber": "4111111111111111",
-  "accountNo": "TR01",
+  "accountNo": 1000000001,
   "cardType": "Debit",
   "expiryDate": "1228",
   "contactlessAllowed": true,
@@ -44,7 +44,7 @@ Content-Type: application/json
 POST {{host}}/api/bank-accounts
 Content-Type: application/json
 
-{ "accountNo": "TR02", "accountStatus": "Active", "balance": 0 }
+{ "accountNo": 1000000002, "accountStatus": "Active", "balance": 0 }
 
 ###
 POST {{host}}/api/cards
@@ -52,7 +52,7 @@ Content-Type: application/json
 
 {
   "cardNumber": "5406680000000002",
-  "accountNo": "TR02",
+  "accountNo": 1000000002,
   "cardType": "Debit",
   "expiryDate": "1228",
   "contactlessAllowed": true,
@@ -68,7 +68,7 @@ Content-Type: application/json
 
 {
   "cardNumber": "4111111111111111",
-  "accountNo": "TR01",
+  "accountNo": 1000000001,
   "cardType": "Credit",
   "expiryDate": "1229",
   "contactlessAllowed": false

@@ -8,7 +8,7 @@ namespace PaymentSystem.Payment.Transactions;
 public sealed class TransactionException : Exception
 {
     public TransactionException(
-        string responseCode, string? irc, string description, string cardNumber, Guid? transactionId, string? accountNo,
+        string responseCode, string? irc, string description, string cardNumber, Guid? transactionId, long? accountNo,
         Exception? innerException = null)
         : base(Format(responseCode, irc, description, PanMask.Mask(cardNumber), transactionId, accountNo), innerException)
     {
@@ -36,11 +36,11 @@ public sealed class TransactionException : Exception
     public Guid? TransactionId { get; }
 
     // Kart bulunamadıysa ya da karar karttan önce verildiyse null.
-    public string? AccountNo { get; }
+    public long? AccountNo { get; }
 
     // 91 (örn. DB'ye ulaşılamadı) ve 96 (IRC tanımsız): iş reddi değil, sistem hatası.
     public bool IsTechnical => ResponseCode is ResponseCodes.SystemUnavailable or ResponseCodes.SystemMalfunction;
 
-    private static string Format(string responseCode, string? irc, string description, string maskedPan, Guid? transactionId, string? accountNo) =>
-        $"F39 {responseCode} {description} (IRC {irc ?? "-"}) transaction {transactionId?.ToString() ?? "-"} PAN {maskedPan} account {accountNo ?? "-"}";
+    private static string Format(string responseCode, string? irc, string description, string maskedPan, Guid? transactionId, long? accountNo) =>
+        $"F39 {responseCode} {description} (IRC {irc ?? "-"}) transaction {transactionId?.ToString() ?? "-"} PAN {maskedPan} account {accountNo?.ToString() ?? "-"}";
 }

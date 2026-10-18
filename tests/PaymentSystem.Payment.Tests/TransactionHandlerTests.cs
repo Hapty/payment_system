@@ -13,7 +13,7 @@ namespace PaymentSystem.Payment.Tests;
 public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fixture)
 {
     private const string Pan = "4111111111111111";
-    private const string AccountNo = "ACC1";
+    private const long AccountNo = 1000000001;
     private const string Email = "musteri@example.com";
 
     // Testler takvime bağlı olmasın diye "bugün" sabit: 15 Mart 2026.
@@ -218,7 +218,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         Assert.Equal("14", await AuthorizeAsync(request));
 
         var published = Assert.Single(Events.Events);
-        Assert.Equal(("14", (string?)null, (string?)null), (published.ResponseCode, published.AccountNo, published.Email));
+        Assert.Equal(("14", (long?)null, (string?)null), (published.ResponseCode, published.AccountNo, published.Email));
     }
 
     [Fact]
@@ -794,9 +794,9 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     // ---------- Karttan karta para transferi (F3 400000, alıcı kart F48) ----------
 
     private const string RecipientPan = "5406680000000002";
-    private const string RecipientAccountNo = "ACC2";
+    private const long RecipientAccountNo = 1000000002;
 
-    private async Task SeedRecipientAsync(string accountNo = RecipientAccountNo, string status = "Active", decimal balance = 200m,
+    private async Task SeedRecipientAsync(long accountNo = RecipientAccountNo, string status = "Active", decimal balance = 200m,
         bool withAccount = true)
     {
         await using var connection = Db.Create();
@@ -817,7 +817,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         return request;
     }
 
-    private async Task<decimal> BalanceOfAsync(string accountNo)
+    private async Task<decimal> BalanceOfAsync(long accountNo)
     {
         await using var connection = Db.Create();
         return await connection.ExecuteScalarAsync<decimal>("SELECT Balance FROM dbo.BankAccount WHERE AccountNo = @accountNo", new { accountNo });

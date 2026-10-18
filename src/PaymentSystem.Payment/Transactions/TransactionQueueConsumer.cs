@@ -160,7 +160,7 @@ public sealed class TransactionQueueConsumer(
                 "(IRC {Irc}) transaction {TransactionId} {Pan} account {AccountNo}",
                 nameof(DecideAsync), properties.CorrelationId, IsoLog.Field(41, request.TerminalId), IsoLog.Field(11, request.Stan),
                 IsoLog.Field(39, ex.ResponseCode), ex.Description, ex.Irc ?? "-", ex.TransactionId?.ToString() ?? "-",
-                IsoLog.Field(2, ex.CardNumber), ex.AccountNo ?? "-");
+                IsoLog.Field(2, ex.CardNumber), ex.AccountNo?.ToString() ?? "-");
             return ex.ResponseCode;
         }
     }

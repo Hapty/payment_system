@@ -20,7 +20,7 @@ public class TransactionNotifierTests
         var email = Assert.Single(_sender.Sent);
         Assert.Equal("musteri@example.com", email.To);
         Assert.Equal("Kartınızla 1.500,00 TRY tutarında satış yapıldı", email.Subject);
-        Assert.Contains(_logger.Messages, m => m.StartsWith($"HandleAsync: {TestEvents.Id} PAN 411111********11 account ACC1 emailed (attempt 1)"));
+        Assert.Contains(_logger.Messages, m => m.StartsWith($"HandleAsync: {TestEvents.Id} PAN 411111********11 account 1000000001 emailed (attempt 1)"));
     }
 
     [Theory]
@@ -43,7 +43,7 @@ public class TransactionNotifierTests
         Assert.Equal(NotificationResult.NoEmail, await Notifier().HandleAsync(TestEvents.ApprovedSale(email: email), CancellationToken.None));
 
         Assert.Empty(_sender.Sent);
-        Assert.Contains(_logger.Messages, m => m == $"HandleAsync: {TestEvents.Id} account ACC1 has no email - not notified");
+        Assert.Contains(_logger.Messages, m => m == $"HandleAsync: {TestEvents.Id} account 1000000001 has no email - not notified");
     }
 
     [Fact]
@@ -77,7 +77,7 @@ public class TransactionNotifierTests
         var notifier = Notifier(maxAttempts: 2);
 
         Assert.Equal(NotificationResult.Failed, await notifier.HandleAsync(TestEvents.ApprovedSale(), CancellationToken.None));
-        Assert.Contains(_logger.Messages, m => m == $"HandleAsync: {TestEvents.Id} account ACC1 could not be emailed after 2 attempts - giving up");
+        Assert.Contains(_logger.Messages, m => m == $"HandleAsync: {TestEvents.Id} account 1000000001 could not be emailed after 2 attempts - giving up");
 
         // Gönderilemeyen işlem "gönderildi" sayılmaz: aynı olay tekrar gelirse yeniden denenir.
         Assert.Equal(NotificationResult.Sent, await notifier.HandleAsync(TestEvents.ApprovedSale(), CancellationToken.None));

@@ -16,7 +16,7 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
     private static Card NewCard(string number = "4111111111111111") => new()
     {
         CardNumber = number,
-        AccountNo = "ACC1",
+        AccountNo = 1000000001,
         CardType = "Debit",
         ExpiryDate = "1228",
         ContactlessAllowed = true,
@@ -46,7 +46,7 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
 
         var card = (await Controller.Get(id)).Value!;
 
-        Assert.Equal(("4111111111111111", "ACC1", "Debit", "1228"), (card.CardNumber, card.AccountNo, card.CardType, card.ExpiryDate));
+        Assert.Equal(("4111111111111111", 1000000001, "Debit", "1228"), (card.CardNumber, card.AccountNo, card.CardType, card.ExpiryDate));
         Assert.True(card.ContactlessAllowed);
         Assert.Equal(750m, card.ContactlessLimit);
     }
@@ -93,7 +93,7 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
 
         Assert.Matches("^[0-9]{3}$", issued.Cvv);
         Assert.Matches("^[0-9]{4}$", issued.Pin);
-        Assert.Equal(("4111111111111111", "ACC1", "Debit", "1228"), (issued.CardNumber, issued.AccountNo, issued.CardType, issued.ExpiryDate));
+        Assert.Equal(("4111111111111111", 1000000001, "Debit", "1228"), (issued.CardNumber, issued.AccountNo, issued.CardType, issued.ExpiryDate));
 
         // CardSecret'ta düz değer değil, HMAC'leri durur.
         await using var connection = Db.Create();
