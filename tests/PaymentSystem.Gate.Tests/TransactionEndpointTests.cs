@@ -37,7 +37,7 @@ public class TransactionEndpointTests
 
         var ok = Assert.IsType<Ok<TransactionResponse>>(await PostAsync(Sale()));
 
-        Assert.Equal(new TransactionResponse("0210", paymentCode, "123456", "261002123456"), ok.Value);
+        Assert.Equal(new TransactionResponse("0210", paymentCode, "123456"), ok.Value);
         var forwarded = Assert.Single(_payment.Requests);
         Assert.Equal(15000, forwarded.AmountMinor);
         Assert.Equal("5999", forwarded.MerchantType);
@@ -94,7 +94,6 @@ public class TransactionEndpointTests
         var ok = Assert.IsType<Ok<TransactionResponse>>(await PostAsync(request));
 
         Assert.Equal("00", ok.Value!.ResponseCode);
-        Assert.Null(ok.Value.Rrn);
         Assert.Null(Assert.Single(_payment.Requests).CardExpiry);
     }
 
@@ -177,8 +176,8 @@ public class TransactionEndpointTests
             LocalTime = "143025", CardExpiry = "2712", MerchantType = null, Rrn = null, MerchantId = null,
             RecipientCardNumber = "5406680000000002", Cvv = "123"
         }, request);
-        Assert.Equal("""{"mti":"0210","F39":"00","F11":"000001","F37":null}""",
-            JsonSerializer.Serialize(new TransactionResponse("0210", "00", "000001", null), JsonSerializerOptions.Web));
+        Assert.Equal("""{"mti":"0210","F39":"00","F11":"000001"}""",
+            JsonSerializer.Serialize(new TransactionResponse("0210", "00", "000001"), JsonSerializerOptions.Web));
     }
 
     [Theory]

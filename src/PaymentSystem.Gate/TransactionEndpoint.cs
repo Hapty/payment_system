@@ -32,8 +32,7 @@ public sealed record TransactionRequest(
 public sealed record TransactionResponse(
     [property: JsonPropertyName("mti")] string Mti,
     [property: JsonPropertyName("F39")] string ResponseCode,
-    [property: JsonPropertyName("F11")] string? Stan,
-    [property: JsonPropertyName("F37")] string? Rrn);
+    [property: JsonPropertyName("F11")] string? Stan);
 
 // İşlemlerin sisteme tek giriş noktası. İstek ISO8583 mesajına çevrilir ve her alan ISO8583 tanımına göre doğrulanır;
 // bozuk ya da eksik alan 400 ile, hangi alanda ne sorun olduğu yazılarak döner. Geçerli istek TransactionHandler'a gider.
@@ -121,6 +120,6 @@ public static class TransactionEndpoint
         var response = await handler.ProcessAsync(message, request.Cvv, request.LocalDate, cancellationToken);
         logger.LogInformation("{Method}: responding {ResponseMti} {Stan} {ResponseCode}",
             nameof(HandleAsync), response.Mti, IsoLog.Field(11, response[11]), IsoLog.Field(39, response[39]));
-        return TypedResults.Ok(new TransactionResponse(response.Mti, response[39]!, response[11], response[37]));
+        return TypedResults.Ok(new TransactionResponse(response.Mti, response[39]!, response[11]));
     }
 }
