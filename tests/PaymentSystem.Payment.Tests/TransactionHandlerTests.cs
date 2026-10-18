@@ -15,6 +15,8 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     private const string Pan = "4111111111111111";
     private const long AccountNo = 1000000001;
     private const string Email = "musteri@example.com";
+    private const string MerchantId = "TRENDYOL";
+    private const string MerchantType = "5399";
 
     // Testler takvime bağlı olmasın diye "bugün" sabit: 15 Mart 2026.
     private FixedClock Clock { get; } = new(new DateTimeOffset(2026, 3, 15, 10, 0, 0, TimeSpan.Zero));
@@ -43,11 +45,12 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
 
     private sealed record StoredTransaction(
         string Mti, string F2_CardNo, string Otc, string Ots, decimal F4_Amount, decimal? LocalTxnAmount,
-        string F12_TransactionTime, string F13_TransactionDate, string F43_Description, string? F39_ResponseCode);
+        string F12_TransactionTime, string F13_TransactionDate, string? F42_MerchantId, string F43_Description, string? F39_ResponseCode);
 
     // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql, 03_seed_entry_modes.sql, 04_seed_internal_response_codes.sql) ve bir hesap + kartı yeniden ekler.
     private async Task SeedAsync(decimal balance = 1000m, string status = "Active", string? expiry = "1228",
-        bool contactless = true, decimal? contactlessLimit = 750m, string? email = Email, bool withSecret = true)
+        bool contactless = true, decimal? contactlessLimit = 750m, string? email = Email, bool withSecret = true,
+        string merchantStatus = "Active")
     {
         await using var connection = Db.Create();
         await connection.ExecuteAsync(
@@ -58,12 +61,13 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
             INSERT INTO dbo.EntryMode (Code, Name, IsContactless)
                 VALUES ('00', 'Unknown', 0), ('01', 'Manual', 0), ('02', 'MagneticStripe', 0), ('05', 'Chip', 0),
                        ('07', 'ContactlessChip', 1), ('90', 'MagneticStripeFullTrack', 0), ('91', 'ContactlessMagneticStripe', 1), ('81', 'ECommerce', 0);
-            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('1005', 'Recipient card (F48) missing or invalid', '30'), ('1006', 'Transfer to the same account', '12'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('2006', 'CVV2 missing or does not match', 'N7'), ('2007', 'Recipient card not found', '14'), ('2008', 'Recipient account not active', '62'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('9001', 'Exchange rate unavailable or stale', '91');
+            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('1005', 'Recipient card (F48) missing or invalid', '30'), ('1006', 'Transfer to the same account', '12'), ('1007', 'Merchant ID (F42) missing', '30'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('2006', 'CVV2 missing or does not match', 'N7'), ('2007', 'Recipient card not found', '14'), ('2008', 'Recipient account not active', '62'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('4001', 'Merchant not found', '03'), ('4002', 'Merchant not active', '03'), ('4003', 'Merchant type (F18) does not match merchant', '03'), ('9001', 'Exchange rate unavailable or stale', '91');
+            INSERT INTO dbo.Merchant (MerchantId, Name, MerchantType, Status) VALUES (@MerchantId, 'TRENDYOL', @MerchantType, @merchantStatus);
             INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance, Email) VALUES (@AccountNo, @status, @balance, @email);
             INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit)
                 VALUES (@Pan, @AccountNo, @expiry, @contactless, @contactlessLimit);
             """,
-            new { AccountNo, Pan, status, balance, expiry, contactless, contactlessLimit, email });
+            new { AccountNo, Pan, status, balance, expiry, contactless, contactlessLimit, email, MerchantId, MerchantType, merchantStatus });
         if (withSecret)
             await connection.ExecuteAsync(
                 "INSERT INTO dbo.CardSecret (CardNumber, CvvHash, PinHash) VALUES (@Pan, @cvvHash, @pinHash)",
@@ -83,10 +87,10 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         LocalDate = "20260315",
         TerminalId = "TERM0001",
         CardExpiry = "2812",
-        MerchantType = "5999",
+        MerchantType = MerchantType,
         EntryMode = "051",
         Rrn = "260315000001",
-        MerchantId = "MERCHANT0000001",
+        MerchantId = MerchantId.PadRight(15),     // F42 sabit 15 karakter
         CardAcceptor = "PAYMENT SYSTEM POS SIMULATOR".PadRight(40)
     };
 
@@ -125,7 +129,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         return (await connection.QueryAsync<StoredTransaction>(
             """
             SELECT Mti, F2_CardNo, Otc, Ots, F4_Amount, LocalTxnAmount, F12_TransactionTime, F13_TransactionDate,
-                   F43_Description, F39_ResponseCode
+                   F42_MerchantId, F43_Description, F39_ResponseCode
             FROM dbo.DebitTransaction
             """)).AsList();
     }
@@ -140,11 +144,87 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         Assert.Equal(850m, await BalanceAsync());
         var stored = Assert.Single(await TransactionsAsync());
         Assert.Equal(("0200", Pan, "10", "11", 150m, 150m), (stored.Mti, stored.F2_CardNo, stored.Otc, stored.Ots, stored.F4_Amount, stored.LocalTxnAmount));
-        Assert.Equal(("125959", "20260315", "PAYMENT SYSTEM POS SIMULATOR", "00"),
-            (stored.F12_TransactionTime, stored.F13_TransactionDate, stored.F43_Description, stored.F39_ResponseCode));
+        Assert.Equal(("125959", "20260315", MerchantId, "PAYMENT SYSTEM POS SIMULATOR", "00"),
+            (stored.F12_TransactionTime, stored.F13_TransactionDate, stored.F42_MerchantId, stored.F43_Description, stored.F39_ResponseCode));
 
         await using var connection = Db.Create();
         Assert.Equal(150m, await connection.ExecuteScalarAsync<decimal>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @Pan", new { Pan }));
+    }
+
+    // ---------- İşyeri (F42) ----------
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("               ")]     // 15 boşluk
+    public async Task Sale_WithoutMerchantId_IsFormatErrorWithoutDebit(string? merchantId)
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.MerchantId = merchantId;
+
+        Assert.Equal("30", await AuthorizeAsync(request));
+
+        Assert.Equal(InternalResponseCodes.MerchantIdMissing, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task Sale_AtUnknownMerchant_IsDeclined03AndRecorded()
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.MerchantId = "UNKNOWN".PadRight(15);
+
+        Assert.Equal("03", await AuthorizeAsync(request));
+
+        Assert.Equal(InternalResponseCodes.MerchantNotFound, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+        var stored = Assert.Single(await TransactionsAsync());
+        Assert.Equal(("UNKNOWN", "03"), (stored.F42_MerchantId, stored.F39_ResponseCode));     // reddedilen işlem de işyeriyle kaydedilir
+    }
+
+    [Fact]
+    public async Task Sale_AtBlockedMerchant_IsDeclined03()
+    {
+        await SeedAsync(merchantStatus: "Blocked");
+
+        Assert.Equal("03", await AuthorizeAsync(Sale()));
+
+        Assert.Equal(InternalResponseCodes.MerchantNotActive, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task Sale_WithMerchantTypeOtherThanMerchants_IsDeclined03()
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.MerchantType = "5411";
+
+        Assert.Equal("03", await AuthorizeAsync(request));
+
+        Assert.Equal(InternalResponseCodes.MerchantTypeMismatch, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task Sale_WithoutMerchantType_SkipsMccCheck()
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.MerchantType = null;
+
+        Assert.Equal("00", await AuthorizeAsync(request));
+    }
+
+    [Fact]
+    public async Task Sale_WithUnpaddedMerchantId_IsApproved()
+    {
+        await SeedAsync();
+        var request = Sale();
+        request.MerchantId = MerchantId;
+
+        Assert.Equal("00", await AuthorizeAsync(request));
     }
 
     [Fact]

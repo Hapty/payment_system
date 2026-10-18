@@ -36,6 +36,21 @@ public class ModelValidationTests
         Assert.False(IsValid(new BankAccount { AccountNo = 1000000001, AccountStatus = "Active", Email = "not-an-email" }));
 
     [Fact]
+    public void Merchant_Valid() =>
+        Assert.True(IsValid(new Merchant { MerchantId = "TRENDYOL", Name = "TRENDYOL", MerchantType = "5399", Status = "Active" }));
+
+    [Theory]
+    [InlineData("539")]     // MCC tam 4 rakam
+    [InlineData("53990")]
+    [InlineData("53A9")]
+    public void Merchant_MerchantTypeNotFourDigits_IsInvalid(string mcc) =>
+        Assert.False(IsValid(new Merchant { MerchantId = "TRENDYOL", Name = "TRENDYOL", MerchantType = mcc, Status = "Active" }));
+
+    [Fact]
+    public void Merchant_MerchantIdTooLong_IsInvalid() =>
+        Assert.False(IsValid(new Merchant { MerchantId = new string('M', 16), Name = "X", MerchantType = "5399", Status = "Active" }));
+
+    [Fact]
     public void Card_Valid() =>
         Assert.True(IsValid(new Card { CardNumber = "4111111111111111", AccountNo = 1000000001, ExpiryDate = "1228" }));
 

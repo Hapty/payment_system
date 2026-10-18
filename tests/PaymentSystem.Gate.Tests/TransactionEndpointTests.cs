@@ -13,7 +13,7 @@ public class TransactionEndpointTests
     private static TransactionRequest Sale() => new(
         Mti: "0200", CardNumber: "4111111111111111", ProcessingCode: "000000", AmountMinor: 15000, CurrencyCode: "949",
         TransmissionDateTime: "1002143015", Stan: "123456", LocalTime: "173015", LocalDate: "20261002", TerminalId: "TERM0001",
-        CardExpiry: "2812", MerchantType: "5999", EntryMode: "051", Rrn: "261002123456", MerchantId: "MERCHANT0000001",
+        CardExpiry: "2812", MerchantType: "5999", EntryMode: "051", Rrn: "261002123456", MerchantId: "TRENDYOL       ",
         CardAcceptor: null);
 
     private async Task<IResult> PostAsync(TransactionRequest request) =>
@@ -41,7 +41,7 @@ public class TransactionEndpointTests
         var forwarded = Assert.Single(_payment.Requests);
         Assert.Equal(15000, forwarded.AmountMinor);
         Assert.Equal("5999", forwarded.MerchantType);
-        Assert.Equal("MERCHANT0000001", forwarded.MerchantId);
+        Assert.Equal("TRENDYOL       ", forwarded.MerchantId);
     }
 
     [Fact]
@@ -89,7 +89,7 @@ public class TransactionEndpointTests
     [Fact]
     public async Task OptionalFieldsCanBeLeftOut()
     {
-        var request = Sale() with { CardExpiry = null, MerchantType = null, EntryMode = null, Rrn = null, MerchantId = null };
+        var request = Sale() with { CardExpiry = null, MerchantType = null, EntryMode = null, Rrn = null };
 
         var ok = Assert.IsType<Ok<TransactionResponse>>(await PostAsync(request));
 
@@ -122,6 +122,13 @@ public class TransactionEndpointTests
 
         Assert.Equal("F4 is required.", Assert.Single(errors["F4"]));
         Assert.Equal("F11 is required.", Assert.Single(errors["F11"]));
+    }
+
+    [Fact]
+    public async Task MissingMerchantId_IsReported()
+    {
+        Assert.Equal("F42 is required.", Assert.Single((await ValidationErrorsAsync(Sale() with { MerchantId = null }))["F42"]));
+        Assert.Empty(_payment.Requests);
     }
 
     [Fact]

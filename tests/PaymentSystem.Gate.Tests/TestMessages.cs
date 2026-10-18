@@ -17,7 +17,7 @@ internal static class TestMessages
         .Set(22, "051")
         .Set(37, "261002123456")
         .Set(41, "TERM0001")
-        .Set(42, "MERCHANT0000001")
+        .Set(42, "TRENDYOL       ")
         .Set(49, "949");
 
     public static IsoMessage Echo() => new IsoMessage("0800")

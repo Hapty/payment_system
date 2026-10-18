@@ -87,6 +87,8 @@ public class HandlerTests
         public string? ResponseCode { get; private set; }
 
         public Task<bool> TryInsertAsync(DebitTransaction transaction) => Task.FromResult(insertSucceeds);
+        public Task<Merchant?> GetMerchantAsync(string merchantId) =>
+            Task.FromResult<Merchant?>(new Merchant { MerchantId = merchantId, Name = merchantId, MerchantType = "5399", Status = "Active" });
         public Task<Card?> GetCardAsync(string cardNumber) =>
             Task.FromResult<Card?>(new Card { CardNumber = cardNumber, AccountNo = 1000000001, ExpiryDate = "1299" });
         public Task<byte[]?> GetCvvHashAsync(string cardNumber) => Task.FromResult<byte[]?>(null);
@@ -134,7 +136,8 @@ public class HandlerTests
     private static TransactionRequest Sale() => new()
     {
         Mti = "0200", CardNumber = Pan, ProcessingCode = "000000", AmountMinor = 15000, CurrencyCode = "949",
-        TransmissionDateTime = "0315095959", Stan = "000001", LocalTime = "125959", LocalDate = "20260315", TerminalId = "TERM0001"
+        TransmissionDateTime = "0315095959", Stan = "000001", LocalTime = "125959", LocalDate = "20260315", TerminalId = "TERM0001",
+        MerchantId = "TRENDYOL       "
     };
 
     [Fact]

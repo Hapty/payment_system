@@ -22,6 +22,9 @@ public interface IDebitSession : IAsyncDisposable
     // false: aynı Guid'li kayıt zaten var (tekrar gelen istek). Aynı anda gelirse ilk transaction bitene kadar bekler.
     Task<bool> TryInsertAsync(DebitTransaction transaction);
 
+    // F42 ile işyeri; tabloda yoksa null.
+    Task<Merchant?> GetMerchantAsync(string merchantId);
+
     Task<Card?> GetCardAsync(string cardNumber);
 
     // dbo.CardSecret'taki CVV2 hash'i; kartın CardSecret satırı yoksa null.

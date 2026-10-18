@@ -78,7 +78,7 @@ public class TransactionHandlerTests
             "AuthorizeAsync: forwarding to Payment MTI 0200 | F2 (Kart No)=411111********11 F3 (İşlem Kodu)=000000 " +
             "F4 (Tutar, kuruş)=000000015000 F7 (Gönderim Zamanı)=1002143015 F11 (STAN)=123456 F12 (Yerel Saat)=173015 " +
             "F13 (Yerel Tarih)=20261002 F14 (Son Kullanma)=2812 F22 (Giriş Yöntemi)=051 F37 (RRN)=261002123456 " +
-            "F41 (Terminal No)=TERM0001 F42 (İşyeri No)=MERCHANT0000001 F49 (Para Birimi)=949",
+            "F41 (Terminal No)=TERM0001 F42 (İşyeri No)=TRENDYOL F49 (Para Birimi)=949",
             logger.Messages);
         Assert.Contains("AuthorizeAsync: Payment answered F11 (STAN)=123456 F39 (Cevap Kodu)=00", logger.Messages);
         Assert.Contains(logger.Messages, m => m.StartsWith("ProcessAsync: 0200 -> 0210 F11 (STAN)=123456 F2 (Kart No)=411111********11 F39 (Cevap Kodu)=00 in "));
@@ -111,11 +111,13 @@ public class TransactionHandlerTests
         Assert.Contains("AuthorizeAsync: 0200 F11 (STAN)=123456 is missing required fields F4 (Tutar, kuruş) - responding 30", logger.Messages);
     }
 
-    [Fact]
-    public async Task Sale_MissingRequiredField_IsFormatErrorAndNotForwarded()
+    [Theory]
+    [InlineData(4)]
+    [InlineData(42)]    // işyeri no: Payment'ta Merchant tablosunda aranır
+    public async Task Sale_MissingRequiredField_IsFormatErrorAndNotForwarded(int missing)
     {
         var request = new IsoMessage("0200");
-        foreach (var (field, value) in TestMessages.Sale().Fields.Where(f => f.Key != 4))
+        foreach (var (field, value) in TestMessages.Sale().Fields.Where(f => f.Key != missing))
             request.Set(field, value);
 
         var response = await ProcessAsync(request);

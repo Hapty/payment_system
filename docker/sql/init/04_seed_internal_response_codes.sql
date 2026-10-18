@@ -15,6 +15,7 @@ USING (VALUES
     ('1004', 'Currency not supported', '12'),
     ('1005', 'Recipient card (F48) missing or invalid', '30'),
     ('1006', 'Transfer to the same account', '12'),
+    ('1007', 'Merchant ID (F42) missing', '30'),
     ('2001', 'Card not found', '14'),
     ('2002', 'Card expired or F14 does not match', '54'),
     ('2003', 'Account not active', '62'),
@@ -25,6 +26,9 @@ USING (VALUES
     ('2008', 'Recipient account not active', '62'),
     ('3001', 'Amount is zero', '13'),
     ('3002', 'Insufficient funds', '51'),
+    ('4001', 'Merchant not found', '03'),
+    ('4002', 'Merchant not active', '03'),
+    ('4003', 'Merchant type (F18) does not match merchant', '03'),
     ('9001', 'Exchange rate unavailable or stale', '91')
 ) AS source (Irc, Description, F39_ResponseCode)
 ON target.Irc = source.Irc
