@@ -46,7 +46,7 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
                     INSERT INTO dbo.DebitTransaction
                         (Guid, Mti, F2_CardNo, F3_ProcessingCode, Otc, Ots, F4_Amount, F49_CurrencyCode, LocalTxnAmount,
                          F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F43_Description,
-                         RecipientCardNumber)
+                         F48_RecipientCardNo)
                     VALUES
                         (@Id, @Mti, @CardNumber, @ProcessingCode, @Otc, @Ots, @Amount, @CurrencyCode, @LocalAmount,
                          @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @CardAcceptor,
