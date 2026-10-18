@@ -23,4 +23,7 @@ public sealed record TransactionCompleted
     public string LocalTime { get; init; } = "";            // hhmmss
     public string? TerminalId { get; init; }
     public string? Stan { get; init; }
+    public string? RecipientMaskedCardNumber { get; init; } // sadece para transferinde
+    public long? RecipientAccountNo { get; init; }
+    public string? RecipientEmail { get; init; }
 }

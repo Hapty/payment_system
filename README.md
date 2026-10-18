@@ -2,7 +2,7 @@
 
 Kart işlemlerini (satış, bakiye sorgu) HTTP/JSON olarak alan ödeme sistemi. İşlemlerin tek girişi Gate'tir;
 Gate isteği RabbitMQ kuyruğuyla Payment'a iletir ve cevabı bekler. Payment her kararı Kafka'ya olay olarak yazar;
-Notification bu olaylardan onaylı satışları müşteriye e-postayla bildirir (asenkron, işlemi bekletmez).
+Notification bu olaylardan onaylı satışları ve karttan karta transferleri müşteriye e-postayla bildirir (asenkron, işlemi bekletmez).
 
 ```
 İstemci (Postman) ──HTTP / JSON──► Gate ──RabbitMQ (request-reply)──► Payment ──► SQL Server
@@ -12,7 +12,7 @@ Notification bu olaylardan onaylı satışları müşteriye e-postayla bildirir 
                                         Kafka: payment.transaction-events ◄┘ (her karar, bloklamadan)
                                                        │
                                                        ▼
-                                                 Notification ──SMTP (Gmail)──► müşterinin e-postası (onaylı satış)
+                                                 Notification ──SMTP (Gmail)──► müşterinin e-postası (onaylı satış / transfer)
 ```
 
 | Parça | Konum | Durum |
@@ -20,7 +20,7 @@ Notification bu olaylardan onaylı satışları müşteriye e-postayla bildirir 
 | Gate | `src/PaymentSystem.Gate` | `POST /api/transactions`: alanları ISO8583 tanımına göre doğrular, isteği kuyruğa yazar, Payment'ın cevabını (F39) döner |
 | ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli ve alan tanımları (Gate'in doğrulaması bunları kullanır); pack/unpack ve TCP framing |
 | Payment | `src/PaymentSystem.Payment` | Kuyruktan işlem akışı (TL ve döviz satış, bakiye sorgu) + Web API ile 4 tablonun CRUD'u ve TCMB kur cache'i. Dapper |
-| Notification | `src/PaymentSystem.Notification` | Kafka'daki işlem olaylarını okur, onaylı satışlarda hesabın e-postasına SMTP ile bildirim atar |
+| Notification | `src/PaymentSystem.Notification` | Kafka'daki işlem olaylarını okur, onaylı satış ve transferlerde hesabın (transferde iki tarafın) e-postasına SMTP ile bildirim atar |
 | RabbitMQ | `docker-compose.yml` | Gate ↔ Payment arası kuyruk; yönetim arayüzü http://localhost:15672 |
 | Kafka | `docker-compose.yml` | Payment'ın işlem olayları (`payment.transaction-events`); KRaft, tek node |
 | Veritabanı | `docker/sql` | Tablolar + seed |
@@ -191,7 +191,7 @@ Kurallar:
 - Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır). Kartın numarası da değiştirilemez: farklı numara gönderilirse `400` (CVV / PIN hash'i numaraya bağlı; yeni numara için yeni kart oluşturulur).
 - `AccountNo` (BankAccount ve Card) 10 haneli bir sayıdır (`1000000000`–`9999999999`, ilk hane 0 olamaz); JSON'da string değil sayı olarak gönderilir. Aralık dışı değer `400`, route'ta sayısal olmayan hesap no `404` döner.
 - `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus` ve `Email`'i değiştirir (`email` gönderilmezse silinir).
-- `BankAccount.Email` opsiyoneldir; doluysa onaylı satışlarda Notification servisi bu adrese e-posta atar (bkz. **Notification**).
+- `BankAccount.Email` opsiyoneldir; doluysa onaylı satış ve transferlerde (gönderen ya da alıcı olarak) Notification servisi bu adrese e-posta atar (bkz. **Notification**).
 - `Merchant.MerchantId` `POST`'ta sondaki boşluklar silinerek kaydedilir; `PUT` `Name`, `MerchantType` (tam 4 rakam) ve `Status`'u değiştirir. İşlem akışı işyerini cache'ten değil kendi transaction'ında okur: değişiklik bir sonraki işlemde geçerlidir.
 - `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
 - `Card` tablosunda CVV / PIN kolonu yok; hash'leri `CardSecret` tablosundadır, bkz. **CVV2 ve PIN**.
@@ -312,6 +312,7 @@ Commit edilen her karar (onay da red de) Kafka'daki `payment.transaction-events`
 - **Olmayanlar:** tekrar gelen istek (ilk istek olayını zaten yazdı), kayıt açılmayan red (tanımsız işlem tipi, `12`) ve teknik hata (`91`) olay üretmez.
 - **Anahtar:** hesap no; aynı hesabın olayları aynı partition'a düşer, sırası korunur (kart bulunamadıysa anahtar boş).
 - **PCI:** kart numarası sadece maskeli (`411111********11`) yazılır.
+- **Transfer:** `MoneyTransfer` olayında alıcı da taşınır: `recipientMaskedCardNumber`, `recipientAccountNo`, `recipientEmail` (alıcı kart bulunduysa; diğer işlemlerde `null`).
 - **Sürüm:** `eventType` (`TransactionCompleted`) ve `version` (`1`). Alan eklemek geriye uyumludur; alan silmek / anlamını değiştirmek `version`'ı artırır.
 
 ```json
@@ -319,7 +320,8 @@ Commit edilen her karar (onay da red de) Kafka'daki `payment.transaction-events`
   "responseCode": "00", "irc": "0000", "maskedCardNumber": "411111********11", "accountNo": 1000000001,
   "email": "musteri@example.com", "amount": 10.00, "currencyCode": "840", "localAmount": 492.15,
   "cardAcceptor": "PAYMENT SYSTEM POS SIMULATOR", "transactionDate": "20260315", "localTime": "125959",
-  "terminalId": "TERM0001", "stan": "000001", "eventType": "TransactionCompleted", "version": 1 }
+  "terminalId": "TERM0001", "stan": "000001", "recipientMaskedCardNumber": null, "recipientAccountNo": null,
+  "recipientEmail": null, "eventType": "TransactionCompleted", "version": 1 }
 ```
 
 Ayarlar (`appsettings.json` → `Kafka`, ya da `Kafka__BootstrapServers`): `BootstrapServers` (`localhost:9094`; compose'da `kafka:9092`), `Topic`, `MessageTimeoutMs` (30000).
@@ -328,9 +330,11 @@ Ayarlar (`appsettings.json` → `Kafka`, ya da `Kafka__BootstrapServers`): `Boot
 
 .NET 9 worker servisi (HTTP endpoint'i yok). `payment.transaction-events` topic'ini `notification` consumer group'uyla okur.
 
-- **Kime:** sadece **onaylı satış** (`transactionType = Sale` ve F39 `00`) bildirilir; red, bakiye sorgu ve bilinmeyen olay tipleri atlanır. E-posta olaydaki `email`'e (`BankAccount.Email`) gider; hesabın e-postası yoksa loglanıp geçilir.
-- **İçerik:** maskeli kart no, tutar ve para birimi, dövizse TL karşılığı, işyeri (F43), tarih / saat ve işlem no (Guid).
-- **Tekrar:** Kafka bir olayı birden fazla teslim edebilir; gönderilen son 10.000 işlemin Guid'i bellekte tutulur, aynı işleme ikinci e-posta gitmez.
+- **Kime:** sadece onaylı işlemler (F39 `00`) bildirilir; red, bakiye sorgu ve bilinmeyen olay tipleri atlanır. Hesabın e-postası yoksa o kişi loglanıp geçilir.
+  - **Satış** (`Sale`): olaydaki `email`'e (kartın hesabı).
+  - **Karttan karta transfer** (`MoneyTransfer`): gönderene (`email`) "… numaralı karta gönderildi", alıcıya (`recipientEmail`) "… numaralı karttan geldi"; iki ayrı e-posta.
+- **İçerik:** maskeli kart no (transferde iki kart da), tutar ve para birimi, dövizse TL karşılığı, işyeri (F43, sadece satışta), tarih / saat ve işlem no (Guid).
+- **Tekrar:** Kafka bir olayı birden fazla teslim edebilir; gönderilen son 10.000 e-postanın (işlem Guid'i, kişi) çifti bellekte tutulur, aynı kişiye ikinci e-posta gitmez. Transferde bir tarafa gönderilemeyen e-posta diğerini engellemez; olay tekrar gelirse sadece gönderilemeyen denenir.
 - **Hata:** gönderilemeyen e-posta `MaxAttempts` (3) kez, `RetryDelaySeconds` (5) arayla denenir, sonra loglanıp geçilir: tüketici o olayda takılı kalmaz. Offset olay işlendikten sonra saklanır; servis olayın ortasında kapanırsa açılınca aynı olay yeniden gelir.
 - **Topic:** servis açılışta topic yoksa oluşturur (Payment henüz hiç olay yazmamış olabilir). Group ilk kez açılıyorsa topic'in başından okur.
 
@@ -368,7 +372,7 @@ dotnet run --project src/PaymentSystem.Notification
 |---|---|---|
 | `tests/PaymentSystem.Gate.Tests` | HTTP endpoint'in alan doğrulaması, Gate'in karar mantığı (sahte Payment ile), gerçek RabbitMQ üzerinden request-reply (sahte Payment cevaplayıcısıyla: eşzamanlı istekler, geçersiz cevap, timeout + TTL, geç cevap), ISO8583 pack/unpack ve framing | **Docker** |
 | `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz çevrimi), kuyruk tüketicisi (gerçek RabbitMQ + SQL: cevap, `30`, süresi dolmuş istek, DB yokken `91`), 4 CRUD controller + Dapper repository'leri, model doğrulama, TCMB ayrıştırma + kur cache'i + arka plan servisi (sahte HTTP ile), işlem olayları (içerik, hangi kararda yayımlandığı, gerçek Kafka'ya yazım) | **Docker** |
-| `tests/PaymentSystem.Notification.Tests` | Bildirim kuralları (sadece onaylı satış, e-postasız hesap, tekrar gelen olay, yeniden deneme), e-posta içeriği, gerçek Kafka'dan okuma (bozuk olay atlanır), SMTP gönderimi (Mailpit container'ına; gerçek e-posta gitmez) | **Docker** |
+| `tests/PaymentSystem.Notification.Tests` | Bildirim kuralları (sadece onaylı satış ve transfer, transferde iki taraf, e-postasız hesap, tekrar gelen olay, yeniden deneme), e-posta içeriği, gerçek Kafka'dan okuma (bozuk olay atlanır), SMTP gönderimi (Mailpit container'ına; gerçek e-posta gitmez) | **Docker** |
 
 Testler [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek SQL Server, RabbitMQ, Kafka ve Mailpit container'ları başlatır (compose'dakiyle aynı imajlar). SQL Server'da `docker/sql/init/*.sql` script'leri çalıştırılır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
 
