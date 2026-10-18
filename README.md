@@ -1,393 +1,941 @@
 # Payment System
 
-Kart işlemlerini (satış, bakiye sorgu) HTTP/JSON olarak alan ödeme sistemi. İşlemlerin tek girişi Gate'tir;
-Gate isteği RabbitMQ kuyruğuyla Payment'a iletir ve cevabı bekler. Payment her kararı Kafka'ya olay olarak yazar;
-Notification bu olaylardan onaylı satışları ve karttan karta transferleri müşteriye e-postayla bildirir (asenkron, işlemi bekletmez).
+Kartlı ödeme işlemlerini (satış, bakiye sorgu, karttan karta transfer) uçtan uca işleyen, eğitim amaçlı ama gerçek
+bankacılık kavramlarıyla kurulmuş bir ödeme sistemi. .NET 9, SQL Server, RabbitMQ, Kafka ve SMTP kullanır.
+
+Bu README projeyi **öğrenmek** için yazıldı: önce büyük resim ve kavramlar, sonra bir işlemin baştan sona yolculuğu,
+ardından her endpoint'in tek tek anlatımı gelir. En sonda "hangi dosyayı hangi sırayla okumalıyım" diye bir öğrenme yolu var.
+
+## İçindekiler
+
+1. [Büyük resim](#1-büyük-resim)
+2. [Temel kavramlar (sözlük)](#2-temel-kavramlar-sözlük)
+3. [Kurulum ve çalıştırma](#3-kurulum-ve-çalıştırma)
+4. [İlk işlemine kadar: adım adım senaryo](#4-ilk-işlemine-kadar-adım-adım-senaryo)
+5. [Uçtan uca akış: bir satışın yolculuğu](#5-uçtan-uca-akış-bir-satışın-yolculuğu)
+6. [Endpoint'ler — Gate](#6-endpointler--gate-işlem-girişi)
+7. [Endpoint'ler — Payment yönetim API'si](#7-endpointler--payment-yönetim-apisi)
+8. [Servisler arası sözleşmeler (RabbitMQ, Kafka)](#8-servisler-arası-sözleşmeler)
+9. [Karar motoru: kontroller, IRC ve F39](#9-karar-motoru-kontroller-irc-ve-f39)
+10. [Veritabanı](#10-veritabanı)
+11. [Önemli tasarım konuları](#11-önemli-tasarım-konuları)
+12. [Notification servisi](#12-notification-servisi)
+13. [Ayarlar ve ortam değişkenleri](#13-ayarlar-ve-ortam-değişkenleri)
+14. [Testler, CI ve branch akışı](#14-testler-ci-ve-branch-akışı)
+15. [Kod haritası](#15-kod-haritası)
+16. [Öğrenme yolu](#16-öğrenme-yolu)
+17. [Bilinen sınırlar ve sıradaki adımlar](#17-bilinen-sınırlar-ve-sıradaki-adımlar)
+
+---
+
+## 1. Büyük resim
 
 ```
-İstemci (Postman) ──HTTP / JSON──► Gate ──RabbitMQ (request-reply)──► Payment ──► SQL Server
-                    POST :8080/api/transactions   payment.transactions     │  │
-                                                                           │  └─ CRUD + kur: http://localhost:5002 (yönetim)
-                                                                           │
-                                        Kafka: payment.transaction-events ◄┘ (her karar, bloklamadan)
-                                                       │
-                                                       ▼
-                                                 Notification ──SMTP (Gmail)──► müşterinin e-postası (onaylı satış / transfer)
+                         (1) HTTP/JSON                (2) RabbitMQ request-reply
+ İstemci (Postman/POS) ───────────────────► GATE ─────────────────────────────► PAYMENT ──(3) SQL──► SQL Server
+                       POST :8080             │      kuyruk: payment.transactions │
+                       /api/transactions      │                                   │
+                       ◄──────────────────────┘ ◄─────── amq.rabbitmq.reply-to ───┘
+                         (6) { mti, F39, F11 }           (5) { responseCode }      │
+                                                                                   │ (4) Kafka (bloklamadan)
+                                                         topic: payment.transaction-events
+                                                                                   ▼
+                                                                             NOTIFICATION ──SMTP──► müşterinin e-postası
+
+ Yönetici (Postman) ──HTTP──► PAYMENT :5002  (hesap, kart, işyeri, tanım tabloları CRUD + kur cache'i)
+                                 ▲
+                     TCMB today.xml (saatte bir kur çekilir)
 ```
 
-| Parça | Konum | Durum |
-|---|---|---|
-| Gate | `src/PaymentSystem.Gate` | `POST /api/transactions`: alanları ISO8583 tanımına göre doğrular, isteği kuyruğa yazar, Payment'ın cevabını (F39) döner |
-| ISO8583 kütüphanesi | `src/PaymentSystem.Iso8583` | Mesaj modeli ve alan tanımları (Gate'in doğrulaması bunları kullanır); pack/unpack ve TCP framing |
-| Payment | `src/PaymentSystem.Payment` | Kuyruktan işlem akışı (TL ve döviz satış, bakiye sorgu) + Web API ile 4 tablonun CRUD'u ve TCMB kur cache'i. Dapper |
-| Notification | `src/PaymentSystem.Notification` | Kafka'daki işlem olaylarını okur, onaylı satış ve transferlerde hesabın (transferde iki tarafın) e-postasına SMTP ile bildirim atar |
-| RabbitMQ | `docker-compose.yml` | Gate ↔ Payment arası kuyruk; yönetim arayüzü http://localhost:15672 |
-| Kafka | `docker-compose.yml` | Payment'ın işlem olayları (`payment.transaction-events`); KRaft, tek node |
-| Veritabanı | `docker/sql` | Tablolar + seed |
+| Servis / parça | Klasör | Ne yapar | Port |
+|---|---|---|---|
+| **Gate** | `src/PaymentSystem.Gate` | İşlemlerin **tek giriş kapısı**. JSON'u ISO8583 kurallarına göre doğrular, isteği RabbitMQ ile Payment'a gönderir, cevabı bekleyip istemciye döner. İş kuralı bilmez. | `8080` |
+| **Payment** | `src/PaymentSystem.Payment` | Sistemin **beyni**. Kuyruktan gelen işlemi karara bağlar (onay / red), parayı hareket ettirir, kaydı yazar, Kafka'ya olay basar. Ayrıca yönetim için CRUD API sunar. | `5002` |
+| **Notification** | `src/PaymentSystem.Notification` | Kafka'daki olayları dinler; onaylı satış ve transferlerde müşteriye e-posta atar. HTTP endpoint'i yoktur. | — |
+| **Iso8583** kütüphanesi | `src/PaymentSystem.Iso8583` | ISO8583 mesaj modeli, alan tanımları, pack/unpack, TCP framing, PAN maskeleme ve log biçimi. Gate ve Payment ortak kullanır. | — |
+| SQL Server | `docker/sql` | Hesaplar, kartlar, işlemler, tanım tabloları. | `1433` |
+| RabbitMQ | `docker-compose.yml` | Gate ↔ Payment arası senkron (request-reply) haberleşme. | `5672`, arayüz `15672` |
+| Kafka | `docker-compose.yml` | Payment'ın "ne oldu" olayları; asenkron tüketiciler için. | `9094` |
 
-## Veritabanı (MS SQL Server, Docker)
+**Neden üç ayrı servis?**
 
-### Kurulum
+- **Gate** dış dünyaya açık kapıdır: format kontrolü, protokol çevirisi. İş kuralı burada olmaz; böylece ileride TCP/ISO8583 gibi
+  başka bir giriş eklense de karar mantığı tek yerde (Payment) kalır.
+- **Payment** ile Gate arasında kuyruk olması, Payment kapalıyken bile Gate'in ayakta kalmasını ve kontrollü `91` dönmesini sağlar.
+- **Notification** işlemi bekletmemeli: e-posta sunucusu yavaş ya da kapalıysa satış yine de anında onaylanmalı. Bu yüzden
+  Kafka üzerinden asenkron çalışır. Yarın fraud/raporlama gibi yeni tüketiciler Payment'a dokunmadan eklenebilir.
+
+---
+
+## 2. Temel kavramlar (sözlük)
+
+Kodda ve bu dokümanda sürekli geçen terimler:
+
+| Terim | Anlamı |
+|---|---|
+| **ISO 8583** | Kartlı ödeme mesajlarının uluslararası standardı. Mesaj = MTI + bitmap + numaralı alanlar (F2, F3, …). Bu projede 1987 sürümü kullanılır. |
+| **MTI** | Message Type Indicator, 4 hane. `0200` = finansal istek, `0210` = onun cevabı. 3. hane çiftse istek, tekse cevaptır (`0800`→`0810`). |
+| **Bitmap** | Mesajda hangi alanların bulunduğunu gösteren bit dizisi. n. bit 1 ise Fn mesajda vardır. (`IsoMessagePacker`) |
+| **F2 – PAN** | Kart numarası (Primary Account Number). Loglarda daima maskelidir: `411111********11`. |
+| **F3 – Processing code** | İşlemin türü: `000000` satış, `310000` bakiye sorgu, `400000` karttan karta transfer. |
+| **F4 – Tutar** | Kuruş cinsinden: `15000` = 150,00. |
+| **F11 – STAN** | System Trace Audit Number: terminalin işleme verdiği sıra no. İstemci cevabı isteğiyle bununla eşleştirir. |
+| **F14** | Kartın son kullanma tarihi, `YYMM`. (DB'deki `Card.ExpiryDate` ise `MMYY`.) |
+| **F18 – MCC** | Merchant Category Code: işyeri tipi (`5411` market …). |
+| **F22 – Entry mode** | Kartın nasıl okunduğu: `05x` çip, `07x` temassız, `01x` elle giriş, `81x` e-ticaret. |
+| **F39 – Response code** | Kararın kendisi: `00` onay, `51` yetersiz bakiye, `14` geçersiz kart, `91` sistem ulaşılamıyor … |
+| **F41 / F42 / F43** | Terminal no / işyeri no / işyeri adı-yeri. |
+| **F48** | "Ek veri" alanı; bu sistemde **transferde alıcı kart no**. |
+| **F49** | Para birimi, ISO 4217 sayısal: `949` TRY, `840` USD, `978` EUR. |
+| **CVV2** | Kartın arkasındaki 3-4 hane. ISO8583:1987'de alanı yoktur, JSON'da ayrı `cvv` alanıyla gelir. Kart fiziksel olarak yokken (elle giriş, e-ticaret) zorunludur. |
+| **IRC** | Internal Response Code. Payment'ın kararı önce 4 haneli bir iç koddur (`3002` = bakiye yetersiz); POS'a dönen F39 bir tablodan (`InternalResponseCode`) bulunur. Böylece birkaç sebep aynı F39'a çıkabilir ve eşleme kod değiştirmeden değişebilir. |
+| **Otc / Ots** | İşlem tipini tanımlayan iki haneli kod çifti. `MTI + F3 → (Otc, Ots) → işlem adı` (`Sale`, `MoneyTransfer`, `BalanceInquiry`). |
+| **On-us** | Gönderen ve alıcı kartın ikisi de bu bankada. Bu sistemdeki transfer sadece on-us'tır. |
+| **Request-reply** | Kuyruk üzerinden "istek gönder, cevabını bekle" kalıbı. `CorrelationId` ile istek-cevap eşleşir. |
+| **Idempotency** | Aynı istek iki kez gelirse sonucun bir kez olması (para iki kez düşmemesi). |
+| **TTL** | Time To Live: kuyruktaki mesajın ömrü. Süresi dolan istek silinir. |
+| **Consumer group** | Kafka'da bir topic'i okuyan tüketici grubu. Her grup tüm olayları bağımsız okur. |
+| **PCI DSS** | Kart verisi güvenlik standardı. Gereği: tam PAN loglanmaz, CVV hiç saklanmaz. |
+
+---
+
+## 3. Kurulum ve çalıştırma
+
+### Gereksinimler
+- Docker Desktop
+- .NET 9 SDK (sadece lokal çalıştırma ve testler için)
+- Postman ya da VS Code / Rider'ın `.http` dosya desteği
+
+### İlk kurulum
 ```bash
 cp .env.example .env
-# .env içindeki MSSQL_SA_PASSWORD ve RABBITMQ_PASSWORD değerlerini güçlü şifrelerle değiştir,
-# e-posta bildirimleri için SMTP_USER ve SMTP_PASSWORD'ü doldur (bkz. Notification)
-docker compose up -d
 ```
+`.env` içini doldur:
 
-`db` servisi ayağa kalkıp sağlıklı (healthy) olduğunda, `db-init` servisi `docker/sql/init/` altındaki script'leri sırayla çalıştırıp `PaymentSystem` adlı veritabanını ve içindeki tabloları oluşturur (sistem `master` DB'si yerine ayrı bir DB kullanılır):
-
-- `BankAccount`
-- `Card`
-- `TransactionType`
-- `MtiProcessingCode`
-- `DebitTransaction`
-- `EntryMode`
-- `InternalResponseCode`
-- `Merchant`
-
-Script'ler idempotent'tir (`IF NOT EXISTS` / `MERGE`), yani container her yeniden başladığında tekrar çalışsa bile veriyi bozmaz.
-
-### Kalıcılık
-Veriler `payment_system_mssql_data` adlı Docker named volume'ünde tutulur. `docker compose down` / `docker compose up` ile veri kaybolmaz. Veriyi tamamen silmek için:
-```bash
-docker compose down -v
-```
-
-### Doğrulama
-```bash
-docker compose ps
-docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<şifreniz>' -C -d PaymentSystem -Q "SELECT name FROM sys.tables"
-```
-
-### DBeaver / diğer istemciler
-Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil) — tablolar orada.
-
-## Tablo Şeması
-
-| Tablo | Açıklama |
+| Anahtar | Açıklama |
 |---|---|
-| `BankAccount` | Hesap no (10 haneli sayı, `BIGINT`), hesap durumu, bakiye, e-posta (opsiyonel; bildirimler buraya gider) |
-| `Card` | Kart bilgileri, ilişkili hesap |
-| `Merchant` | İşyeri: `MerchantId` (F42, sondaki boşluklar olmadan), ad, MCC (`MerchantType`, F18), durum. Seed: `IYZICO` (7399), `TRENDYOL` (5399), `GETIR` (5411), `NETFLIX` (4899) |
-| `TransactionType` | (Otc, Ots) kombinasyonundan işlem tipine lookup (Sale, MoneyTransfer, BalanceInquiry) |
-| `MtiProcessingCode` | Gelen mesajın (Mti, F3_ProcessingCode) değerinden (Otc, Ots)'ye lookup — örn. `0200`+`000000` → Sale |
-| `InternalResponseCode` | İç karar kodundan (IRC) POS'a dönen F39'a lookup — örn. `3002` (bakiye yetersiz) → `51`. Birkaç IRC aynı F39'a çıkabilir |
-| `EntryMode` | F22'nin ilk iki hanesinden giriş yöntemine lookup ve temassız olup olmadığı (`IsContactless`) — örn. `05` → Chip, `07` → ContactlessChip. 3. hane (PIN yeteneği) karara girmez |
-| `DebitTransaction` | ISO8583 alanlarını taşıyan işlem kayıtları — kolon adları `F2_CardNo`, `F3_ProcessingCode`, `F4_Amount`, `F49_CurrencyCode`, `F12_TransactionTime`, `F13_TransactionDate`, `F14_CardExpiry`, `F18_MerchantCode`, `F22_EntryMode`, `F39_ResponseCode`, `F42_MerchantId`, `F43_Description`, `F48_RecipientCardNo` şeklinde ISO8583 field numarasını koruyor |
+| `MSSQL_SA_PASSWORD` | SQL Server `sa` şifresi (güçlü olmalı, yoksa SQL Server açılmaz) |
+| `RABBITMQ_PASSWORD` | RabbitMQ `payment` kullanıcısının şifresi |
+| `CARD_SECRET_KEY` | CVV/PIN hash anahtarı, **64 hex karakter**. PowerShell: `-join ((1..32) \| % { '{0:X2}' -f (Get-Random -Max 256) })` |
+| `SMTP_USER`, `SMTP_PASSWORD` | Gmail adresi ve 16 haneli uygulama şifresi (bkz. [Notification](#12-notification-servisi)). **Boşsa Notification servisi açılmaz**, diğerleri çalışır. |
 
-**Not:** Tablolar arasında foreign key yok — sadece database, tablo ve kolonlar oluşturuluyor. Sadece her tabloda kendi `PRIMARY KEY`'i var.
+### Hepsini ayağa kaldır
+```bash
+docker compose up -d --build
+docker compose ps
+```
 
-## Gate (PaymentSystem.Gate)
+Açılış sırası compose'daki `depends_on` ile garanti edilir:
 
-.NET 9 Web API. İşlemlerin sisteme tek giriş noktası: `POST /api/transactions` (port `8080`). Örnek istekler: `src/PaymentSystem.Gate/PaymentSystem.Gate.http`.
+```
+db (healthy) ──► db-init (SQL script'leri çalışır, biter) ──┐
+rabbitmq (healthy) ─────────────────────────────────────────┼──► payment
+kafka (healthy) ────────────────────────────────────────────┘      │
+rabbitmq (healthy) ──► gate                                   kafka ──► notification
+```
 
-Her istek için:
-1. JSON gövdesinde alanlar ISO8583 alan numarasıyla gelir (`"F2"`, `"F3"` ...). Gövde ISO8583 mesajına çevrilir ve her alan ISO8583 tanımına göre doğrulanır (aşağıdaki tablo). Bozuk ya da eksik alan → `400`; cevapta hangi alanda ne sorun olduğu yazar, istek Payment'a gitmez.
-2. `0200` (finansal) isteği RabbitMQ'daki `payment.transactions` kuyruğuna yazılır ve Payment'ın cevabı beklenir (bkz. **Gate ↔ Payment: RabbitMQ**). Diğer MTI'lar: F39=`12`.
-3. Cevap `200` ile döner; karar `F39` alanındadır. Onay da red de (`51` yetersiz bakiye ...) `200`'dür.
+`db-init`, `docker/sql/init/` altındaki script'leri sırayla çalıştırıp `PaymentSystem` veritabanını, tabloları ve seed
+verisini oluşturur. Script'ler idempotent'tir (`IF NOT EXISTS` / `MERGE`), her açılışta tekrar çalışması zararsızdır.
 
+| Adres | Ne |
+|---|---|
+| http://localhost:8080/api/transactions | Gate — işlem girişi |
+| http://localhost:5002/api/... | Payment — yönetim API'si |
+| http://localhost:15672 | RabbitMQ arayüzü (`payment` / `RABBITMQ_PASSWORD`) |
+| `localhost:1433` | SQL Server (DBeaver vb. ile bağlanırken Database: `PaymentSystem`) |
+
+### Loglar
+```bash
+docker logs -f payment_system_gate
+docker logs -f payment_system_payment
+docker logs -f payment_system_notification
+```
+Loglar tek satırlıdır ve her satır metot adıyla başlar (`HandleAsync: ...`). ISO alanları her iki serviste de aynı biçimde
+yazılır: `F2 (Kart No)=411111********11 F11 (STAN)=000001`. Bir işlemi Gate ve Payment loglarında STAN ile takip edebilirsin.
+
+### Veriyi sıfırlamak
+```bash
+docker compose down      # container'lar gider, DB verisi kalır (volume: payment_system_mssql_data)
+docker compose down -v   # DB verisi de silinir
+```
+Kafka'nın volume'ü yoktur; olaylar `down` ile silinir.
+
+### Bir servisi lokalde (IDE'den) çalıştırmak
+Aynı portu kullandıkları için önce ilgili container'ı durdur (`docker stop payment_system_payment`).
+
+```powershell
+# Payment (DB, RabbitMQ, Kafka container'ları ayakta olmalı)
+$env:MSSQL_SA_PASSWORD = "<şifre>"; $env:RABBITMQ_PASSWORD = "<şifre>"; $env:CARD_SECRET_KEY = "<64 hex>"
+dotnet run --project src/PaymentSystem.Payment --launch-profile http      # http://localhost:5002
+
+# Gate
+$env:RABBITMQ_PASSWORD = "<şifre>"
+dotnet run --project src/PaymentSystem.Gate --launch-profile http         # http://localhost:8080
+
+# Notification
+$env:Smtp__User = "gonderen@gmail.com"; $env:Smtp__Password = "<uygulama şifresi>"
+dotnet run --project src/PaymentSystem.Notification
+```
+Lokalde Kafka adresi `localhost:9094`, container içinde `kafka:9092`'dir (compose iki listener açar).
+
+---
+
+## 4. İlk işlemine kadar: adım adım senaryo
+
+Hazır istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http` (yönetim) ve `src/PaymentSystem.Gate/PaymentSystem.Gate.http` (işlemler).
+
+Seed verisiyle işyerleri (`TRENDYOL`, `GETIR`, `IYZICO`, `NETFLIX`) ve tanım tabloları hazır gelir; **hesap ve kart gelmez**, onları sen açarsın.
+
+**1) Gönderen hesabı aç** (1000 TL bakiye, e-postalı)
+```http
+POST http://localhost:5002/api/bank-accounts
+Content-Type: application/json
+
+{ "accountNo": 1000000001, "accountStatus": "Active", "balance": 1000.00, "email": "sen@example.com" }
+```
+
+**2) Bu hesaba kart çıkar** — cevaptaki `cvv` ve `pin`'i **not al**, bir daha hiçbir yerde göremezsin.
+```http
+POST http://localhost:5002/api/cards
+Content-Type: application/json
+
+{ "cardNumber": "4111111111111111", "accountNo": 1000000001, "cardType": "Debit",
+  "expiryDate": "1228", "contactlessAllowed": true, "contactlessLimit": 750.00 }
+```
 ```json
-// istek
+{ "id": 1, "cardNumber": "4111111111111111", "accountNo": 1000000001, "cardType": "Debit", "expiryDate": "1228",
+  "lastTransactionDate": null, "lastTransactionAmount": null, "contactlessAllowed": true, "contactlessLimit": 750.00,
+  "cvv": "482", "pin": "0731" }
+```
+
+**3) Gate üzerinden 150,00 TL satış yap** (`F14` = `2812`, yani kartın `1228`'inin YYMM hali)
+```http
+POST http://localhost:8080/api/transactions
+Content-Type: application/json
+
 { "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949",
-  "F7": "0315095959", "F11": "000001", "F12": "125959", "F13": "20260315", "F41": "TERM0001", "F42": "TRENDYOL       ",
-  "F14": "2812", "F22": "051" }
-// cevap
+  "F7": "1016095959", "F11": "000001", "F12": "125959", "F13": "20261016",
+  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F22": "051" }
+```
+```json
 { "mti": "0210", "F39": "00", "F11": "000001" }
 ```
 
-Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi (`MtiProcessingCode` tablosu). Loglarda alanlar Gate'te de Payment'ta da `F2 (Kart No)=411111********11` biçiminde, numarası ve ne olduğuyla yazılır (etiketler `Iso87Fields`'ta, biçim `IsoLog`'da); kart numaraları (F2, F48) maskelenir, CVV sadece `cvv=***` olarak görünür. Development modunda OpenAPI şeması `GET /openapi/v1.json`'dadır (Postman'a import edilebilir).
+**4) Sonucu doğrula**
+```http
+GET http://localhost:5002/api/bank-accounts/1000000001
+```
+Bakiye `850.00` olmalı. E-posta tanımlıysa ve SMTP ayarlıysa gelen kutuna "Kartınızla 150,00 TL tutarında satış yapıldı" benzeri bir e-posta düşer.
 
-### Alanlar
-| JSON | Alan | Format | Zorunlu (`0200`) |
+**5) Aynı satışı tekrar gönder** → yine `00` döner ama bakiye `850.00`'de kalır (idempotency, bkz. [11.1](#111-idempotency-aynı-istek-iki-kez-gelirse)).
+
+**6) Transfer dene**: ikinci bir hesap + kart aç (`1000000002` / `5406680000000002`), sonra `F3: "400000"` ve
+`F48: "5406680000000002"` ile istek at. İki tarafın bakiyesi de değişir, iki tarafa da e-posta gider.
+
+**7) Red senaryoları dene**: `F4`'ü bakiyeden büyük yap (`51`), olmayan kart (`14`), `F22: "812"` ve `cvv` yok (`N7`),
+`F42: "BILINMEYEN     "` (`03`), `F49: "840"` ile döviz satışı (TCMB kuru cache'teyse `00`).
+
+---
+
+## 5. Uçtan uca akış: bir satışın yolculuğu
+
+Yukarıdaki 3. adımdaki satış isteğinin sistemde izlediği yol, dosya ve metot adlarıyla:
+
+```
+İstemci          Gate                              RabbitMQ            Payment                                 SQL        Kafka     Notification
+   │ POST /api/transactions                            │                   │                                      │          │            │
+   │──────────────►│ ① TransactionEndpoint.HandleAsync │                   │                                      │          │            │
+   │               │   JSON → IsoMessage, alan doğrula │                   │                                      │          │            │
+   │               │   (hata → 400)                    │                   │                                      │          │            │
+   │               │ ② TransactionHandler.ProcessAsync │                   │                                      │          │            │
+   │               │   0200 mü? zorunlu alanlar?       │                   │                                      │          │            │
+   │               │ ③ RabbitMqPaymentClient           │                   │                                      │          │            │
+   │               │   publish (CorrelationId, TTL) ──►│ payment.transactions                                     │          │            │
+   │               │   cevabı bekle (≤10 sn)           │──────────────────►│ ④ TransactionQueueConsumer           │          │            │
+   │               │                                   │                   │   süresi dolmuş mu? JSON geçerli mi?  │          │            │
+   │               │                                   │                   │ ⑤ TransactionHandler.AuthorizeAsync  │          │            │
+   │               │                                   │                   │   işlem tipi (cache) → UUID v5        │          │            │
+   │               │                                   │                   │   BEGIN TRAN; INSERT DebitTransaction ───────────►│          │            │
+   │               │                                   │                   │   kontroller (işyeri, kart, CVV ...)  │          │            │
+   │               │                                   │                   │   UPDATE Balance ... WHERE >= amount ─────────────►│          │            │
+   │               │                                   │                   │   F39 yaz; COMMIT ─────────────────────────────────►│          │            │
+   │               │                                   │                   │ ⑥ olay yayımla (beklemeden) ─────────────────────────────────►│            │
+   │               │                                   │ reply-to          │ ⑦ { "responseCode": "00" } + ack     │          │            │
+   │               │◄──────────────────────────────────│◄──────────────────│                                      │          │ ⑧ consume  │
+   │◄──────────────│ ⑨ { mti: 0210, F39: 00, F11 }     │                   │                                      │          │──────────►│ e-posta
+```
+
+### ① Gate: HTTP isteğini al ve doğrula — `Gate/TransactionEndpoint.cs`
+- JSON gövdesi `TransactionRequest` record'una bağlanır. JSON alan adları ISO numaralarıdır (`"F2"`), C# tarafında okunur isimler (`CardNumber`).
+- `mti` 4 haneli bir **istek** MTI'ı değilse hemen `400`.
+- Her alan `Iso87Fields`'taki tanımla (`Fixed`/`LLVar`/`LLLVar`, uzunluk, karakter seti) doğrulanır. `F4` sayı olarak gelir, 12 haneye sıfırla doldurulur.
+- `0200` için zorunlu alanlar (`F2 F3 F4 F7 F11 F12 F13 F41 F42 F49`) eksikse hata listesine eklenir.
+- **F13 özel**: JSON'da `yyyymmdd` (gerçek bir tarih olmalı) gelir; ISO mesajına standart `MMDD` olarak girer, yıllı hali ayrıca Payment'a taşınır.
+- `cvv` 3 ya da 4 rakam olmalı; değeri hiçbir yere loglanmaz.
+- Herhangi bir hata varsa: `400 ValidationProblem` — her alanın hatası ayrı yazılır. İstek Payment'a **gitmez**.
+
+### ② Gate: karar ver ya da ilet — `Gate/TransactionHandler.cs`
+- MTI `0200` değilse (örn. `0800`) Payment'a gidilmez, `F39=12` döner.
+- `0200` ise zorunlu alanlar tekrar kontrol edilir (savunma amaçlı; eksikse `30`), sonra `PaymentRequest`'e çevrilip iletilir.
+- Gate **işlem tipini yorumlamaz** — satış mı transfer mi, Payment karar verir.
+- Cevapta istemcinin eşleştirme için kullandığı alanlar (`F2 F3 F4 F7 F11 F12 F13 F37 F41 F42 F49`) geri yansıtılır (echo); HTTP cevabına bunlardan `F11` konur.
+
+### ③ Gate → RabbitMQ — `Gate/Payment/RabbitMqPaymentClient.cs`
+- Rastgele bir `CorrelationId` üretilir ve bir `TaskCompletionSource` ile bekleme listesine (`_pending`) eklenir.
+- Mesaj `payment.transactions` kuyruğuna yazılır. Özellikleri:
+  - `ReplyTo = amq.rabbitmq.reply-to` (RabbitMQ'nun direct reply-to'su; ayrı cevap kuyruğu açılmaz)
+  - `Expiration` = `PaymentTimeoutSeconds` (TTL) ve `Timestamp` = gönderim anı
+- `PaymentTimeoutSeconds` (10 sn) içinde cevap gelmezse, RabbitMQ'ya ulaşılamazsa ya da cevap bozuksa → `91`. Bu sınıf asla exception fırlatmaz.
+- Bağlantı ilk istekte açılır; koparsa bir sonraki istekte yeniden kurulur. Yani RabbitMQ kapalıyken Gate açılır, istekler `91` alır.
+
+### ④ Payment: kuyruktan al — `Payment/Transactions/TransactionQueueConsumer.cs`
+- Arka plan servisi (`BackgroundService`); aynı anda en fazla **8** isteği işler (prefetch 8).
+- `Timestamp + Expiration` geçmişse istek **işlenmez ve cevaplanmaz**: Gate zaten `91` döndü, şimdi para düşmek yanlış olur.
+- JSON okunamıyorsa ya da `TransactionRequest` üzerindeki DataAnnotations geçmiyorsa → `30`.
+- `TransactionHandler`'dan ya F39 döner ya `TransactionException` gelir; ikisinde de sadece F39 Gate'e yazılır, mesaj `ack`lenir (asla kuyruğa geri konmaz).
+
+### ⑤ Payment: karar — `Payment/Transactions/TransactionHandler.cs`
+1. `MTI + F3 → (Otc, Ots) → işlem adı` bulunur (`ParameterCache`, DB'ye gitmeden). Tanımsızsa `1001 → 12`, **kayıt açılmaz**.
+2. TL karşılığı hesaplanır (TL ise kendisi, dövizse cache'teki TCMB kuruyla).
+3. İsteğin alanlarından deterministik bir **UUID v5** üretilir; bu, kaydın PK'sıdır.
+4. Tek SQL transaction'ı açılır ve `DebitTransaction` INSERT edilir. PK çakışırsa → bu bir **tekrar** isteğidir, ilk kararın F39'u döner.
+5. Kontroller sırayla yapılır (tam liste: [Bölüm 9](#9-karar-motoru-kontroller-irc-ve-f39)). İlk başarısız kontrol bir IRC döner.
+6. IRC → F39 tablodan bulunur, kayda yazılır, **COMMIT**. Reddedilen işlemler de kendi F39'uyla kaydedilir.
+7. Onaysa F39 döner; redse commit'ten **sonra** `TransactionException` fırlatılır (kayıt geri alınmasın diye).
+
+### ⑥ Payment → Kafka — `Payment/Events/KafkaTransactionEventPublisher.cs`
+Commit edilen her karar (onay ve red) `TransactionCompleted` olayı olarak `payment.transaction-events`'e yazılır. `Produce`
+bloklamaz; Kafka kapalı olsa bile Gate'e dönen cevap gecikmez.
+
+### ⑦ – ⑨ Cevap geri döner
+Payment `{ "responseCode": "00" }`'ı aynı `CorrelationId` ile reply-to'ya yazar → Gate bekleyen isteği bulur →
+HTTP `200 { "mti": "0210", "F39": "00", "F11": "000001" }`.
+
+### ⑧ Notification — `Notification/Events/TransactionEventConsumer.cs` → `TransactionNotifier.cs`
+Olay onaylı bir `Sale` ya da `MoneyTransfer` ise ilgili hesap(lar)ın e-postasına SMTP ile bildirim gönderilir. Bu adım tamamen
+asenkrondur; istemci cevabını çoktan almıştır.
+
+---
+
+## 6. Endpoint'ler — Gate (işlem girişi)
+
+Base URL: `http://localhost:8080`
+
+### `POST /api/transactions`
+
+Sisteme işlem sokmanın **tek** yolu. Satış, bakiye sorgu ve transfer aynı endpoint'ten, `F3` ile ayrışarak gelir.
+
+#### İstek alanları
+
+| JSON | ISO alanı | Format | `0200`'de zorunlu? | Not |
+|---|---|---|---|---|
+| `mti` | — | 4 rakam, istek MTI'ı | evet | Sadece `0200` işlenir; başka istek MTI'ı `F39=12` alır |
+| `F2` | Kart no (PAN) | 1–19 rakam (LLVAR) | evet | |
+| `F3` | İşlem kodu | n6 | evet | `000000` satış · `310000` bakiye sorgu · `400000` transfer |
+| `F4` | Tutar | JSON **sayı**, kuruş, en çok 12 hane | evet | `15000` = 150,00. Bakiye sorguda `0` |
+| `F7` | Gönderim zamanı | n10 `MMDDhhmmss` | evet | |
+| `F11` | STAN | n6 | evet | Cevapta geri döner |
+| `F12` | Yerel saat | n6 `hhmmss` | evet | Idempotency anahtarına girer |
+| `F13` | Yerel tarih | **n8 `yyyymmdd`**, gerçek tarih | evet | ISO'da MMDD'dir; Gate yıllı halini Payment'a ayrıca taşır |
+| `F41` | Terminal no | tam 8 karakter (ans) | evet | |
+| `F42` | İşyeri no | tam **15** karakter (ans) | evet | Kısa no sağdan boşlukla doldurulur: `"TRENDYOL       "`. `Merchant` tablosunda olmalı |
+| `F49` | Para birimi | n3 | evet | `949` TRY, `840` USD, `978` EUR … |
+| `F14` | Son kullanma | n4 `YYMM` | | Gelirse kartla uyuşmalı |
+| `F18` | İşyeri tipi (MCC) | n4 | | Gelirse işyerinin MCC'siyle aynı olmalı |
+| `F22` | Giriş yöntemi | n3 | | `051` çip · `071` temassız · `011` elle · `812` e-ticaret |
+| `F37` | RRN | an12 | | Doğrulanır ve iletilir; şu an saklanmaz |
+| `F43` | İşyeri adı/yeri | tam **40** karakter | | E-postada görünür |
+| `F48` | Ek veri | ans, 1–999 (LLLVAR) | transferde | Bu sistemde **alıcı kart no** |
+| `cvv` | — | 3 ya da 4 rakam | elle girişte / e-ticarette | ISO alanı değildir; loglanmaz, saklanmaz |
+
+#### Cevaplar
+
+| HTTP | Ne zaman | Gövde |
+|---|---|---|
+| `200` | İstek geçerliydi ve karara bağlandı — **onay da red de 200'dür** | `{ "mti": "0210", "F39": "<kod>", "F11": "<STAN>" }` |
+| `400` | MTI ya da alan formatı bozuk / zorunlu alan eksik. Payment'a gidilmez | ASP.NET `ValidationProblem` |
+
+Kararın kendisi her zaman `F39`'dadır. Gate'in kendi ürettiği kodlar:
+
+| F39 | Anlamı |
+|---|---|
+| `12` | Desteklenmeyen MTI (`0200` dışı istek) |
+| `30` | Zorunlu alan eksik (savunma; normalde 400'e takılır) |
+| `91` | Payment 10 sn içinde cevap vermedi, RabbitMQ'ya ulaşılamadı ya da cevap geçersizdi |
+
+Diğer tüm kodlar Payment'tan gelir (bkz. [Bölüm 9](#9-karar-motoru-kontroller-irc-ve-f39)).
+
+#### Örnek: 400 cevabı
+```json
+// istek
+{ "mti": "0200", "F2": "4111-1111", "F3": "000000", "F13": "1016", "F49": "TRY" }
+
+// cevap (400)
+{
+  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": {
+    "F2":  ["F2: Contains characters that are not allowed for Numeric."],
+    "F4":  ["F4 is required."],
+    "F7":  ["F7 is required."],
+    "F11": ["F11 is required."],
+    "F12": ["F12 is required."],
+    "F41": ["F41 is required."],
+    "F42": ["F42 is required."],
+    "F49": ["F49: Contains characters that are not allowed for Numeric."],
+    "F13": ["F13: Must be a date in yyyymmdd format, e.g. 20261002."]
+  }
+}
+```
+
+#### İşlem türlerine göre örnekler
+
+**Satış (TL, çip)** — `F3 000000`
+```json
+{ "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949",
+  "F7": "1016095959", "F11": "000001", "F12": "125959", "F13": "20261016",
+  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F22": "051" }
+```
+Bakiye düşer, kartın `LastTransactionDate/Amount`'ı güncellenir.
+
+**Döviz satışı** — `F49 840`, `F4 1000` = 10,00 USD. TL karşılığı TCMB döviz satış kuruyla hesaplanıp bakiyeden düşer.
+Kur cache'te yoksa / bayatsa `91`, TCMB'nin hiç yayımlamadığı bir para birimiyse (`999`) `12`.
+
+**Temassız satış** — `F22 071`. Kart temassıza kapalıysa `57`; TL karşılığı `ContactlessLimit`'i aşarsa `65`
+(gerçek hayatta terminal bu durumda çip + PIN ister).
+
+**E-ticaret satışı** — `F22 812` ve `"cvv": "482"` (kart açılırken dönen değer). `cvv` yoksa ya da yanlışsa `N7`.
+
+**Bakiye sorgu** — `F3 310000`, `F4 0`. Kart, işyeri ve hesap kontrolleri yapılır, onaylanırsa `00`.
+Para hareketi yoktur. (Bakiyenin cevapta F54 ile dönmesi henüz yok.)
+
+**Karttan karta transfer** — `F3 400000`, `F48` = alıcı kart no
+```json
+{ "mti": "0200", "F2": "4111111111111111", "F3": "400000", "F4": 15000, "F49": "949",
+  "F7": "1016100300", "F11": "000005", "F12": "130300", "F13": "20261016",
+  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F22": "051",
+  "F48": "5406680000000002" }
+```
+Gönderenden düşülür, alıcıya eklenir — ikisi aynı SQL transaction'ında. Dövizle de olabilir: iki tarafa da aynı TL karşılığı yansır.
+
+### `GET /openapi/v1.json` (sadece Development)
+Gate'in OpenAPI şeması. Postman'a import edilebilir.
+
+---
+
+## 7. Endpoint'ler — Payment yönetim API'si
+
+Base URL: `http://localhost:5002`
+
+Bu API **işlem yapmaz**; işlemlerin ihtiyaç duyduğu veriyi (hesap, kart, işyeri, tanımlar) yönetir. İşlemler Payment'a
+HTTP ile değil, sadece RabbitMQ kuyruğundan gelir.
+
+**Katmanlar** (her kaynak için aynı):
+```
+Controller (Controllers/)   sadece HTTP: sonucu 200/201/204/400/404/409'a çevirir
+   └─► Handler (Handlers/)   iş kuralları + loglama; gerekirse cache'i boşaltır
+         └─► Repository (Data/)   Dapper ile düz SQL
+```
+
+**Ortak kurallar**
+
+| Durum | HTTP |
+|---|---|
+| Liste / tekil okuma | `200` |
+| Oluşturma başarılı | `201 Created` + `Location` header'ı + oluşan kayıt |
+| Güncelleme / silme başarılı | `204 No Content` |
+| Model doğrulaması (DataAnnotations) geçmedi | `400 ValidationProblem` |
+| Kayıt yok | `404` |
+| Aynı anahtarla `POST` | `409 Conflict` (gövde: düz metin, örn. `"Account 1000000001 already exists."`) |
+
+- `PUT`'ta anahtar her zaman **URL'den** alınır; gövdedeki anahtar değişikliği yapmaz. Ama gövde yine de modelin doğrulamasından geçmelidir (örn. `accountNo` geçerli aralıkta olmalı).
+- "Var mı?" diye önce sorup sonra eklemek yerine DB'nin unique hatası (2627/2601) yakalanır; eşzamanlı iki `POST`'ta da doğru `409` döner.
+- Tablolar arasında FK yoktur (sadece `CardSecret → Card`); örneğin olmayan bir hesaba kart açılabilir, işlem sırasında `62` alır.
+
+---
+
+### 7.1 Banka hesapları — `/api/bank-accounts`
+
+Model:
+```json
+{ "accountNo": 1000000001, "accountStatus": "Active", "balance": 1000.00, "email": "musteri@example.com" }
+```
+| Alan | Kural |
+|---|---|
+| `accountNo` | 10 haneli **sayı** (`1000000000`–`9999999999`), JSON'da string değil |
+| `accountStatus` | zorunlu, ≤20 karakter. İşlem için `Active` olmalı (`Blocked`, `Closed` … red sebebidir) |
+| `balance` | TL. Sadece `POST`'ta verilir |
+| `email` | opsiyonel, geçerli e-posta. Doluysa onaylı satış/transferde bildirim gider |
+
+| Metot | Route | Açıklama | Cevaplar |
 |---|---|---|---|
-| `mti` | — | 4 hane, istek MTI'ı (`0200`) | evet |
-| `F2` | kart no (PAN) | rakam, 1–19 | evet |
-| `F3` | işlem kodu | n6 (`000000` satış, `310000` bakiye sorgu, `400000` para transferi) | evet |
-| `F4` | tutar | sayı, kuruş cinsinden (150,00 → `15000`), en fazla 12 hane | evet |
-| `F7` | gönderim zamanı | n10 MMDDhhmmss | evet |
-| `F11` | STAN | n6 | evet |
-| `F12` | yerel saat | n6 hhmmss | evet |
-| `F13` | yerel tarih | **n8 yyyymmdd** (gerçek bir tarih olmalı) | evet |
-| `F41` | terminal no | ans8 | evet |
-| `F49` | para birimi | n3 (949 = TRY, 840 = USD) | evet |
-| `F14` | son kullanma | n4 YYMM | |
-| `F18` | işyeri tipi | n4 | |
-| `F22` | giriş yöntemi | n3 (`051` çip, `071` temassız, `812` e-ticaret) | |
-| `F37` | RRN | an12 | |
-| `F42` | işyeri no | ans15 (kısa no sağdan boşlukla doldurulur, örn. `"TRENDYOL       "`); `Merchant` tablosunda olmalı | evet |
-| `F43` | işyeri adı / yeri | ans40 (tam 40 karakter) | |
-| `F48` | ek veri | ans..999 (LLLVAR); bu sistemde **alıcı kart no** | para transferinde |
-| `cvv` | — | 3 ya da 4 rakam (CVV2, kartın arkası) | elle girişte (`01x`) ve e-ticarette (`81x`) |
+| `GET` | `/api/bank-accounts` | Tüm hesaplar | `200 [ ... ]` |
+| `GET` | `/api/bank-accounts/{accountNo}` | Tek hesap | `200`, `404` (sayısal olmayan no da `404`) |
+| `POST` | `/api/bank-accounts` | Hesap aç (başlangıç bakiyesiyle) | `201`, `400`, `409` |
+| `PUT` | `/api/bank-accounts/{accountNo}` | **Sadece** `accountStatus` ve `email` değişir. Gövdedeki `balance` yok sayılır; `email` gönderilmezse **silinir** | `204`, `400`, `404` |
+| `DELETE` | `/api/bank-accounts/{accountNo}` | Hesabı sil | `204`, `404` |
 
-Alan tanımları `src/PaymentSystem.Iso8583/Iso87Fields.cs` içindedir. **F13** ISO8583'te n4 MMDD'dir: Gate JSON'da yıllı halini (`yyyymmdd`) alır, ISO mesajına MMDD olarak koyar, yıllı halini Payment'a ayrıca iletir (Payment tarihi yıl tahmin etmeden olduğu gibi saklar). `cvv` bir ISO8583:1987 alanı değildir (gerçek ağlarda markaya özel alt alanda taşınır, örn. Visa F126.10); Gate onu ISO mesajının dışında, ayrı alan olarak Payment'a iletir ve hiçbir yere loglamaz.
+> Bakiye neden PUT ile değişmiyor? Gerçek bir bankada bakiye sadece işlemlerle (kayıt bırakarak) değişir; doğrudan üzerine yazılamaz.
 
-### F39 (cevap kodu)
-| Kod | Kim üretir | Anlamı |
-|---|---|---|
-| `12` | Gate | Desteklenmeyen MTI |
-| `91` | Gate | Payment'tan `PaymentTimeoutSeconds` içinde cevap gelmedi, RabbitMQ'ya ulaşılamadı ya da cevap geçersiz |
-| diğer | Payment | Olduğu gibi döner (örn. `00` onay, `51` yetersiz bakiye) |
+---
 
-Payment'ın ürettiği kodlar (`00`, `12`, `13`, `14`, `30`, `51`, `54`, `57`, `62`, `65`, `91`, `N7`) için aşağıdaki **İşlem akışı** bölümüne bak.
+### 7.2 Kartlar — `/api/cards`
 
-### Ayarlar
-`src/PaymentSystem.Gate/appsettings.json` içindeki `Gate` bölümü, ya da `Gate__RabbitMqUri` gibi env var'lar. RabbitMQ şifresi `RABBITMQ_PASSWORD` env var'ından gelir.
-
-| Ayar | Varsayılan | |
-|---|---|---|
-| `RabbitMqUri` | `amqp://payment@localhost:5672` | Kuyruğun bulunduğu RabbitMQ (şifresiz) |
-| `PaymentTimeoutSeconds` | `10` | Bu süre içinde cevap gelmezse F39=`91`; isteğin kuyruktaki ömrü de bu süre |
-
-### Çalıştırma
-```bash
-# Docker (hepsi birlikte): http://localhost:8080
-docker compose up -d --build
-docker logs -f payment_system_gate
-
-# lokal (RabbitMQ container'ı ayaktayken; gate container'ı durdurulmuş olmalı, ikisi de 8080'i kullanır)
-$env:RABBITMQ_PASSWORD = "<şifreniz>"
-dotnet run --project src/PaymentSystem.Gate --launch-profile http
+Model:
+```json
+{ "id": 1, "cardNumber": "4111111111111111", "accountNo": 1000000001, "cardType": "Debit", "expiryDate": "1228",
+  "lastTransactionDate": null, "lastTransactionAmount": null, "contactlessAllowed": true, "contactlessLimit": 750.00 }
 ```
-
-## Gate ↔ Payment: RabbitMQ (request-reply)
-
-İstemci için akış senkron kalır: Gate isteği kuyruğa yazar ve aynı HTTP isteği içinde cevabı bekler.
-
-```
-Gate ──publish──► payment.transactions ──► Payment (TransactionQueueConsumer → TransactionHandler → TransactionRepository)
-  ▲   CorrelationId, ReplyTo, Expiration (TTL), Timestamp                 │
-  └──────────────── amq.rabbitmq.reply-to (aynı CorrelationId) ◄──────────┘
-```
-
-- **Eşleştirme:** Her istek rastgele bir `CorrelationId` taşır; Payment cevabı isteğin `ReplyTo` adresine (RabbitMQ'nun direct reply-to'su, ayrı cevap kuyruğu açılmaz) aynı `CorrelationId` ile yazar. Aynı anda gelen istekler karışmaz.
-- **Geç işlenme koruması:** Gate `PaymentTimeoutSeconds` dolunca `91` döner. İstek bu süreyi TTL (`Expiration`) olarak taşır: süresi dolan istek kuyruktan silinir; Payment da `Timestamp`'e bakıp kuyruktan almış olsa bile süresi dolmuş isteği işlemez. Böylece Payment sonradan ayağa kalksa bile istemcinin `91` aldığı işlemden para düşmez. Gate'e geç gelen cevap loglanıp atılır.
-- **Tekrar:** Aynı istek ikinci kez gelirse UUID v5 idempotency anahtarı (bkz. İşlem akışı) para düşmesini engeller.
-- **Kopma:** Gate RabbitMQ'ya ilk istekte bağlanır, bağlantı koparsa bir sonraki istekte yeniden bağlanır (o arada `91`). Payment bağlanamazsa 5 sn'de bir yeniden dener.
-- **Paralellik:** Payment aynı anda en fazla 8 isteği işler (prefetch 8).
-- Bilinen sınır: Payment isteği tam süre dolarken işlerse (işleme sırasında süre dolar) para düşer ama Gate `91` döner. Çözümü reversal (`0400`), sonraki adım.
-
-Kuyruklar ve mesaj trafiği yönetim arayüzünden izlenebilir: http://localhost:15672 (kullanıcı `payment`, şifre `RABBITMQ_PASSWORD`).
-
-## Payment (PaymentSystem.Payment)
-
-.NET 9 Web API; veritabanına **Dapper** (düz SQL) ile erişir. Şema EF migration'larıyla değil `docker/sql/init/` script'leriyle yönetilir.
-İşlemleri HTTP'den değil RabbitMQ kuyruğundan alır (bkz. **Gate ↔ Payment: RabbitMQ**). HTTP'de sadece yönetim için 4 tablonun CRUD endpoint'leri ve kur cache'i var.
-
-| Kaynak | Route |
+| Alan | Kural |
 |---|---|
-| BankAccount | `/api/bank-accounts`, `/api/bank-accounts/{accountNo}` |
-| Card | `/api/cards`, `/api/cards/{id}`, `/api/cards/by-number/{cardNumber}` |
-| TransactionType | `/api/transaction-types`, `/api/transaction-types/{otc}/{ots}` |
-| MtiProcessingCode | `/api/mti-processing-codes`, `/api/mti-processing-codes/{mti}/{f3}` |
-| Merchant | `/api/merchants`, `/api/merchants/{merchantId}` |
-| Kur cache'i (salt okunur, sadece `GET`) | `/api/exchange-rates`, `/api/exchange-rates/{840 \| USD}` |
+| `id` | DB üretir (IDENTITY) |
+| `cardNumber` | zorunlu, ≤19, benzersiz. **Değiştirilemez** |
+| `accountNo` | 10 haneli sayı; kartın bağlı olduğu hesap |
+| `expiryDate` | `MMYY`, tam 4 karakter (ISO F14 ise `YYMM` — dikkat!). Boşsa süre kontrolü yapılmaz |
+| `contactlessAllowed` | temassız işlem izni |
+| `contactlessLimit` | TL; boşsa limit yok |
+| `lastTransactionDate/Amount` | sadece işlem akışı yazar; CRUD ile yazılamaz |
 
-Katmanlar: **Controller** (sadece HTTP: sonucu 200/201/204/404/409'a çevirir) → **Handler** (`Handlers/`; iş kuralları ve `{Method}: ...` logları) → **Repository** (`Data/`; Dapper SQL, `I…Repository` arayüzleriyle). İşlem akışında controller yerine `TransactionQueueConsumer` → `TransactionHandler` → `TransactionRepository` vardır.
+| Metot | Route | Açıklama | Cevaplar |
+|---|---|---|---|
+| `GET` | `/api/cards` | Tüm kartlar | `200` |
+| `GET` | `/api/cards/{id}` | ID ile | `200`, `404` |
+| `GET` | `/api/cards/by-number/{cardNumber}` | Kart numarasıyla | `200`, `404` |
+| `POST` | `/api/cards` | Kart çıkar. CVV2 (3 hane) ve PIN (4 hane) **rastgele üretilir**, cevapta **bir kez** `cvv` ve `pin` olarak döner | `201`, `400`, `409` |
+| `PUT` | `/api/cards/{id}` | Tip, son kullanma, hesap, temassız ayarları değişir. Farklı `cardNumber` gönderilirse `400` | `204`, `400`, `404` |
+| `DELETE` | `/api/cards/{id}` | Kartı (ve `CardSecret` satırını, cascade) sil | `204`, `404` |
 
-Her kaynakta `GET` (liste + tekil), `POST`, `PUT`, `DELETE`. Aynı anahtarla `POST` → `409`, geçersiz alan → `400`, bulunamayan kayıt → `404`.
+> Kart numarası neden değiştirilemez? CVV/PIN hash'i kart numarasıyla birlikte hesaplanır (bkz. [11.4](#114-cvv2-ve-pin-güvenliği)). Numara değişirse
+> hash'ler anlamsızlaşır; gerçek bankalarda da yeni numara = yeni kart.
 
-Kurallar:
-- Anahtar alanlar `PUT` ile değişmez (route'taki değer esas alınır). Kartın numarası da değiştirilemez: farklı numara gönderilirse `400` (CVV / PIN hash'i numaraya bağlı; yeni numara için yeni kart oluşturulur).
-- `AccountNo` (BankAccount ve Card) 10 haneli bir sayıdır (`1000000000`–`9999999999`, ilk hane 0 olamaz); JSON'da string değil sayı olarak gönderilir. Aralık dışı değer `400`, route'ta sayısal olmayan hesap no `404` döner.
-- `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus` ve `Email`'i değiştirir (`email` gönderilmezse silinir).
-- `BankAccount.Email` opsiyoneldir; doluysa onaylı satış ve transferlerde (gönderen ya da alıcı olarak) Notification servisi bu adrese e-posta atar (bkz. **Notification**).
-- `Merchant.MerchantId` `POST`'ta sondaki boşluklar silinerek kaydedilir; `PUT` `Name`, `MerchantType` (tam 4 rakam) ve `Status`'u değiştirir. İşlem akışı işyerini cache'ten değil kendi transaction'ında okur: değişiklik bir sonraki işlemde geçerlidir.
-- `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
-- `Card` tablosunda CVV / PIN kolonu yok; hash'leri `CardSecret` tablosundadır, bkz. **CVV2 ve PIN**.
-- `POST /api/cards` cevabında kartın CVV2'si (`cvv`, 3 hane) ve PIN'i (`pin`, 4 hane) **bir kez** döner: kartın arkasına basılan değer ve PIN zarfının karşılığı. Sonradan hiçbir endpoint göstermez; not alınmalı.
-- Aynı anahtar kontrolü önce "var mı?" diye sorarak değil, DB'nin unique hatası (2627/2601) yakalanarak yapılır; eşzamanlı isteklerde de doğru `409` döner.
+---
 
-### Çalıştırma
-```bash
-# Docker (DB ile birlikte): http://localhost:5002
-docker compose up -d --build
+### 7.3 İşyerleri — `/api/merchants`
 
-# lokal (DB, RabbitMQ ve Kafka container'ları ayaktayken; payment container'ı durdurulmuş olmalı — ikisi de 5002'yi kullanır)
-$env:MSSQL_SA_PASSWORD = "<şifreniz>"
-$env:RABBITMQ_PASSWORD = "<şifreniz>"
-$env:CARD_SECRET_KEY = "<64 hex>"
-dotnet run --project src/PaymentSystem.Payment --launch-profile http
+Model:
+```json
+{ "merchantId": "TRENDYOL", "name": "TRENDYOL", "merchantType": "5399", "status": "Active", "createdAt": "2026-10-16T09:00:00" }
 ```
-Örnek istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http`.
-
-### İşlem akışı (`Transactions/`)
-`TransactionQueueConsumer` kuyruktaki isteği (`TransactionRequest` JSON) alır, `TransactionHandler`'a verir ve `{ "responseCode": "00" }` cevabını Gate'e yazar. Teknik hatalarda da cevap verilir: okunamayan / geçersiz mesaj → `30`, DB'ye ulaşılamadı gibi beklenmeyen hata → `91` (transaction commit edilmediği için para hareketi yok).
-
-Onaylanmayan her işlemde `TransactionHandler` bir `TransactionException` fırlatır. Bu exception iş reddinde de (`51`, `14`, `57` ...) teknik hatada da (`91`, `96`) şu alanları taşır:
-
-| Alan | İçerik |
+| Alan | Kural |
 |---|---|
-| `ResponseCode` / `Irc` | F39 ve iç kod (teknik hatada ve tekrar gelen istekte IRC yok) |
-| `Description` | `InternalResponseCode.Description` ya da teknik hatanın açıklaması |
-| `CardNumber` | **Maskeli** (`411111********11`) |
-| `TransactionId` | `DebitTransaction.Guid` (işlem tipi tanımsızsa kayıt açılmadığı için boş) |
-| `AccountNo` | Kartın hesabı (kart bulunamadıysa boş) |
+| `merchantId` | ≤15; F42 ile karşılaştırılır. `POST`'ta sondaki boşluklar silinerek kaydedilir |
+| `name` | zorunlu, ≤100 |
+| `merchantType` | MCC, tam 4 rakam |
+| `status` | işlem için `Active` olmalı |
+| `createdAt` | DB yazar; gövdedeki değer yok sayılır |
 
-Red kaydı F39'u ile commit edildikten sonra fırlatılır, kayıt geri alınmaz. `TransactionQueueConsumer` exception'ı yakalar: iş reddini uyarı, teknik hatayı hata olarak loglar ve Gate'e sadece F39'u döner (`{ "responseCode": "51" }`).
+| Metot | Route | Açıklama | Cevaplar |
+|---|---|---|---|
+| `GET` | `/api/merchants` | Tüm işyerleri | `200` |
+| `GET` | `/api/merchants/{merchantId}` | Tek işyeri | `200`, `404` |
+| `POST` | `/api/merchants` | İşyeri ekle | `201`, `400`, `409` |
+| `PUT` | `/api/merchants/{merchantId}` | `name`, `merchantType`, `status` değişir | `204`, `400`, `404` |
+| `DELETE` | `/api/merchants/{merchantId}` | Sil | `204`, `404` |
 
-1. `MtiProcessingCode` + `TransactionType` ile işlem tipi bulunur (tanım cache'inden, bkz. Tanım tabloları cache'i). Tanımsızsa IRC `1001` → `12` (kayıt açılmaz).
-2. Tek SQL transaction'ında `DebitTransaction` kaydı açılır. **Idempotency:** kaydın `Guid`'i rastgele değil, isteğin `MTI + F2 + F3 + F4 + F13 + F12` alanlarından türetilen bir UUID v5'tir (şemaya kolon eklenmez). Aynı istek tekrar gelirse (aynı anda gelse bile) aynı Guid PK'ya takılır, ilk işlemin F39'u aynen döner, para ikinci kez düşmez. Sınır: tabloda STAN / terminal no olmadığı için aynı kartla aynı saniyede aynı tutarda iki gerçek işlem, ikincisi tekrar sayılır.
-3. Kontroller, sırayla. Her sebep bir iç kod (IRC) üretir; POS'a dönen F39 `InternalResponseCode` tablosundan okunur (aşağıdaki F39'lar seed değerleridir). IRC tabloda yoksa hata loglanır ve `96` döner. Teknik hatalar (`30`, `91`) DB'ye bağlı olmadığı için kodda sabittir.
+Seed: `IYZICO` (7399), `TRENDYOL` (5399), `GETIR` (5411), `NETFLIX` (4899). İşlem akışı işyerini cache'ten değil kendi
+SQL transaction'ında okur; değişiklik **bir sonraki işlemde** geçerlidir.
 
-| Kontrol | IRC | F39 |
-|---|---|---|
-| F22 geldi ama ilk iki hanesi `EntryMode` tablosunda tanımlı değil (F22 yoksa temassız değil sayılır) | `1002` | `12` |
-| F42 yok (Gate zorunlu tutar; kuyruğa başka yoldan gelirse) | `1007` | `30` |
-| İşyeri (F42, sondaki boşluklar silinerek) `Merchant` tablosunda yok | `4001` | `03` |
-| İşyerinin `Status`'u `Active` değil | `4002` | `03` |
-| F18 geldi ama işyerinin `MerchantType`'ıyla (MCC) uyuşmuyor (F18 yoksa bakılmaz) | `4003` | `03` |
-| Kart yok | `2001` | `14` |
-| `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `2002` | `54` |
-| Kart fiziksel olarak yok (F22 `01x` elle giriş / `81x` e-ticaret) ama CVV2 gelmedi; ya da (hangi girişte olursa olsun) gelen CVV2 tutmuyor | `2006` | `N7` |
-| Hesap yok ya da `AccountStatus` `Active` değil | `2003` | `62` |
-| **Transfer:** F48 yok ya da kart numarası değil (1–19 rakam) | `1005` | `30` |
-| **Transfer:** alıcı kart (F48) yok | `2007` | `14` |
-| **Transfer:** alıcı kart gönderenle aynı hesapta (aynı kart dahil) | `1006` | `12` |
-| **Transfer:** alıcı kartın hesabı yok ya da `Active` değil | `2008` | `62` |
-| **Satış / transfer:** para birimi için TCMB kuru yok (ör. `999`) | `1004` | `12` |
-| **Satış / transfer:** döviz ama cache'te kur yok ya da bayat (bkz. Döviz kurları) | `9001` | `91` |
-| **Satış / transfer:** tutar 0 | `3001` | `13` |
-| **Satış:** temassız (`EntryMode.IsContactless`, seed'de `07x`/`91x`) ama kart temassıza kapalı | `2004` | `57` |
-| **Satış:** temassız limit (TL karşılık üzerinden) aşıldı (terminal çip + PIN ile tekrar dener) | `2005` | `65` |
-| **Satış / transfer:** bakiye yetersiz | `3002` | `51` |
-| Onay — satışta bakiye düşer; transferde gönderenden düşer, alıcıya eklenir; gönderen kartın `Card.LastTransaction*`'ı güncellenir | `0000` | `00` |
+---
 
-Limit, bakiye ve `Card.LastTransactionAmount` her zaman **TL karşılık** üzerinden yürür (hesaplar TL). Bakiye tek sorguda kontrol edilip düşülür (`... WHERE Balance >= @amount`), eşzamanlı satışlar hesabı eksiye düşüremez. Reddedilen işlemler de kendi F39'u ile kaydedilir. F13 Gate'ten `yyyymmdd` gelir ve olduğu gibi saklanır.
+### 7.4 İşlem tipleri — `/api/transaction-types`
 
-### Karttan karta para transferi (`0200` + F3 `400000`)
-Sadece bu sistemdeki kartlar arasında (on-us). Alıcı kart numarası **F48**'de gelir.
-- Gönderen kart için satıştaki ortak kontroller aynen yapılır: F22, kart, son kullanma (F14), CVV2 (elle giriş / e-ticarette zorunlu), hesap aktif mi.
-- Alıcı kart bulunmalı, gönderenle aynı hesapta olmamalı, hesabı `Active` olmalı. Alıcı kartın son kullanma tarihine bakılmaz.
-- Döviz de olabilir: iki hesap da TL olduğu için **TL karşılığı** (satıştaki kurla) gönderenden düşülür, alıcıya eklenir. Temassız limit uygulanmaz.
-- Düşme ve ekleme, `DebitTransaction` kaydıyla aynı SQL transaction'ındadır: ya ikisi birden olur ya hiçbiri. İki hesabın satırı önce PK sırasıyla kilitlenir; A→B ve B→A transferleri aynı anda gelse de deadlock olmaz.
-- Kayıt tek satırdır: gönderen `F2_CardNo`'da, alıcı `F48_RecipientCardNo`'da (reddedilen transferde de yazılır).
-
-### CVV2 ve PIN (`Cards/`, `CardSecret` tablosu)
-Kart oluşturulurken CVV2 (3 hane) ve PIN (4 hane) **rastgele** üretilir (`RandomNumberGenerator`). Düz halleri sadece `POST` cevabında bir kez döner; DB'ye `CardSecret` tablosuna **hash'leri** yazılır. `Card` ve `CardSecret` aynı SQL transaction'ında yazılır, kart silinince `CardSecret` satırı da silinir (`ON DELETE CASCADE`).
-
-```
-Kart oluşturulurken:  rastgele 123 / 4821 ──HMAC-SHA256(CARD_SECRET_KEY, PAN:cvv:123 / PAN:pin:4821)──► CardSecret.CvvHash / PinHash
-Satış sırasında:      gelen cvv        ──HMAC-SHA256(CARD_SECRET_KEY, PAN:cvv:<gelen>)──────────────► == CardSecret.CvvHash ?  hayır → N7
-```
-
-- **Neden anahtarlı hash (HMAC):** CVV'nin 1000, PIN'in 10.000 olası değeri var; düz SHA-256 olsaydı DB'yi ele geçiren hepsini saniyeler içinde dener. Anahtar DB'de değil ortam değişkenindedir, DB tek başına sızarsa hash'ler işe yaramaz. Hash geri çözülemez; doğrulamada gelen değer aynı şekilde hash'lenip karşılaştırılır (sabit zamanlı).
-- **Kart numarası hash'e girer:** aynı CVV'li iki kartın hash'i farklıdır. Bu yüzden kart numarası `PUT` ile değiştirilemez (`400`).
-- **Ne zaman kontrol edilir (CVV2):** kart fiziksel olarak yokken zorunlu: elle giriş (F22 `01x`) ve e-ticaret (`81x`). Çipli / temassız işlemde CVV istenmez (kart kendisi kriptogram üretir); ama yine de geldiyse doğrulanır.
-- **PIN** şimdilik sadece saklanır; işlemlerde doğrulanmaz (ileride F52 PIN block ile).
-- **Anahtar:** `CARD_SECRET_KEY` ortam değişkeni (`.env`), 64 hex = 32 bayt. Anahtar değişirse **tüm kartların CVV / PIN hash'i geçersiz olur**.
-- **Gerçek bankalarda** anahtar HSM'in içindedir ve dışarı çıkmaz. Hash `ICardSecretHasher` arayüzünün arkasında: Vault / Azure Key Vault / AWS Payment Cryptography gibi bir hizmete geçmek kontrol mantığını değiştirmez.
-- Düz CVV / PIN hiçbir yere yazılmaz: DB, loglar, Kafka olayı.
-- `CardSecret` tablosundan önce oluşturulan kartların satırı yoktur; onlarla elle giriş / e-ticaret yapılamaz (`N7`), çip / temassız işlemler etkilenmez. Yeni kart oluşturulmalı.
-
-### Tanım tabloları cache'i (`Parameters/`)
-`TransactionType` + `MtiProcessingCode` (işlem tipi yönlendirmesi) , `EntryMode` (F22) ve `InternalResponseCode` (IRC → F39) işlem başına DB'den okunmaz: `ParameterCache` dört tabloyu tek seferde `IMemoryCache`'e yükler, tanımsız bir kod da DB'ye gitmeden tanımsız sayılır.
-
-- **Yenileme:** yüklendikten `Parameters:RefreshMinutes` (varsayılan **10** dk; ortam değişkeni `Parameters__RefreshMinutes`) sonra ilk işlemde yeniden okunur.
-- **CRUD:** `/api/transaction-types` veya `/api/mti-processing-codes` ile yapılan başarılı bir ekleme / güncelleme / silme cache'i hemen boşaltır; sonraki işlem yeni tanımı görür.
-- **EntryMode / InternalResponseCode:** API'leri yok, doğrudan SQL ile değiştirilir; değişiklik en geç 10 dk içinde devreye girer.
-- **Sınır:** birden fazla Payment instance'ı çalışırsa CRUD sadece isteği alan instance'ın cache'ini boşaltır, diğerleri değişikliği en geç 10 dk içinde görür.
-
-### Döviz kurları (`ExchangeRates/`)
-```
-TCMB today.xml ──(açılışta + her saat)──► ExchangeRateRefresher ──yazar──► IMemoryCache ("fx:USD" ...)
-                                                                               │ sadece okur
-İstemci → Gate → RabbitMQ → Payment / TransactionHandler: TL karşılık = tutar × döviz satış kuru (kuruşa, yarım yukarı)
-```
-- İşlem akışı TCMB'ye **hiç gitmez**, kuru sadece cache'ten okur; satışın hızı dış servise bağlı değildir.
-- Kur: TCMB `ForexSelling` (döviz satış) / `Unit` (JPY gibi kurlar 100 birim için yayımlanır). F49'daki ISO 4217 sayısal kod TCMB'nin harf koduna çevrilir (`840` → USD, `978` → EUR ...).
-- `DebitTransaction.F4_Amount` orijinal döviz tutarı, `LocalTxnAmount` TL karşılığıdır (TL işlemde ikisi aynı).
-- Çekim başarısızsa (TCMB'ye ulaşılamadı, XML bozuk) cache'teki son kurlar kalır, `RetryMinutes` sonra tekrar denenir.
-- Kur, son başarılı çekimden `MaxAgeHours` geçince bayat sayılır → `91`. Bülten tarihine bakılmaz: hafta sonu / bayramda TCMB bülten yayımlamaz, o günlerde son bülten resmî kurdur.
-- Cache in-memory: Payment yeniden başlayınca boş açılır; ilk çekim bitene kadar (internet varsa 1 sn'nin altında) döviz satışları `91` alır. TL satışları etkilenmez.
-
-Cache'in içeriği `GET /api/exchange-rates` (hepsi) ve `GET /api/exchange-rates/{kod}` (sayısal `840` ya da harf `USD`) ile görülür. Her kur için `sellingRate`, `bulletinDate` (TCMB bülten tarihi), `fetchedAt` (çekim zamanı, UTC) ve `isStale` (`true` ise işlem akışı bu kuru kullanmaz, `91` döner) gelir. Cache'te olmayan para biriminde `404`. Endpoint TCMB'ye gitmez, sadece cache'i okur.
-
-Ayarlar (`appsettings.json` → `ExchangeRates`, ya da `ExchangeRates__RefreshMinutes` gibi ortam değişkenleri): `TcmbUrl`, `RefreshMinutes` (60), `RetryMinutes` (1), `MaxAgeHours` (24).
-
-### İşlem olayları (`Events/`)
-Commit edilen her karar (onay da red de) Kafka'daki `payment.transaction-events` topic'ine bir `TransactionCompleted` olayı olarak yazılır. Topic tek bir servise değil, "Payment'ta ne oldu" sorusuna aittir: her tüketici (bugün Notification; yarın fraud, raporlama ...) kendi consumer group'uyla okur ve ilgilendiği olayları kendisi seçer. Yeni tüketici eklemek için Payment'a dokunmak gerekmez.
-
-- **Bloklamaz:** olay kütüphanenin yerel kuyruğuna bırakılır, Gate'e dönen cevap Kafka'yı beklemez. Kafka kapalıysa olay `MessageTimeoutMs` (30 sn) boyunca denenir, sonra loglanıp bırakılır; işlemin kendisi etkilenmez (outbox yok, bilinçli tercih).
-- **Olmayanlar:** tekrar gelen istek (ilk istek olayını zaten yazdı), kayıt açılmayan red (tanımsız işlem tipi, `12`) ve teknik hata (`91`) olay üretmez.
-- **Anahtar:** hesap no; aynı hesabın olayları aynı partition'a düşer, sırası korunur (kart bulunamadıysa anahtar boş).
-- **PCI:** kart numarası sadece maskeli (`411111********11`) yazılır.
-- **Transfer:** `MoneyTransfer` olayında alıcı da taşınır: `recipientMaskedCardNumber`, `recipientAccountNo`, `recipientEmail` (alıcı kart bulunduysa; diğer işlemlerde `null`).
-- **Sürüm:** `eventType` (`TransactionCompleted`) ve `version` (`1`). Alan eklemek geriye uyumludur; alan silmek / anlamını değiştirmek `version`'ı artırır.
+`(Otc, Ots)` çiftinin adı. İşlem akışı adı (`Sale`, `MoneyTransfer`, `BalanceInquiry`) kullanarak dallanır.
 
 ```json
-{ "transactionId": "…", "occurredAt": "2026-03-15T10:00:00+00:00", "mti": "0200", "transactionType": "Sale",
+{ "otc": "10", "ots": "11", "name": "Sale" }
+```
+
+| Metot | Route | Açıklama | Cevaplar |
+|---|---|---|---|
+| `GET` | `/api/transaction-types` | Hepsi | `200` |
+| `GET` | `/api/transaction-types/{otc}/{ots}` | Tek tip | `200`, `404` |
+| `POST` | `/api/transaction-types` | Ekle | `201`, `400`, `409` |
+| `PUT` | `/api/transaction-types/{otc}/{ots}` | Sadece `name` değişir | `204`, `400`, `404` |
+| `DELETE` | `/api/transaction-types/{otc}/{ots}` | Sil | `204`, `404` |
+
+Seed: `10/11 Sale`, `11/11 MoneyTransfer`, `40/10 BalanceInquiry`. Kodun tanımadığı bir isim eklenirse (örn. `Refund`)
+işlemler `1003 → 12` alır. Başarılı her yazma işlemi **tanım cache'ini hemen boşaltır**.
+
+---
+
+### 7.5 MTI + işlem kodu eşlemesi — `/api/mti-processing-codes`
+
+Gelen `MTI + F3`'ün hangi `(Otc, Ots)`'ye gittiği.
+
+```json
+{ "mti": "0200", "f3_ProcessingCode": "000000", "otc": "10", "ots": "11" }
+```
+
+| Metot | Route | Açıklama | Cevaplar |
+|---|---|---|---|
+| `GET` | `/api/mti-processing-codes` | Hepsi | `200` |
+| `GET` | `/api/mti-processing-codes/{mti}/{processingCode}` | Tek eşleme | `200`, `404` |
+| `POST` | `/api/mti-processing-codes` | Ekle | `201`, `400`, `409` |
+| `PUT` | `/api/mti-processing-codes/{mti}/{processingCode}` | Sadece hedef `otc`/`ots` değişir | `204`, `400`, `404` |
+| `DELETE` | `/api/mti-processing-codes/{mti}/{processingCode}` | Sil | `204`, `404` |
+
+Seed: `0200/000000 → 10/11`, `0200/400000 → 11/11`, `0200/310000 → 40/10`. Tanımsız bir `MTI + F3` → `1001 → 12`.
+Bu da tanım cache'ini hemen boşaltır.
+
+> **Neden iki tablo?** `MtiProcessingCode` dış dünyanın diliyle (ISO) iç dünyanın diliyle (Otc/Ots) arasındaki çeviridir.
+> Örneğin farklı bir MTI/F3 kombinasyonunu mevcut "Sale" tipine bağlamak için kod değiştirmeden bir satır eklemek yeter.
+
+---
+
+### 7.6 Döviz kurları — `/api/exchange-rates` (salt okunur)
+
+| Metot | Route | Açıklama | Cevaplar |
+|---|---|---|---|
+| `GET` | `/api/exchange-rates` | Cache'teki tüm kurlar (cache boşsa `[]`) | `200` |
+| `GET` | `/api/exchange-rates/{code}` | Sayısal (`840`) ya da harf (`USD`) kod | `200`, `404` (cache'te yok) |
+
+```json
+{ "currencyCode": "840", "currency": "USD", "sellingRate": 41.8652, "bulletinDate": "2026-10-16",
+  "fetchedAt": "2026-10-16T09:00:01+00:00", "isStale": false }
+```
+Bu endpoint TCMB'ye **gitmez**, sadece cache'i gösterir. `isStale: true` ise işlem akışı bu kuru kullanmaz (`91`).
+Desteklenen kodlar `ExchangeRateCache.IsoToTcmb`'de (USD, EUR, GBP, CHF, JPY, …).
+
+### `GET /openapi/v1.json` (sadece Development)
+Payment'ın OpenAPI şeması.
+
+> `EntryMode` ve `InternalResponseCode` tablolarının API'si yoktur; doğrudan SQL ile değiştirilir ve en geç 10 dk içinde devreye girer.
+
+---
+
+## 8. Servisler arası sözleşmeler
+
+### 8.1 Gate → Payment (RabbitMQ)
+
+| | |
+|---|---|
+| Kuyruk | `payment.transactions` (durable; iki taraf da aynı ayarlarla tanımlar, hangisi önce açılırsa açılsın hazır olur) |
+| İstek property'leri | `CorrelationId`, `ReplyTo=amq.rabbitmq.reply-to`, `Expiration` (ms), `Timestamp` (sn), `ContentType=application/json` |
+| Cevap | isteğin `ReplyTo`'suna, aynı `CorrelationId` ile |
+
+İstek gövdesi (camelCase):
+```json
+{ "mti": "0200", "cardNumber": "4111111111111111", "processingCode": "000000", "amountMinor": 15000,
+  "currencyCode": "949", "transmissionDateTime": "1016095959", "stan": "000001", "localTime": "125959",
+  "localDate": "20261016", "terminalId": "TERM0001", "cardExpiry": "2812", "merchantType": null,
+  "entryMode": "051", "rrn": null, "merchantId": "TRENDYOL       ", "cardAcceptor": null,
+  "recipientCardNumber": null, "cvv": null }
+```
+Cevap gövdesi:
+```json
+{ "responseCode": "00" }
+```
+Payment'ın teknik cevapları: gövde okunamadı / geçersiz → `30`; DB'ye ulaşılamadı vb. → `91`; IRC'nin F39 karşılığı tanımsız → `96`.
+
+### 8.2 Payment → Kafka
+
+| | |
+|---|---|
+| Topic | `payment.transaction-events` (3 partition) |
+| Key | hesap no → aynı hesabın olayları aynı partition'da, sırası korunur |
+| Ne zaman | **commit edilen her karar** (onay ve red) |
+| Ne zaman değil | tekrar gelen istek (ilk istek zaten yazdı), kayıt açılmayan red (`1001`), teknik hata (`91`) |
+
+```json
+{ "transactionId": "…", "occurredAt": "2026-10-16T10:00:00+00:00", "mti": "0200", "transactionType": "Sale",
   "responseCode": "00", "irc": "0000", "maskedCardNumber": "411111********11", "accountNo": 1000000001,
-  "email": "musteri@example.com", "amount": 10.00, "currencyCode": "840", "localAmount": 492.15,
-  "cardAcceptor": "PAYMENT SYSTEM POS SIMULATOR", "transactionDate": "20260315", "localTime": "125959",
-  "terminalId": "TERM0001", "stan": "000001", "recipientMaskedCardNumber": null, "recipientAccountNo": null,
-  "recipientEmail": null, "eventType": "TransactionCompleted", "version": 1 }
+  "email": "musteri@example.com", "amount": 10.00, "currencyCode": "840", "localAmount": 418.65,
+  "cardAcceptor": "PAYMENT SYSTEM POS SIMULATOR", "transactionDate": "20261016", "localTime": "125959",
+  "terminalId": "TERM0001", "stan": "000001",
+  "recipientMaskedCardNumber": null, "recipientAccountNo": null, "recipientEmail": null,
+  "eventType": "TransactionCompleted", "version": 1 }
 ```
+- Kart numarası sadece **maskeli** taşınır.
+- `recipient*` alanları sadece transferde (alıcı kart bulunduysa) doludur.
+- Alan eklemek geriye uyumludur; alan silmek / anlamını değiştirmek `version`'ı artırır.
+- Kafka kapalıysa olay 30 sn denenir, sonra loglanıp bırakılır; işlem etkilenmez (outbox yok — bilinçli tercih).
 
-Ayarlar (`appsettings.json` → `Kafka`, ya da `Kafka__BootstrapServers`): `BootstrapServers` (`localhost:9094`; compose'da `kafka:9092`), `Topic`, `MessageTimeoutMs` (30000).
+---
 
-## Notification (PaymentSystem.Notification)
+## 9. Karar motoru: kontroller, IRC ve F39
 
-.NET 9 worker servisi (HTTP endpoint'i yok). `payment.transaction-events` topic'ini `notification` consumer group'uyla okur.
+`TransactionHandler.DecideAsync` kontrolleri **bu sırayla** yapar; ilk başarısız olan kararı verir. F39 değerleri
+`InternalResponseCode` tablosunun seed değerleridir.
 
-- **Kime:** sadece onaylı işlemler (F39 `00`) bildirilir; red, bakiye sorgu ve bilinmeyen olay tipleri atlanır. Hesabın e-postası yoksa o kişi loglanıp geçilir.
-  - **Satış** (`Sale`): olaydaki `email`'e (kartın hesabı).
-  - **Karttan karta transfer** (`MoneyTransfer`): gönderene (`email`) "… numaralı karta gönderildi", alıcıya (`recipientEmail`) "… numaralı karttan geldi"; iki ayrı e-posta.
-- **İçerik:** maskeli kart no (transferde iki kart da), tutar ve para birimi, dövizse TL karşılığı, işyeri (F43, sadece satışta), tarih / saat ve işlem no (Guid).
-- **Tekrar:** Kafka bir olayı birden fazla teslim edebilir; gönderilen son 10.000 e-postanın (işlem Guid'i, kişi) çifti bellekte tutulur, aynı kişiye ikinci e-posta gitmez. Transferde bir tarafa gönderilemeyen e-posta diğerini engellemez; olay tekrar gelirse sadece gönderilemeyen denenir.
-- **Hata:** gönderilemeyen e-posta `MaxAttempts` (3) kez, `RetryDelaySeconds` (5) arayla denenir, sonra loglanıp geçilir: tüketici o olayda takılı kalmaz. Offset olay işlendikten sonra saklanır; servis olayın ortasında kapanırsa açılınca aynı olay yeniden gelir.
-- **Topic:** servis açılışta topic yoksa oluşturur (Payment henüz hiç olay yazmamış olabilir). Group ilk kez açılıyorsa topic'in başından okur.
+| # | Kontrol | Hangi işlemde | IRC | F39 |
+|---|---|---|---|---|
+| 0 | `MTI + F3` tanımsız (kayıt açılmaz) | hepsi | `1001` | `12` |
+| 1 | F22 geldi ama ilk iki hanesi `EntryMode`'da yok | hepsi | `1002` | `12` |
+| 2 | F42 yok | hepsi | `1007` | `30` |
+| 3 | İşyeri `Merchant` tablosunda yok | hepsi | `4001` | `03` |
+| 4 | İşyeri `Active` değil | hepsi | `4002` | `03` |
+| 5 | F18 geldi ama işyerinin MCC'si değil | hepsi | `4003` | `03` |
+| 6 | Kart yok | hepsi | `2001` | `14` |
+| 7 | Kartın süresi geçmiş ya da F14 kartla uyuşmuyor | hepsi | `2002` | `54` |
+| 8 | Kart fiziksel yok (`01x`/`81x`) ve CVV2 yok; ya da CVV2 geldi ama tutmuyor | hepsi | `2006` | `N7` |
+| 9 | Hesap yok ya da `Active` değil | hepsi | `2003` | `62` |
+| — | **Bakiye sorgu** buraya kadar geçtiyse → onay | `BalanceInquiry` | `0000` | `00` |
+| 10 | F48 yok ya da kart numarası değil | transfer | `1005` | `30` |
+| 11 | Alıcı kart yok | transfer | `2007` | `14` |
+| 12 | Alıcı kart gönderenle aynı hesapta | transfer | `1006` | `12` |
+| 13 | Alıcının hesabı yok ya da `Active` değil | transfer | `2008` | `62` |
+| 14 | TCMB bu para birimi için kur yayımlamıyor (örn. `999`) | satış, transfer | `1004` | `12` |
+| 15 | Döviz ama cache'te kur yok ya da bayat | satış, transfer | `9001` | `91` |
+| 16 | Tutar 0 | satış, transfer | `3001` | `13` |
+| 17 | Temassız ama kart temassıza kapalı | satış | `2004` | `57` |
+| 18 | Temassız limit (TL karşılık) aşıldı | satış | `2005` | `65` |
+| 19 | Bakiye yetersiz | satış, transfer | `3002` | `51` |
+| ✔ | **Onay**: bakiye düşer (transferde alıcıya eklenir), kartın `LastTransaction*`'ı güncellenir | satış, transfer | `0000` | `00` |
+| — | Tip tanımlı ama kod onu işlemiyor (örn. `Refund`) | — | `1003` | `12` |
 
-### Gmail ile gerçek gönderim
-1. Gönderen Google hesabında 2 adımlı doğrulamayı aç.
-2. https://myaccount.google.com/apppasswords adresinden bir uygulama şifresi oluştur (16 hane).
-3. `.env`'e yaz ve servisi yeniden başlat:
-   ```
-   SMTP_USER=gonderen@gmail.com
-   SMTP_PASSWORD=abcdefghijklmnop
-   ```
-   `docker compose up -d --build notification`
-4. Bir hesaba e-posta tanımla (`PUT /api/bank-accounts/{accountNo}` ile `"email": "..."`), o hesabın kartıyla Gate'ten satış yap; e-posta gelen kutusuna düşer. Akış `docker logs -f payment_system_notification`'da izlenir.
+Ayrıca: IRC tabloda yoksa → `96` (işlem asla tahminle onaylanmaz). Beklenmeyen hata (DB yok vb.) → `91`, commit edilmediği için para hareketi yok.
 
-Gmail dışında bir sunucu için `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM` verilebilir. `SMTP_USER` / `SMTP_FROM`'dan biri yoksa servis açılışta hata verip durur.
+**Neden IRC + tablo?** İş sebebi (bakiye yetersiz) ile dış dünyaya gösterilen kod (`51`) ayrıdır. Bir şemanın ya da kartın
+markanın istediği kod değişirse SQL ile bir satır güncellenir, kod değişmez. Teknik kodlar (`30`, `91`, `96`) ise sabittir:
+DB'ye ulaşılamadığında tablo da okunamaz.
 
-### Ayarlar
-`src/PaymentSystem.Notification/appsettings.json` → `Kafka` (`BootstrapServers`, `Topic`, `GroupId`) ve `Smtp` (`Host`, `Port`, `Security` = `StartTls` / `SslOnConnect` / `None`, `User`, `Password`, `From`, `FromName`, `MaxAttempts`, `RetryDelaySeconds`); ya da `Smtp__User` gibi ortam değişkenleri.
+---
 
-### Çalıştırma
-```bash
-# Docker (hepsi birlikte)
-docker compose up -d --build
-docker logs -f payment_system_notification
+## 10. Veritabanı
 
-# lokal (Kafka container'ı ayaktayken; notification container'ı durdurulmuş olmalı)
-$env:Smtp__User = "gonderen@gmail.com"
-$env:Smtp__Password = "<uygulama şifresi>"
-dotnet run --project src/PaymentSystem.Notification
-```
+Script'ler: `docker/sql/init/01_create_tables.sql` (şema) ve `02`–`05` (seed). Şema EF migration'larıyla değil bu script'lerle
+yönetilir; erişim **Dapper** ile düz SQL'dir.
 
-## Testler ve CI
-
-| Test projesi | Kapsam | Gereken |
+| Tablo | PK | İçerik |
 |---|---|---|
-| `tests/PaymentSystem.Gate.Tests` | HTTP endpoint'in alan doğrulaması, Gate'in karar mantığı (sahte Payment ile), gerçek RabbitMQ üzerinden request-reply (sahte Payment cevaplayıcısıyla: eşzamanlı istekler, geçersiz cevap, timeout + TTL, geç cevap), ISO8583 pack/unpack ve framing | **Docker** |
-| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz çevrimi), kuyruk tüketicisi (gerçek RabbitMQ + SQL: cevap, `30`, süresi dolmuş istek, DB yokken `91`), 4 CRUD controller + Dapper repository'leri, model doğrulama, TCMB ayrıştırma + kur cache'i + arka plan servisi (sahte HTTP ile), işlem olayları (içerik, hangi kararda yayımlandığı, gerçek Kafka'ya yazım) | **Docker** |
-| `tests/PaymentSystem.Notification.Tests` | Bildirim kuralları (sadece onaylı satış ve transfer, transferde iki taraf, e-postasız hesap, tekrar gelen olay, yeniden deneme), e-posta içeriği, gerçek Kafka'dan okuma (bozuk olay atlanır), SMTP gönderimi (Mailpit container'ına; gerçek e-posta gitmez) | **Docker** |
+| `BankAccount` | `AccountNo` (BIGINT, 10 hane) | Durum, bakiye (TL), e-posta |
+| `Card` | `Id` (IDENTITY), `CardNumber` UNIQUE | Hesap no, tip, `ExpiryDate` (MMYY), temassız ayarları, son işlem |
+| `CardSecret` | `CardNumber` (FK → Card, ON DELETE CASCADE) | `CvvHash`, `PinHash` (HMAC-SHA256) |
+| `Merchant` | `MerchantId` | Ad, MCC, durum |
+| `TransactionType` | `(Otc, Ots)` | İşlem adı |
+| `MtiProcessingCode` | `(Mti, F3_ProcessingCode)` | → `(Otc, Ots)` |
+| `EntryMode` | `Code` (F22'nin ilk 2 hanesi) | Ad, `IsContactless` |
+| `InternalResponseCode` | `Irc` | Açıklama, `F39_ResponseCode` |
+| `DebitTransaction` | `Guid` (UUID v5) | Her işlemin kaydı; kolonlar ISO alan numarasını taşır |
 
-Testler [Testcontainers](https://dotnet.testcontainers.org/) ile gerçek SQL Server, RabbitMQ, Kafka ve Mailpit container'ları başlatır (compose'dakiyle aynı imajlar). SQL Server'da `docker/sql/init/*.sql` script'leri çalıştırılır; yani SQL'ler compose'daki DB ile birebir aynı şemaya karşı test edilir. Testten önce Docker Desktop açık olmalı (GitHub Actions'ın ubuntu runner'ında Docker hazır).
+`DebitTransaction` kolonları: `Mti`, `F2_CardNo`, `F3_ProcessingCode`, `Otc`, `Ots`, `F4_Amount` (orijinal para birimi),
+`F49_CurrencyCode`, `LocalTxnAmount` (TL karşılık), `F12_TransactionTime`, `F13_TransactionDate` (yyyymmdd), `F14_CardExpiry`,
+`F18_MerchantCode`, `F22_EntryMode`, `F39_ResponseCode`, `F42_MerchantId`, `F43_Description`, `F48_RecipientCardNo`, `CreatedAt`, `UpdatedAt`.
+
+Seed `EntryMode`: `00` Unknown · `01` Manual · `02` MagneticStripe · `05` Chip · `07` ContactlessChip ✱ · `81` ECommerce ·
+`90` MagneticStripeFullTrack · `91` ContactlessMagneticStripe ✱ (✱ = temassız).
+
+Kontrol için:
+```bash
+docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<şifre>' -C -d PaymentSystem \
+  -Q "SELECT TOP 10 Guid, F2_CardNo, F3_ProcessingCode, F4_Amount, F39_ResponseCode FROM dbo.DebitTransaction ORDER BY CreatedAt DESC"
+```
+
+---
+
+## 11. Önemli tasarım konuları
+
+### 11.1 Idempotency (aynı istek iki kez gelirse)
+POS cevabı alamazsa aynı isteği tekrar gönderir. Para iki kez düşmemeli.
+
+- Kaydın PK'sı rastgele değil, isteğin `MTI | F2 | F3 | F4 | F13 | F12` alanlarından üretilen bir **UUID v5**'tir (sabit namespace + SHA-1).
+- Tekrar gelen istek aynı Guid'i üretir → `INSERT` PK'ya takılır → transaction rollback → ilk kararın F39'u okunup döner.
+- Aynı anda gelirlerse ikincisi ilkinin transaction'ı bitene kadar bekler, sonra çakışır; asla iki kez karara bağlanmaz.
+- Şemaya kolon eklenmeden çözüldü. **Sınır**: aynı kartla aynı saniyede aynı tutarda iki *gerçek* işlem, ikincisi tekrar sayılır.
+
+### 11.2 Zaman aşımı ve "geç işlenme" koruması
+Sorun: Gate 10 sn bekleyip `91` döndü, ama Payment isteği sonradan işlerse müşteri "olmadı" sanar, parası düşer.
+
+- İstek kuyruğa `Expiration` (TTL) ile girer: süresi dolarsa RabbitMQ siler.
+- Payment kuyruktan almış olsa bile `Timestamp + Expiration`'a bakar; süresi dolmuşsa işlemez.
+- Gate'e geç gelen cevap loglanıp atılır.
+- **Sınır**: Payment işlemi tam süre dolarken bitirirse para düşer ama Gate `91` döner. Çözümü reversal (`0400`) — sonraki adım.
+
+### 11.3 Eşzamanlılık
+- Bakiye kontrolü ve düşme **tek SQL**'dedir: `UPDATE ... SET Balance = Balance - @amount WHERE AccountNo = @no AND Balance >= @amount`.
+  Etkilenen satır 0 ise yetersiz bakiye. İki eşzamanlı satış hesabı eksiye düşüremez.
+- Transferde iki hesabın satırı önce **PK sırasıyla** kilitlenir (`UPDLOCK`); A→B ve B→A aynı anda gelse de deadlock olmaz.
+- Kayıt + bakiye + kart güncellemesi tek transaction'dadır: ya hepsi ya hiçbiri.
+
+### 11.4 CVV2 ve PIN güvenliği
+```
+Kart açılırken:  rastgele 482 / 0731 ──HMAC-SHA256(CARD_SECRET_KEY, "PAN:cvv:482" / "PAN:pin:0731")──► CardSecret
+İşlemde:         gelen cvv ─────────HMAC-SHA256(CARD_SECRET_KEY, "PAN:cvv:<gelen>")───────────────► == CvvHash ? (sabit zamanlı)
+```
+- Neden düz SHA-256 değil de HMAC? CVV'nin sadece 1000 olası değeri var; anahtarsız hash saniyeler içinde kırılır. Anahtar DB'de değil ortam değişkeninde.
+- Kart numarası hash'e girer: aynı CVV'li iki kartın hash'i farklıdır.
+- Karşılaştırma `CryptographicOperations.FixedTimeEquals` ile yapılır (timing saldırısına karşı).
+- CVV kart fiziksel yokken zorunlu (`01x`, `81x`); çip/temassızda istenmez (kart kendi kriptogramını üretir) ama gelirse kontrol edilir.
+- PIN şimdilik sadece saklanır, işlemde doğrulanmaz (ileride F52 PIN block).
+- `CARD_SECRET_KEY` değişirse **tüm kartların** CVV/PIN hash'i geçersiz olur. Gerçek bankalarda bu anahtar HSM'dedir; `ICardSecretHasher` arayüzü bu geçişi kolaylaştırır.
+- Düz CVV/PIN hiçbir yere yazılmaz: DB, log, Kafka.
+
+### 11.5 Tanım tabloları cache'i — `Parameters/ParameterCache.cs`
+`TransactionType`, `MtiProcessingCode`, `EntryMode`, `InternalResponseCode` her işlemde DB'den okunmaz; dördü birden `IMemoryCache`'e yüklenir.
+- 10 dakikada bir (`Parameters:RefreshMinutes`) yenilenir.
+- `/api/transaction-types` ve `/api/mti-processing-codes` üzerinden yapılan değişiklik cache'i **hemen** boşaltır.
+- Birden fazla Payment instance'ı olursa diğerleri değişikliği en geç 10 dk içinde görür.
+
+### 11.6 Döviz kurları — `ExchangeRates/`
+```
+TCMB today.xml ──(açılışta + saatte bir)──► ExchangeRateRefresher ──yazar──► IMemoryCache ("fx:USD" ...)
+                                                                                  │ sadece okur
+                                                     TransactionHandler: TL = tutar × ForexSelling / Unit (kuruşa, yarım yukarı)
+```
+- İşlem akışı TCMB'ye **hiç** gitmez; satışın hızı dış servise bağlı değildir.
+- Çekim başarısızsa eski kurlar kalır, 1 dk sonra tekrar denenir.
+- Son başarılı çekimden 24 saat geçerse kur bayat sayılır → `91`.
+- Cache in-memory'dir: Payment yeniden başlayınca ilk çekime kadar döviz işlemleri `91` alır, TL işlemler etkilenmez.
+
+### 11.7 PCI ve loglama
+- `PanMask`: ilk 6 + son 2 hane görünür. F2 ve F48 loglarda, exception mesajlarında ve Kafka olaylarında daima maskelidir.
+- Payment geçersiz bir mesajın ham gövdesini loglamaz (içinde açık PAN olabilir).
+- `IsoLog` iki serviste de aynı log biçimini üretir, böylece bir işlem STAN ile uçtan uca izlenir.
+
+---
+
+## 12. Notification servisi
+
+.NET 9 worker servisi (HTTP yok). `payment.transaction-events`'i `notification` consumer group'uyla okur.
+
+**Kime e-posta gider?**
+- Sadece **onaylı** (`F39 00`) olaylar. Red, bakiye sorgu ve bilinmeyen olay tipleri atlanır.
+- **Satış**: kartın hesabının e-postasına ("Kartınızla … tutarında satış yapıldı").
+- **Transfer**: gönderene ("… numaralı karta gönderildi") **ve** alıcıya ("… numaralı karttan geldi"), iki ayrı e-posta.
+- Hesabın e-postası yoksa loglanıp geçilir.
+
+**Güvenilirlik**
+- **At-least-once**: offset olay işlendikten *sonra* saklanır; servis ortada kapanırsa olay tekrar gelir.
+- **Tekrar koruması**: son 10.000 gönderilen `(işlem Guid'i, kişi)` çifti bellekte tutulur; aynı kişiye ikinci e-posta gitmez.
+  Transferde bir tarafın hatası diğerini engellemez.
+- **Yeniden deneme**: 3 deneme, 5 sn arayla; sonra loglanıp geçilir — tüketici tek bir olayda takılı kalmaz.
+- Bozuk JSON olay atlanır.
+- Açılışta topic yoksa oluşturur; group ilk kez açılıyorsa topic'in başından okur.
+
+**Gmail ile gerçek gönderim**
+1. Google hesabında 2 adımlı doğrulamayı aç.
+2. https://myaccount.google.com/apppasswords → 16 haneli uygulama şifresi oluştur.
+3. `.env`: `SMTP_USER=gonderen@gmail.com`, `SMTP_PASSWORD=abcdefghijklmnop` → `docker compose up -d --build notification`
+4. Hesaba e-posta tanımla (`PUT /api/bank-accounts/{no}`), o hesabın kartıyla satış yap.
+
+Gmail dışı için `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`. `SMTP_USER` ve `SMTP_FROM`'un ikisi de boşsa servis açılışta hata verip durur.
+
+---
+
+## 13. Ayarlar ve ortam değişkenleri
+
+`appsettings.json` bölümleri ortam değişkeniyle ezilebilir: `Bolum__Anahtar` (örn. `Gate__PaymentTimeoutSeconds=5`).
+Şifreler `appsettings.json`'da **durmaz**, sadece ortam değişkeninden gelir.
+
+| Servis | Anahtar | Varsayılan | Açıklama |
+|---|---|---|---|
+| Gate | `Gate:RabbitMqUri` | `amqp://payment@localhost:5672` | Şifresiz URI |
+| Gate | `Gate:PaymentTimeoutSeconds` | `10` | Cevap bekleme süresi = mesaj TTL'i |
+| Gate, Payment | `RABBITMQ_PASSWORD` | — | zorunlu |
+| Payment | `ConnectionStrings:PaymentSystem` | `Server=localhost,1433;Database=PaymentSystem;...` | Şifresiz |
+| Payment | `MSSQL_SA_PASSWORD` | — | zorunlu |
+| Payment | `ConnectionStrings:RabbitMq` | `amqp://payment@localhost:5672` | |
+| Payment | `CARD_SECRET_KEY` | — | zorunlu, 64 hex |
+| Payment | `ExchangeRates:TcmbUrl` / `RefreshMinutes` / `RetryMinutes` / `MaxAgeHours` | TCMB today.xml / `60` / `1` / `24` | |
+| Payment | `Parameters:RefreshMinutes` | `10` | Tanım cache'i ömrü |
+| Payment | `Kafka:BootstrapServers` / `Topic` / `MessageTimeoutMs` | `localhost:9094` / `payment.transaction-events` / `30000` | |
+| Notification | `Kafka:BootstrapServers` / `Topic` / `GroupId` | `localhost:9094` / `payment.transaction-events` / `notification` | |
+| Notification | `Smtp:Host` / `Port` / `Security` | `smtp.gmail.com` / `587` / `StartTls` | `Security`: `StartTls`, `SslOnConnect`, `None` |
+| Notification | `Smtp:User` / `Password` / `From` / `FromName` | — | |
+| Notification | `Smtp:MaxAttempts` / `RetryDelaySeconds` | `3` / `5` | |
+
+---
+
+## 14. Testler, CI ve branch akışı
+
+| Test projesi | Neyi test eder |
+|---|---|
+| `tests/PaymentSystem.Gate.Tests` | Endpoint alan doğrulaması, Gate karar mantığı (sahte Payment), gerçek RabbitMQ üzerinden request-reply (eşzamanlılık, geçersiz cevap, timeout + TTL, geç cevap), ISO8583 pack/unpack ve framing |
+| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz), kuyruk tüketicisi (gerçek RabbitMQ + SQL), 5 CRUD controller + repository'ler, model doğrulama, TCMB ayrıştırma + kur cache'i, parametre cache'i, Kafka olayları |
+| `tests/PaymentSystem.Notification.Tests` | Bildirim kuralları, e-posta içerikleri, gerçek Kafka'dan okuma, SMTP gönderimi (Mailpit container'ına; gerçek e-posta gitmez) |
+
+Testler [Testcontainers](https://dotnet.testcontainers.org/) ile **gerçek** SQL Server, RabbitMQ, Kafka ve Mailpit başlatır;
+SQL Server'da `docker/sql/init/*.sql` çalıştırılır, yani testler compose'daki şemanın aynısına karşı koşar. Docker Desktop açık olmalı.
 
 ```bash
 dotnet test -p:CollectCoverage=true
 ```
-Line coverage her test projesi için ayrı ayrı %80'in altındaysa komut hata verir (ayarlar test `.csproj`'larında; `Program.cs` coverage dışı). Rapor: `tests/*/TestResults/coverage.cobertura.xml`.
+Her test projesinde satır coverage'ı **%80**'in altındaysa komut başarısız olur (`Program.cs` hariç). Rapor: `tests/*/TestResults/coverage.cobertura.xml`.
 
-GitHub Actions (`.github/workflows/ci.yml`), `master`'a açılan her pull request'te ve `master`'a yapılan her push'ta restore → build → test + coverage kapısını çalıştırır; coverage özeti job summary'de görünür. `master` üzerindeki ruleset, `build-and-test` check'i geçmeden merge'e izin vermez.
+**Branch akışı**: geliştirme `develop`'ta yapılır; `develop → master` pull request'i açılır. `.github/workflows/ci.yml`
+her PR'da ve `master` push'unda restore → build → test + coverage kapısını çalıştırır. `master` korumalıdır: `build-and-test` geçmeden merge edilemez.
 
-## Sıradaki Adımlar
-- Cevap sözleşmesini genişletmek: F38 (onay kodu), F37 (RRN), F54 (bakiye sorgusu cevabı).
-- Timeout'ta reversal (`0400`): Gate cevap alamadığı işlem için kuyruğa iptal mesajı bırakır, Payment açıldığında işler (store & forward).
-- Gate'e kimlik doğrulama (API key / mTLS); Payment'ın yönetim endpoint'lerini iç ağa almak.
-- Diğer asenkron işler (mutabakat, fraud) `payment.transaction-events`'i kendi consumer group'larıyla okuyabilir.
-- Bildirim geçmişi: gönderilen / gönderilemeyen e-postaların kaydı (web arayüzünde göstermek için).
-- DB şemasını ISO formatına uydurmak: `DebitTransaction.F13_TransactionDate` şu an `CHAR(8)` yyyymmdd (ISO: MMDD), `Card.ExpiryDate` MMYY (ISO F14: YYMM).
-- Para transferinde e-posta bildirimi (Notification şu an sadece onaylı satışı bildirir); başka bankanın kartına transfer (off-us).
+---
+
+## 15. Kod haritası
+
+```
+payment_system/
+├─ docker-compose.yml               tüm servisler + altyapı
+├─ .env.example                     şifreler ve anahtarlar şablonu
+├─ docker/sql/
+│  ├─ init/01_create_tables.sql     şema
+│  ├─ init/02..05_seed_*.sql        tanım tabloları ve işyerleri
+│  └─ run-init.sh                   db-init container'ının script'i
+├─ src/
+│  ├─ PaymentSystem.Iso8583/        ortak kütüphane
+│  │  ├─ Iso87Fields.cs             desteklenen alanlar ve formatları  ← önce bunu oku
+│  │  ├─ IsoFieldDefinition.cs      Validate(): uzunluk + karakter seti
+│  │  ├─ IsoMessage.cs              MTI + alanlar, istek→cevap MTI
+│  │  ├─ IsoMessagePacker.cs        bitmap ile byte'a çevirme / geri çözme
+│  │  ├─ IsoFraming.cs              TCP için 2 baytlık uzunluk başlığı
+│  │  ├─ PanMask.cs, IsoLog.cs      maskeleme ve log biçimi
+│  ├─ PaymentSystem.Gate/
+│  │  ├─ Program.cs                 tek endpoint: POST /api/transactions
+│  │  ├─ TransactionEndpoint.cs     JSON → ISO, doğrulama, 400
+│  │  ├─ TransactionHandler.cs      0200 mü, zorunlu alanlar, echo
+│  │  ├─ Payment/RabbitMqPaymentClient.cs   request-reply, timeout, TTL
+│  │  └─ PaymentSystem.Gate.http    örnek işlemler
+│  ├─ PaymentSystem.Payment/
+│  │  ├─ Program.cs                 DI kurulumu (hepsi singleton)
+│  │  ├─ Transactions/              ← sistemin kalbi
+│  │  │  ├─ TransactionQueueConsumer.cs   kuyruk → handler → cevap
+│  │  │  ├─ TransactionHandler.cs         tüm iş kuralları
+│  │  │  ├─ InternalResponseCodes.cs      IRC sabitleri
+│  │  │  └─ TransactionException.cs
+│  │  ├─ Controllers/ Handlers/ Data/     yönetim CRUD katmanları
+│  │  ├─ Data/TransactionRepository.cs    işlem SQL'leri (insert, debit, transfer)
+│  │  ├─ Parameters/                tanım tabloları cache'i
+│  │  ├─ ExchangeRates/             TCMB istemcisi, refresher, cache
+│  │  ├─ Cards/                     CVV/PIN HMAC
+│  │  ├─ Events/                    Kafka publisher + olay sözleşmesi
+│  │  └─ PaymentSystem.Payment.http örnek yönetim istekleri
+│  └─ PaymentSystem.Notification/
+│     ├─ Events/TransactionEventConsumer.cs   Kafka okuma, offset yönetimi
+│     ├─ TransactionNotifier.cs               kime, ne zaman, tekrar koruması
+│     └─ Email/                               içerikler + SMTP (MailKit)
+└─ tests/                           her servis için Testcontainers'lı testler
+```
+
+---
+
+## 16. Öğrenme yolu
+
+Projeyi sıfırdan anlamak için önerilen okuma sırası:
+
+1. **Çalıştır ve dene** — [Bölüm 4](#4-ilk-işlemine-kadar-adım-adım-senaryo)'teki senaryoyu uygula; logları üç pencerede izle.
+2. **ISO8583'ü anla** — `Iso87Fields.cs` → `IsoFieldDefinition.cs` → `IsoMessage.cs` → `IsoMessagePacker.cs` (bitmap mantığı). `IsoMessagePackerTests.cs` örnek mesajları gösterir.
+3. **Gate'i takip et** — `Program.cs` → `TransactionEndpoint.HandleAsync` → `TransactionHandler.ProcessAsync` → `RabbitMqPaymentClient.AuthorizeAsync`.
+   Soru: Payment kapalıyken ne olur? (`TransactionEndpointTests`, `RabbitMqPaymentClientTests`)
+4. **Payment'ın kalbini oku** — `TransactionQueueConsumer.DecideAsync` → `TransactionHandler.AuthorizeAsync` → `DecideAsync` → `SaleAsync` / `TransferAsync`.
+   Yanına `TransactionRepository.cs` aç: hangi kontrol hangi SQL'e karşılık geliyor?
+5. **Tanım tablolarını kurcala** — `/api/mti-processing-codes`'a yeni bir eşleme ekle, sonuçlarını gözle (`12` → `00`).
+6. **Yan konular** — `ParameterCache`, `ExchangeRateRefresher` + `ExchangeRateCache`, `HmacCardSecretHasher`.
+7. **Olay tarafı** — `KafkaTransactionEventPublisher` → `TransactionEventConsumer` → `TransactionNotifier`.
+8. **Testleri oku** — `TransactionHandlerTests.cs` iş kurallarının en iyi "çalıştırılabilir dokümantasyonu"dur.
+
+Kendine sorabileceğin sorular:
+- Aynı satış iki kez gelince DB'de kaç satır oluşuyor? Neden?
+- Gate `91` dönerse müşterinin parası düşmüş olabilir mi? Hangi durumda?
+- Bir red neden commit edildikten sonra exception olarak fırlatılıyor?
+- `EntryMode` tablosuna `07`'yi temassız değil diye güncellersen ne değişir, ne zaman değişir?
+
+---
+
+## 17. Bilinen sınırlar ve sıradaki adımlar
+
+- **Reversal (`0400`)**: timeout'ta Gate'in iptal mesajı bırakması, Payment açılınca işlemesi (store & forward).
+- **Cevap sözleşmesini genişletmek**: F38 (onay kodu), F37 (RRN), F54 (bakiye sorgu cevabı).
+- **Kimlik doğrulama**: Gate'e API key / mTLS; Payment yönetim endpoint'lerini iç ağa almak.
+- **PIN doğrulama** (F52 PIN block).
+- **Off-us transfer**: başka bankanın kartına.
+- **Bildirim geçmişi**: gönderilen / gönderilemeyen e-postaların kaydı.
+- **Şemayı ISO'ya uydurmak**: `DebitTransaction.F13_TransactionDate` şu an `yyyymmdd` (ISO: MMDD), `Card.ExpiryDate` `MMYY` (ISO F14: YYMM).
+- **Idempotency anahtarı** STAN/terminal no içermiyor (tabloda kolon yok): aynı saniyede aynı kartla aynı tutarda iki gerçek işlem çakışır.
+- **Yeni tüketiciler**: fraud, mutabakat, raporlama `payment.transaction-events`'i kendi consumer group'larıyla okuyabilir.
