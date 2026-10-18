@@ -877,13 +877,13 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     private const long RecipientAccountNo = 1000000002;
 
     private async Task SeedRecipientAsync(long accountNo = RecipientAccountNo, string status = "Active", decimal balance = 200m,
-        bool withAccount = true)
+        bool withAccount = true, string? email = null)
     {
         await using var connection = Db.Create();
         if (withAccount && accountNo != AccountNo)
             await connection.ExecuteAsync(
-                "INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES (@accountNo, @status, @balance)",
-                new { accountNo, status, balance });
+                "INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance, Email) VALUES (@accountNo, @status, @balance, @email)",
+                new { accountNo, status, balance, email });
         await connection.ExecuteAsync(
             "INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed) VALUES (@RecipientPan, @accountNo, '1228', 1)",
             new { RecipientPan, accountNo });
@@ -927,6 +927,32 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
         await using var connection = Db.Create();
         Assert.Equal(150m, await connection.ExecuteScalarAsync<decimal>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @Pan", new { Pan }));
         Assert.Null(await connection.ExecuteScalarAsync<decimal?>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @RecipientPan", new { RecipientPan }));
+    }
+
+    [Fact]
+    public async Task Transfer_PublishesEventWithMaskedRecipientAndItsAccountEmail()
+    {
+        await SeedAsync();
+        await SeedRecipientAsync(email: "alici@example.com");
+
+        Assert.Equal("00", await AuthorizeAsync(Transfer()));
+
+        var published = Assert.Single(Events.Events);
+        Assert.Equal(("411111********11", AccountNo, Email), (published.MaskedCardNumber, published.AccountNo, published.Email));
+        Assert.Equal(("540668********02", RecipientAccountNo, "alici@example.com"),
+            (published.RecipientMaskedCardNumber, published.RecipientAccountNo, published.RecipientEmail));
+    }
+
+    [Fact]
+    public async Task Sale_PublishesEventWithoutRecipient()
+    {
+        await SeedAsync();
+
+        Assert.Equal("00", await AuthorizeAsync(Sale()));
+
+        var published = Assert.Single(Events.Events);
+        Assert.Equal(((string?)null, (long?)null, (string?)null),
+            (published.RecipientMaskedCardNumber, published.RecipientAccountNo, published.RecipientEmail));
     }
 
     [Fact]

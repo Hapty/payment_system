@@ -37,6 +37,11 @@ public sealed class TransactionHandler(
         public Guid? Id { get; set; }
         public long? AccountNo { get; set; }
         public string? Email { get; set; }      // sadece olaya konur, exception'a değil
+
+        // Transferde alıcı; sadece olaya konur (Notification alıcıya da e-posta atar).
+        public string? RecipientPan { get; set; }
+        public long? RecipientAccountNo { get; set; }
+        public string? RecipientEmail { get; set; }
     }
 
     // Onay: F39. Red ya da teknik hata: TransactionException (F39, açıklama, maskeli kart no, işlem Guid'i, hesap no).
@@ -115,7 +120,8 @@ public sealed class TransactionHandler(
         events.Publish(new TransactionCompleted(
             id, clock.GetUtcNow(), request.Mti, type.Name, responseCode, irc, PanMask.Mask(request.CardNumber),
             trace.AccountNo, trace.Email, ToAmount(request), request.CurrencyCode, lira, request.CardAcceptor?.TrimEnd(),
-            transactionDate, request.LocalTime, request.TerminalId, request.Stan));
+            transactionDate, request.LocalTime, request.TerminalId, request.Stan,
+            trace.RecipientPan is { } recipientPan ? PanMask.Mask(recipientPan) : null, trace.RecipientAccountNo, trace.RecipientEmail));
 
         // Red kaydı commit edildi; exception ancak şimdi fırlatılır ki kayıt geri alınmasın.
         if (irc == InternalResponseCodes.Approved && definition is not null)
@@ -175,7 +181,7 @@ public sealed class TransactionHandler(
         {
             "BalanceInquiry" => InternalResponseCodes.Approved,     // bakiye cevaba (F54) sonraki adımda eklenecek
             "Sale" => await SaleAsync(session, request, card, lira, entryMode),
-            MoneyTransfer => await TransferAsync(session, request, card, lira),
+            MoneyTransfer => await TransferAsync(session, request, card, lira, trace),
             _ => Decline(nameof(DecideAsync), request, InternalResponseCodes.TransactionNotSupported, $"{typeName} is not supported")
         };
     }
@@ -209,7 +215,7 @@ public sealed class TransactionHandler(
     // Karttan karta para transferi (sadece bu sistemdeki kartlar arası): F48'deki alıcı kartın hesabına, gönderenin hesabından.
     // Döviz de olabilir; iki hesap da TL olduğu için TL karşılığı düşülür ve eklenir. Temassız limit uygulanmaz,
     // alıcı kartın son kullanma tarihine bakılmaz. Gönderen kartın kontrolleri (kart, F14, CVV2, hesap) DecideAsync'te yapıldı.
-    private async Task<string> TransferAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira)
+    private async Task<string> TransferAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira, Trace trace)
     {
         if (request.RecipientCardNumber is not { } recipientNumber || !IsCardNumber(recipientNumber))
             return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientCardInvalid, $"{IsoLog.Label(48)} missing or not a card number");
@@ -223,6 +229,7 @@ public sealed class TransactionHandler(
                 $"{IsoLog.Field(48, recipientNumber)} is on the same account {card.AccountNo}");
 
         var recipientAccount = await session.GetAccountAsync(recipient.AccountNo);
+        (trace.RecipientPan, trace.RecipientAccountNo, trace.RecipientEmail) = (recipient.CardNumber, recipient.AccountNo, recipientAccount?.Email);
         if (recipientAccount?.AccountStatus != ActiveAccount)
             return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientAccountNotActive,
                 $"recipient account {recipient.AccountNo} is {recipientAccount?.AccountStatus ?? "missing"}");
