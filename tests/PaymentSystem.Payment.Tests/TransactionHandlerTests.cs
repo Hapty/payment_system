@@ -826,7 +826,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     private async Task<string?> StoredRecipientAsync()
     {
         await using var connection = Db.Create();
-        return await connection.ExecuteScalarAsync<string?>("SELECT RecipientCardNumber FROM dbo.DebitTransaction");
+        return await connection.ExecuteScalarAsync<string?>("SELECT F48_RecipientCardNo FROM dbo.DebitTransaction");
     }
 
     [Fact]

@@ -253,7 +253,7 @@ Sadece bu sistemdeki kartlar arasında (on-us). Alıcı kart numarası **F48**'d
 - Alıcı kart bulunmalı, gönderenle aynı hesapta olmamalı, hesabı `Active` olmalı. Alıcı kartın son kullanma tarihine bakılmaz.
 - Döviz de olabilir: iki hesap da TL olduğu için **TL karşılığı** (satıştaki kurla) gönderenden düşülür, alıcıya eklenir. Temassız limit uygulanmaz.
 - Düşme ve ekleme, `DebitTransaction` kaydıyla aynı SQL transaction'ındadır: ya ikisi birden olur ya hiçbiri. İki hesabın satırı önce PK sırasıyla kilitlenir; A→B ve B→A transferleri aynı anda gelse de deadlock olmaz.
-- Kayıt tek satırdır: gönderen `F2_CardNo`'da, alıcı `RecipientCardNumber`'da (reddedilen transferde de yazılır).
+- Kayıt tek satırdır: gönderen `F2_CardNo`'da, alıcı `F48_RecipientCardNo`'da (reddedilen transferde de yazılır).
 
 ### CVV2 ve PIN (`Cards/`, `CardSecret` tablosu)
 Kart oluşturulurken CVV2 (3 hane) ve PIN (4 hane) **rastgele** üretilir (`RandomNumberGenerator`). Düz halleri sadece `POST` cevabında bir kez döner; DB'ye `CardSecret` tablosuna **hash'leri** yazılır. `Card` ve `CardSecret` aynı SQL transaction'ında yazılır, kart silinince `CardSecret` satırı da silinir (`ON DELETE CASCADE`).

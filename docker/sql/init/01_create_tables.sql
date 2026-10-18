@@ -108,7 +108,7 @@ BEGIN
         F22_EntryMode           CHAR(3)         NULL,
         F39_ResponseCode        CHAR(2)         NULL,
         F43_Description         VARCHAR(100)    NULL,
-        RecipientCardNumber     VARCHAR(19)     NULL            -- sadece para transferinde (kkpt)
+        F48_RecipientCardNo     VARCHAR(19)     NULL            -- sadece para transferinde (kkpt): alıcı kart no
     );
 END
 GO
