@@ -11,6 +11,7 @@ public static class InternalResponseCodes
     public const string CurrencyNotSupported = "1004";          // TCMB bu para birimi için kur yayımlamıyor
     public const string RecipientCardInvalid = "1005";          // transferde F48 (alıcı kart no) yok ya da kart numarası değil
     public const string SameAccountTransfer = "1006";           // transferde alıcı kart gönderenle aynı hesaba bağlı
+    public const string MerchantIdMissing = "1007";            // F42 yok (Gate zorunlu tutar; kuyruğa başka yoldan gelirse)
     public const string CardNotFound = "2001";
     public const string CardExpired = "2002";                   // süresi dolmuş ya da F14 kartla uyuşmuyor
     public const string AccountNotActive = "2003";
@@ -21,5 +22,8 @@ public static class InternalResponseCodes
     public const string RecipientAccountNotActive = "2008";     // alıcı kartın hesabı yok ya da Active değil
     public const string ZeroAmount = "3001";
     public const string InsufficientFunds = "3002";
+    public const string MerchantNotFound = "4001";             // F42 Merchant tablosunda yok
+    public const string MerchantNotActive = "4002";
+    public const string MerchantTypeMismatch = "4003";         // F18 geldi ama işyerinin MCC'si değil
     public const string ExchangeRateUnavailable = "9001";       // cache'te kur yok ya da bayat
 }

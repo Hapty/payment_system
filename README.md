@@ -44,6 +44,7 @@ docker compose up -d
 - `DebitTransaction`
 - `EntryMode`
 - `InternalResponseCode`
+- `Merchant`
 
 Script'ler idempotent'tir (`IF NOT EXISTS` / `MERGE`), yani container her yeniden başladığında tekrar çalışsa bile veriyi bozmaz.
 
@@ -68,11 +69,12 @@ Bağlanırken Database alanına `PaymentSystem` yaz (varsayılan `master` değil
 |---|---|
 | `BankAccount` | Hesap no (10 haneli sayı, `BIGINT`), hesap durumu, bakiye, e-posta (opsiyonel; bildirimler buraya gider) |
 | `Card` | Kart bilgileri, ilişkili hesap |
+| `Merchant` | İşyeri: `MerchantId` (F42, sondaki boşluklar olmadan), ad, MCC (`MerchantType`, F18), durum. Seed: `IYZICO` (7399), `TRENDYOL` (5399), `GETIR` (5411), `NETFLIX` (4899) |
 | `TransactionType` | (Otc, Ots) kombinasyonundan işlem tipine lookup (Sale, MoneyTransfer, BalanceInquiry) |
 | `MtiProcessingCode` | Gelen mesajın (Mti, F3_ProcessingCode) değerinden (Otc, Ots)'ye lookup — örn. `0200`+`000000` → Sale |
 | `InternalResponseCode` | İç karar kodundan (IRC) POS'a dönen F39'a lookup — örn. `3002` (bakiye yetersiz) → `51`. Birkaç IRC aynı F39'a çıkabilir |
 | `EntryMode` | F22'nin ilk iki hanesinden giriş yöntemine lookup ve temassız olup olmadığı (`IsContactless`) — örn. `05` → Chip, `07` → ContactlessChip. 3. hane (PIN yeteneği) karara girmez |
-| `DebitTransaction` | ISO8583 alanlarını taşıyan işlem kayıtları — kolon adları `F2_CardNo`, `F3_ProcessingCode`, `F4_Amount`, `F49_CurrencyCode`, `F12_TransactionTime`, `F13_TransactionDate`, `F14_CardExpiry`, `F18_MerchantCode`, `F22_EntryMode`, `F39_ResponseCode`, `F43_Description` şeklinde ISO8583 field numarasını koruyor |
+| `DebitTransaction` | ISO8583 alanlarını taşıyan işlem kayıtları — kolon adları `F2_CardNo`, `F3_ProcessingCode`, `F4_Amount`, `F49_CurrencyCode`, `F12_TransactionTime`, `F13_TransactionDate`, `F14_CardExpiry`, `F18_MerchantCode`, `F22_EntryMode`, `F39_ResponseCode`, `F42_MerchantId`, `F43_Description`, `F48_RecipientCardNo` şeklinde ISO8583 field numarasını koruyor |
 
 **Not:** Tablolar arasında foreign key yok — sadece database, tablo ve kolonlar oluşturuluyor. Sadece her tabloda kendi `PRIMARY KEY`'i var.
 
@@ -88,7 +90,7 @@ Her istek için:
 ```json
 // istek
 { "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949",
-  "F7": "0315095959", "F11": "000001", "F12": "125959", "F13": "20260315", "F41": "TERM0001",
+  "F7": "0315095959", "F11": "000001", "F12": "125959", "F13": "20260315", "F41": "TERM0001", "F42": "TRENDYOL       ",
   "F14": "2812", "F22": "051" }
 // cevap
 { "mti": "0210", "F39": "00", "F11": "000001" }
@@ -113,7 +115,7 @@ Gate işlem tipini (satış / bakiye / transfer) yorumlamaz; bu Payment'ın işi
 | `F18` | işyeri tipi | n4 | |
 | `F22` | giriş yöntemi | n3 (`051` çip, `071` temassız, `812` e-ticaret) | |
 | `F37` | RRN | an12 | |
-| `F42` | işyeri no | ans15 | |
+| `F42` | işyeri no | ans15 (kısa no sağdan boşlukla doldurulur, örn. `"TRENDYOL       "`); `Merchant` tablosunda olmalı | evet |
 | `F43` | işyeri adı / yeri | ans40 (tam 40 karakter) | |
 | `F48` | ek veri | ans..999 (LLLVAR); bu sistemde **alıcı kart no** | para transferinde |
 | `cvv` | — | 3 ya da 4 rakam (CVV2, kartın arkası) | elle girişte (`01x`) ve e-ticarette (`81x`) |
@@ -178,6 +180,7 @@ Kuyruklar ve mesaj trafiği yönetim arayüzünden izlenebilir: http://localhost
 | Card | `/api/cards`, `/api/cards/{id}`, `/api/cards/by-number/{cardNumber}` |
 | TransactionType | `/api/transaction-types`, `/api/transaction-types/{otc}/{ots}` |
 | MtiProcessingCode | `/api/mti-processing-codes`, `/api/mti-processing-codes/{mti}/{f3}` |
+| Merchant | `/api/merchants`, `/api/merchants/{merchantId}` |
 | Kur cache'i (salt okunur, sadece `GET`) | `/api/exchange-rates`, `/api/exchange-rates/{840 \| USD}` |
 
 Katmanlar: **Controller** (sadece HTTP: sonucu 200/201/204/404/409'a çevirir) → **Handler** (`Handlers/`; iş kuralları ve `{Method}: ...` logları) → **Repository** (`Data/`; Dapper SQL, `I…Repository` arayüzleriyle). İşlem akışında controller yerine `TransactionQueueConsumer` → `TransactionHandler` → `TransactionRepository` vardır.
@@ -189,6 +192,7 @@ Kurallar:
 - `AccountNo` (BankAccount ve Card) 10 haneli bir sayıdır (`1000000000`–`9999999999`, ilk hane 0 olamaz); JSON'da string değil sayı olarak gönderilir. Aralık dışı değer `400`, route'ta sayısal olmayan hesap no `404` döner.
 - `BankAccount.Balance` sadece `POST`'ta (başlangıç bakiyesi) verilir; `PUT` sadece `AccountStatus` ve `Email`'i değiştirir (`email` gönderilmezse silinir).
 - `BankAccount.Email` opsiyoneldir; doluysa onaylı satışlarda Notification servisi bu adrese e-posta atar (bkz. **Notification**).
+- `Merchant.MerchantId` `POST`'ta sondaki boşluklar silinerek kaydedilir; `PUT` `Name`, `MerchantType` (tam 4 rakam) ve `Status`'u değiştirir. İşlem akışı işyerini cache'ten değil kendi transaction'ında okur: değişiklik bir sonraki işlemde geçerlidir.
 - `Card.LastTransactionDate` / `LastTransactionAmount` CRUD ile yazılamaz — işlem akışının alanları.
 - `Card` tablosunda CVV / PIN kolonu yok; hash'leri `CardSecret` tablosundadır, bkz. **CVV2 ve PIN**.
 - `POST /api/cards` cevabında kartın CVV2'si (`cvv`, 3 hane) ve PIN'i (`pin`, 4 hane) **bir kez** döner: kartın arkasına basılan değer ve PIN zarfının karşılığı. Sonradan hiçbir endpoint göstermez; not alınmalı.
@@ -229,6 +233,10 @@ Red kaydı F39'u ile commit edildikten sonra fırlatılır, kayıt geri alınmaz
 | Kontrol | IRC | F39 |
 |---|---|---|
 | F22 geldi ama ilk iki hanesi `EntryMode` tablosunda tanımlı değil (F22 yoksa temassız değil sayılır) | `1002` | `12` |
+| F42 yok (Gate zorunlu tutar; kuyruğa başka yoldan gelirse) | `1007` | `30` |
+| İşyeri (F42, sondaki boşluklar silinerek) `Merchant` tablosunda yok | `4001` | `03` |
+| İşyerinin `Status`'u `Active` değil | `4002` | `03` |
+| F18 geldi ama işyerinin `MerchantType`'ıyla (MCC) uyuşmuyor (F18 yoksa bakılmaz) | `4003` | `03` |
 | Kart yok | `2001` | `14` |
 | `Card.ExpiryDate` (MMYY) geçmiş ya da F14 (YYMM) kartla uyuşmuyor | `2002` | `54` |
 | Kart fiziksel olarak yok (F22 `01x` elle giriş / `81x` e-ticaret) ama CVV2 gelmedi; ya da (hangi girişte olursa olsun) gelen CVV2 tutmuyor | `2006` | `N7` |

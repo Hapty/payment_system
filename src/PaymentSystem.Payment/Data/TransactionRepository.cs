@@ -45,11 +45,11 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
                     """
                     INSERT INTO dbo.DebitTransaction
                         (Guid, Mti, F2_CardNo, F3_ProcessingCode, Otc, Ots, F4_Amount, F49_CurrencyCode, LocalTxnAmount,
-                         F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F43_Description,
+                         F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F42_MerchantId, F43_Description,
                          F48_RecipientCardNo)
                     VALUES
                         (@Id, @Mti, @CardNumber, @ProcessingCode, @Otc, @Ots, @Amount, @CurrencyCode, @LocalAmount,
-                         @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @CardAcceptor,
+                         @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @MerchantId, @CardAcceptor,
                          @RecipientCardNumber)
                     """,
                     t, transaction);
@@ -60,6 +60,11 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
                 return false;
             }
         }
+
+        public Task<Merchant?> GetMerchantAsync(string merchantId) =>
+            connection.QuerySingleOrDefaultAsync<Merchant>(
+                "SELECT MerchantId, Name, MerchantType, Status FROM dbo.Merchant WHERE MerchantId = @merchantId",
+                new { merchantId }, transaction);
 
         public Task<Card?> GetCardAsync(string cardNumber) =>
             connection.QuerySingleOrDefaultAsync<Card>(

@@ -4,6 +4,7 @@
 # doğrular (bozuk/eksik alan -> 400), isteği RabbitMQ ile Payment'a iletir ve cevabı bekler. Onay da red de 200 ile döner;
 # karar cevaptaki F39'dadır.
 # Önce Payment'ın CRUD endpoint'leriyle hesap ve kart oluştur (src/PaymentSystem.Payment/PaymentSystem.Payment.http).
+# F42 (işyeri no, sabit 15 karakter) zorunlu ve Merchant tablosunda olmalı: seed TRENDYOL, GETIR, IYZICO, NETFLIX.
 # Aynı isteği (MTI + F2 + F3 + F4 + F13 + F12) ikinci kez gönderirsen para tekrar düşmez, ilk cevap döner.
 
 ### Satış: 150,00 TL (F4 kuruş cinsinden, F49 949 = TRY, F22 051 = çip, F13 yyyymmdd)
@@ -21,6 +22,7 @@ Content-Type: application/json
   "F12": "125959",
   "F13": "20261016",
   "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
   "F14": "2812",
   "F22": "051"
 }
@@ -40,6 +42,7 @@ Content-Type: application/json
   "F12": "130000",
   "F13": "20261016",
   "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
   "F14": "2812"
 }
 
@@ -58,6 +61,7 @@ Content-Type: application/json
   "F12": "130100",
   "F13": "20261016",
   "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
   "F14": "2812",
   "F22": "051"
 }
@@ -78,6 +82,7 @@ Content-Type: application/json
   "F12": "130200",
   "F13": "20261016",
   "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
   "F14": "2812",
   "F22": "812",
   "cvv": "123"
@@ -98,6 +103,7 @@ Content-Type: application/json
   "F12": "130300",
   "F13": "20261016",
   "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
   "F14": "2812",
   "F22": "051",
   "F48": "5406680000000002"
@@ -118,6 +124,7 @@ Content-Type: application/json
   "F12": "130400",
   "F13": "20261016",
   "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
   "F14": "2812",
   "F22": "051",
   "F48": "5406680000000002"

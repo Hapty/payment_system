@@ -107,6 +107,7 @@ BEGIN
         F18_MerchantCode        VARCHAR(15)     NULL,
         F22_EntryMode           CHAR(3)         NULL,
         F39_ResponseCode        CHAR(2)         NULL,
+        F42_MerchantId          VARCHAR(15)     NULL,           -- işyeri no (sondaki boşluklar silinmiş)
         F43_Description         VARCHAR(100)    NULL,
         F48_RecipientCardNo     VARCHAR(19)     NULL            -- sadece para transferinde (kkpt): alıcı kart no
     );
@@ -149,6 +150,21 @@ BEGIN
         Description         VARCHAR(100)    NOT NULL,
         F39_ResponseCode    CHAR(2)         NOT NULL,
         CONSTRAINT PK_InternalResponseCode PRIMARY KEY (Irc)
+    );
+END
+GO
+
+-- 8) Merchant (işyeri): F42 bu tabloda olmalı ve Active olmalı; istekte F18 geldiyse işyerinin MCC'siyle aynı olmalı.
+-- MerchantId sondaki boşluklar olmadan tutulur: F42 sabit 15 karakterdir, POS kısa no'yu sağdan boşlukla doldurur.
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Merchant')
+BEGIN
+    CREATE TABLE dbo.Merchant
+    (
+        MerchantId      VARCHAR(15)     NOT NULL PRIMARY KEY,   -- F42
+        Name            VARCHAR(100)    NOT NULL,
+        MerchantType    CHAR(4)         NOT NULL,               -- MCC (F18)
+        Status          VARCHAR(20)     NOT NULL,               -- Active / Blocked ...
+        CreatedAt       DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME()
     );
 END
 GO

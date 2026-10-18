@@ -16,5 +16,6 @@ public sealed record DebitTransaction(
     string? CardExpiry,         // F14
     string? MerchantType,       // F18
     string? EntryMode,          // F22
+    string? MerchantId,         // F42, sondaki boşluklar silinmiş
     string? CardAcceptor,       // F43
     string? RecipientCardNumber = null);    // F48, sadece para transferinde

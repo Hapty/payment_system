@@ -21,6 +21,7 @@ public sealed class TransactionHandler(
 {
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
+    private const string ActiveMerchant = "Active";
     private const string MoneyTransfer = "MoneyTransfer";
 
     // Kart fiziksel olarak okutulmadığında CVV2 zorunludur: elle giriş (F22 01x) ve e-ticaret (81x).
@@ -88,7 +89,8 @@ public sealed class TransactionHandler(
                 LocalAmount: lira,
                 request.LocalTime,
                 TransactionDate: transactionDate,
-                request.CardExpiry, request.MerchantType, request.EntryMode, CardAcceptor: request.CardAcceptor?.TrimEnd(),
+                request.CardExpiry, request.MerchantType, request.EntryMode, MerchantId: request.MerchantId?.TrimEnd(),
+                CardAcceptor: request.CardAcceptor?.TrimEnd(),
                 // Kolon VARCHAR(19): kart numarası olmayan F48 yazılmaz, transfer 1005 ile reddedilir.
                 RecipientCardNumber: type.Name == MoneyTransfer && IsCardNumber(request.RecipientCardNumber) ? request.RecipientCardNumber : null));
             if (inserted)
@@ -131,6 +133,20 @@ public sealed class TransactionHandler(
             if (entryMode is null)
                 return Decline(nameof(DecideAsync), request, InternalResponseCodes.EntryModeNotDefined, $"{IsoLog.Field(22, f22)} is not defined");
         }
+
+        // İşyeri (F42) Merchant tablosunda olmalı ve Active olmalı; F18 geldiyse işyerinin MCC'si olmalı.
+        // F42 sabit 15 karakterdir: kısa no sağdan boşlukla doldurulur, tabloda boşluksuz durur.
+        if (request.MerchantId?.TrimEnd() is not { Length: > 0 } merchantId)
+            return Decline(nameof(DecideAsync), request, InternalResponseCodes.MerchantIdMissing, $"{IsoLog.Label(42)} missing");
+        var merchant = await session.GetMerchantAsync(merchantId);
+        if (merchant is null)
+            return Decline(nameof(DecideAsync), request, InternalResponseCodes.MerchantNotFound, $"{IsoLog.Field(42, merchantId)} not found");
+        if (merchant.Status != ActiveMerchant)
+            return Decline(nameof(DecideAsync), request, InternalResponseCodes.MerchantNotActive,
+                $"{IsoLog.Field(42, merchantId)} is {merchant.Status}");
+        if (request.MerchantType is { } mcc && mcc != merchant.MerchantType)
+            return Decline(nameof(DecideAsync), request, InternalResponseCodes.MerchantTypeMismatch,
+                $"{IsoLog.Field(18, mcc)} does not match merchant {merchantId} MCC {merchant.MerchantType}");
 
         var card = await session.GetCardAsync(request.CardNumber);
         if (card is null)

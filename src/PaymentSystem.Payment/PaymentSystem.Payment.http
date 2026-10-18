@@ -119,6 +119,28 @@ Content-Type: application/json
 ###
 DELETE {{host}}/api/mti-processing-codes/0200/200000
 
+### ---------- Merchant (F42 bu tabloda olmalı ve Active olmalı) ----------
+GET {{host}}/api/merchants
+
+###
+GET {{host}}/api/merchants/TRENDYOL
+
+###
+POST {{host}}/api/merchants
+Content-Type: application/json
+
+{ "merchantId": "HEPSIBURADA", "name": "HEPSIBURADA", "merchantType": "5399", "status": "Active" }
+
+###
+# MerchantId URL'den gelir; Name, MerchantType ve Status değişir
+PUT {{host}}/api/merchants/HEPSIBURADA
+Content-Type: application/json
+
+{ "merchantId": "HEPSIBURADA", "name": "HEPSIBURADA", "merchantType": "5399", "status": "Blocked" }
+
+###
+DELETE {{host}}/api/merchants/HEPSIBURADA
+
 ### ---------- ExchangeRates (kur cache'i, salt okunur) ----------
 GET {{host}}/api/exchange-rates
 
