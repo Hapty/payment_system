@@ -141,6 +141,8 @@ verisini oluşturur. Script'ler idempotent'tir (`IF NOT EXISTS` / `MERGE`), her 
 |---|---|
 | http://localhost:8080/api/transactions | Gate — işlem girişi |
 | http://localhost:5002/api/... | Payment — yönetim API'si |
+| http://localhost:8080/swagger | Gate Swagger UI |
+| http://localhost:5002/swagger | Payment Swagger UI |
 | http://localhost:15672 | RabbitMQ arayüzü (`payment` / `RABBITMQ_PASSWORD`) |
 | `localhost:1433` | SQL Server (DBeaver vb. ile bağlanırken Database: `PaymentSystem`) |
 
@@ -177,6 +179,23 @@ $env:Smtp__User = "gonderen@gmail.com"; $env:Smtp__Password = "<uygulama şifres
 dotnet run --project src/PaymentSystem.Notification
 ```
 Lokalde Kafka adresi `localhost:9094`, container içinde `kafka:9092`'dir (compose iki listener açar).
+
+### Swagger (API dokümanı ve deneme arayüzü)
+Swagger (OpenAPI), API'nin makinece okunabilen tarifidir: hangi endpoint var, hangi gövdeyi alır, hangi durum kodlarıyla
+ne döner. Tarif koddan üretilir, kod değişince kendiliğinden güncellenir.
+
+| Adres | Ne |
+|---|---|
+| http://localhost:8080/swagger · http://localhost:5002/swagger | Swagger UI: endpoint'leri gör, "Try it out" ile tarayıcıdan istek at |
+| http://localhost:8080/openapi/v1.json · http://localhost:5002/openapi/v1.json | Ham OpenAPI şeması: Postman'a import edilebilir |
+
+- Şemayı .NET 9'un yerleşik `Microsoft.AspNetCore.OpenApi` paketi üretir (`AddOpenApi` / `MapOpenApi`); arayüz
+  `Swashbuckle.AspNetCore.SwaggerUI` paketinden gelir ve sadece bu şemayı gösterir.
+- İkisi de `Swagger:Enabled` ayarıyla açılır (varsayılan `true`), ortamdan bağımsızdır: hem Docker'da hem lokalde çalışır.
+  Kapatmak için: `Swagger__Enabled=false`.
+- Açıklamalar koddan gelir: Gate'te `.WithSummary` / `.WithDescription` ve istek alanlarındaki `[Description]`
+  (F2, F3 ... ne demek); Payment'ta action'lardaki `[EndpointSummary]` ve `[ProducesResponseType]` (hangi durum kodu döner).
+  Gate'in `POST /api/transactions` gövdesi örnek bir satış isteğiyle dolu gelir (`Program.cs`'teki operation transformer).
 
 ---
 
@@ -419,8 +438,8 @@ Para hareketi yoktur. (Bakiyenin cevapta F54 ile dönmesi henüz yok.)
 ```
 Gönderenden düşülür, alıcıya eklenir — ikisi aynı SQL transaction'ında. Dövizle de olabilir: iki tarafa da aynı TL karşılığı yansır.
 
-### `GET /openapi/v1.json` (sadece Development)
-Gate'in OpenAPI şeması. Postman'a import edilebilir.
+### `GET /openapi/v1.json` ve `/swagger`
+Gate'in OpenAPI şeması (Postman'a import edilebilir) ve Swagger UI. `Swagger:Enabled` ile açılır, bkz. [Swagger](#swagger-api-dokümanı-ve-deneme-arayüzü).
 
 ---
 
@@ -597,8 +616,8 @@ Bu da tanım cache'ini hemen boşaltır.
 Bu endpoint TCMB'ye **gitmez**, sadece cache'i gösterir. `isStale: true` ise işlem akışı bu kuru kullanmaz (`91`).
 Desteklenen kodlar `ExchangeRateCache.IsoToTcmb`'de (USD, EUR, GBP, CHF, JPY, …).
 
-### `GET /openapi/v1.json` (sadece Development)
-Payment'ın OpenAPI şeması.
+### `GET /openapi/v1.json` ve `/swagger`
+Payment'ın OpenAPI şeması ve Swagger UI. `Swagger:Enabled` ile açılır, bkz. [Swagger](#swagger-api-dokümanı-ve-deneme-arayüzü).
 
 > `EntryMode` ve `InternalResponseCode` tablolarının API'si yoktur; doğrudan SQL ile değiştirilir ve en geç 10 dk içinde devreye girer.
 
@@ -823,6 +842,7 @@ Gmail dışı için `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`. `SMTP_USER` ve `SMTP_
 | Gate | `Gate:RabbitMqUri` | `amqp://payment@localhost:5672` | Şifresiz URI |
 | Gate | `Gate:PaymentTimeoutSeconds` | `10` | Cevap bekleme süresi = mesaj TTL'i |
 | Gate, Payment | `RABBITMQ_PASSWORD` | — | zorunlu |
+| Gate, Payment | `Swagger:Enabled` | `true` | `/openapi/v1.json` ve `/swagger` açık mı |
 | Payment | `ConnectionStrings:PaymentSystem` | `Server=localhost,1433;Database=PaymentSystem;...` | Şifresiz |
 | Payment | `MSSQL_SA_PASSWORD` | — | zorunlu |
 | Payment | `ConnectionStrings:RabbitMq` | `amqp://payment@localhost:5672` | |

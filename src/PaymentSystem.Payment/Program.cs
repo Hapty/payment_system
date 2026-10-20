@@ -84,9 +84,11 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
+// OpenAPI şeması (/openapi/v1.json) ve Swagger UI (/swagger) Swagger:Enabled ile açılır; ortamdan (Development) bağımsız.
+if (app.Configuration.GetValue<bool>("Swagger:Enabled"))
 {
     app.MapOpenApi();
+    app.UseSwaggerUI(options => options.SwaggerEndpoint("/openapi/v1.json", "Payment v1"));
 }
 
 app.MapControllers();
