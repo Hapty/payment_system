@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -8,31 +9,31 @@ namespace PaymentSystem.Gate;
 // POST /api/transactions gövdesi: bir finansal isteğin ISO8583 alanları. JSON'da alan numarasıyla gelir ("F2", "F3" ...);
 // C# tarafında okunabilir isimler kullanılır. cvv ISO alanı olmadığı için adıyla gelir.
 public sealed record TransactionRequest(
-    [property: JsonPropertyName("mti")] string? Mti,
-    [property: JsonPropertyName("F2")] string? CardNumber,
-    [property: JsonPropertyName("F3")] string? ProcessingCode,          // 000000 satış, 310000 bakiye sorgu, 400000 transfer
-    [property: JsonPropertyName("F4")] long? AmountMinor,               // kuruş cinsinden: 15000 = 150,00
-    [property: JsonPropertyName("F49")] string? CurrencyCode,           // örn. 949 = TRY
-    [property: JsonPropertyName("F7")] string? TransmissionDateTime,    // MMDDhhmmss
-    [property: JsonPropertyName("F11")] string? Stan,
-    [property: JsonPropertyName("F12")] string? LocalTime,              // hhmmss
-    [property: JsonPropertyName("F13")] string? LocalDate,              // yyyymmdd; ISO mesajına MMDD olarak girer
-    [property: JsonPropertyName("F41")] string? TerminalId,
-    [property: JsonPropertyName("F14")] string? CardExpiry,             // YYMM
-    [property: JsonPropertyName("F18")] string? MerchantType,
-    [property: JsonPropertyName("F22")] string? EntryMode,
-    [property: JsonPropertyName("F37")] string? Rrn,
-    [property: JsonPropertyName("F42")] string? MerchantId,
-    [property: JsonPropertyName("F43")] string? CardAcceptor,
-    [property: JsonPropertyName("F48")] string? RecipientCardNumber = null,     // bu sistemde: para transferinde alıcı kart no
+    [property: JsonPropertyName("mti"), Description("İstek MTI'ı, örn. 0200 (finansal istek)")] string? Mti,
+    [property: JsonPropertyName("F2"), Description("Kart numarası (PAN)")] string? CardNumber,
+    [property: JsonPropertyName("F3"), Description("İşlem kodu: 000000 satış, 310000 bakiye sorgu, 400000 transfer")] string? ProcessingCode,
+    [property: JsonPropertyName("F4"), Description("Tutar, kuruş cinsinden: 15000 = 150,00")] long? AmountMinor,
+    [property: JsonPropertyName("F49"), Description("Para birimi (ISO 4217 sayısal), örn. 949 = TRY")] string? CurrencyCode,
+    [property: JsonPropertyName("F7"), Description("İletim tarih-saati, MMDDhhmmss")] string? TransmissionDateTime,
+    [property: JsonPropertyName("F11"), Description("STAN (sistem izleme numarası), 6 hane")] string? Stan,
+    [property: JsonPropertyName("F12"), Description("Yerel saat, hhmmss")] string? LocalTime,
+    [property: JsonPropertyName("F13"), Description("Yerel tarih, yyyymmdd; ISO mesajına MMDD olarak girer")] string? LocalDate,
+    [property: JsonPropertyName("F41"), Description("Terminal no")] string? TerminalId,
+    [property: JsonPropertyName("F14"), Description("Kart son kullanma tarihi, YYMM")] string? CardExpiry,
+    [property: JsonPropertyName("F18"), Description("İşyeri tipi (MCC)")] string? MerchantType,
+    [property: JsonPropertyName("F22"), Description("Kart okuma şekli (entry mode), örn. 051 = çip")] string? EntryMode,
+    [property: JsonPropertyName("F37"), Description("RRN (referans no)")] string? Rrn,
+    [property: JsonPropertyName("F42"), Description("İşyeri no, sabit 15 karakter; Merchant tablosunda aktif olmalı")] string? MerchantId,
+    [property: JsonPropertyName("F43"), Description("İşyeri adı / yeri")] string? CardAcceptor,
+    [property: JsonPropertyName("F48"), Description("Bu sistemde: para transferinde alıcı kart no")] string? RecipientCardNumber = null,
     // CVV2 (kartın arkası): ISO8583:1987'de standart alanı yok, Payment'a ayrı alan olarak gider
-    [property: JsonPropertyName("cvv")] string? Cvv = null);
+    [property: JsonPropertyName("cvv"), Description("CVV2, 3 ya da 4 hane (ISO alanı değil)")] string? Cvv = null);
 
 // ResponseCode = F39. Onay da red de (örn. 51 yetersiz bakiye) 200 ile döner.
 public sealed record TransactionResponse(
-    [property: JsonPropertyName("mti")] string Mti,
-    [property: JsonPropertyName("F39")] string ResponseCode,
-    [property: JsonPropertyName("F11")] string? Stan);
+    [property: JsonPropertyName("mti"), Description("Cevap MTI'ı, örn. 0210")] string Mti,
+    [property: JsonPropertyName("F39"), Description("Cevap kodu: 00 onay, diğerleri red (örn. 51 yetersiz bakiye)")] string ResponseCode,
+    [property: JsonPropertyName("F11"), Description("İstekteki STAN")] string? Stan);
 
 // İşlemlerin sisteme tek giriş noktası. İstek ISO8583 mesajına çevrilir ve her alan ISO8583 tanımına göre doğrulanır;
 // bozuk ya da eksik alan 400 ile, hangi alanda ne sorun olduğu yazılarak döner. Geçerli istek TransactionHandler'a gider.
