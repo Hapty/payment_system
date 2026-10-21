@@ -1,6 +1,8 @@
 @host = http://localhost:5002
 
 ### ---------- BankAccount ----------
+# Boş kolonlu kayıt açılmaz: hesapta tüm alanlar (balance 0 olabilir, email dahil), kartta tüm alanlar zorunlu.
+# Kartta tek istisna: contactlessAllowed false ise contactlessLimit boş olmalı (true ise zorunlu).
 GET {{host}}/api/bank-accounts
 
 ###
@@ -13,7 +15,7 @@ Content-Type: application/json
 GET {{host}}/api/bank-accounts/1000000001
 
 ###
-# Bakiye değişmez, sadece durum ve e-posta güncellenir (email gönderilmezse silinir)
+# Bakiye değişmez (body'de olmalı ama yok sayılır), sadece durum ve e-posta güncellenir; email zorunlu
 PUT {{host}}/api/bank-accounts/1000000001
 Content-Type: application/json
 
@@ -44,7 +46,7 @@ Content-Type: application/json
 POST {{host}}/api/bank-accounts
 Content-Type: application/json
 
-{ "accountNo": 1000000002, "accountStatus": "Active", "balance": 0 }
+{ "accountNo": 1000000002, "accountStatus": "Active", "balance": 0, "email": "alici@example.com" }
 
 ###
 POST {{host}}/api/cards

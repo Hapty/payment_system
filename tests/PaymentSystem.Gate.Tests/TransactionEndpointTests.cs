@@ -14,7 +14,7 @@ public class TransactionEndpointTests
         Mti: "0200", CardNumber: "4111111111111111", ProcessingCode: "000000", AmountMinor: 15000, CurrencyCode: "949",
         TransmissionDateTime: "1002143015", Stan: "123456", LocalTime: "173015", LocalDate: "20261002", TerminalId: "TERM0001",
         CardExpiry: "2812", MerchantType: "5999", EntryMode: "051", Rrn: "261002123456", MerchantId: "TRENDYOL       ",
-        CardAcceptor: null);
+        CardAcceptor: "TRENDYOL                 ISTANBUL     TR");
 
     private async Task<IResult> PostAsync(TransactionRequest request) =>
         (await TransactionEndpoint.HandleAsync(
@@ -86,15 +86,26 @@ public class TransactionEndpointTests
         Assert.Contains("F2 (Kart No)=411111********11", failed);
     }
 
+    // F37'nin DB'de kolonu yok; F48 sadece transferde gelir.
     [Fact]
     public async Task OptionalFieldsCanBeLeftOut()
     {
-        var request = Sale() with { CardExpiry = null, MerchantType = null, EntryMode = null, Rrn = null };
+        var request = Sale() with { Rrn = null, RecipientCardNumber = null };
 
         var ok = Assert.IsType<Ok<TransactionResponse>>(await PostAsync(request));
 
         Assert.Equal("00", ok.Value!.ResponseCode);
-        Assert.Null(Assert.Single(_payment.Requests).CardExpiry);
+        Assert.Null(Assert.Single(_payment.Requests).Rrn);
+    }
+
+    // DebitTransaction'da kolonu olan alanlar boş gelemez: boş kolonlu kayıt açılmaz.
+    [Fact]
+    public async Task FieldsStoredInDb_AreRequired()
+    {
+        var errors = await ValidationErrorsAsync(Sale() with { CardExpiry = null, MerchantType = null, EntryMode = null, CardAcceptor = null });
+
+        Assert.Equal(["F14", "F18", "F22", "F43"], errors.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal("F43 is required.", Assert.Single(errors["F43"]));
     }
 
     [Fact]
@@ -180,7 +191,7 @@ public class TransactionEndpointTests
         Assert.Equal(Sale() with
         {
             CardNumber = "5406680000000001", ProcessingCode = "400000", TransmissionDateTime = "1002143025", Stan = "000001",
-            LocalTime = "143025", CardExpiry = "2712", MerchantType = null, Rrn = null, MerchantId = null,
+            LocalTime = "143025", CardExpiry = "2712", MerchantType = null, Rrn = null, MerchantId = null, CardAcceptor = null,
             RecipientCardNumber = "5406680000000002", Cvv = "123"
         }, request);
         Assert.Equal("""{"mti":"0210","F39":"00","F11":"000001"}""",

@@ -234,7 +234,8 @@ Content-Type: application/json
 
 { "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949",
   "F7": "1016095959", "F11": "000001", "F12": "125959", "F13": "20261016",
-  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F22": "051" }
+  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F18": "5399", "F22": "051",
+  "F43": "TRENDYOL                 ISTANBUL     TR" }
 ```
 ```json
 { "mti": "0210", "F39": "00", "F11": "000001" }
@@ -288,7 +289,7 @@ Yukarıdaki 3. adımdaki satış isteğinin sistemde izlediği yol, dosya ve met
 - JSON gövdesi `TransactionRequest` record'una bağlanır. JSON alan adları ISO numaralarıdır (`"F2"`), C# tarafında okunur isimler (`CardNumber`).
 - `mti` 4 haneli bir **istek** MTI'ı değilse hemen `400`.
 - Her alan `Iso87Fields`'taki tanımla (`Fixed`/`LLVar`/`LLLVar`, uzunluk, karakter seti) doğrulanır. `F4` sayı olarak gelir, 12 haneye sıfırla doldurulur.
-- `0200` için zorunlu alanlar (`F2 F3 F4 F7 F11 F12 F13 F41 F42 F49`) eksikse hata listesine eklenir.
+- `0200` için zorunlu alanlar (`F2 F3 F4 F7 F11 F12 F13 F14 F18 F22 F41 F42 F43 F49`) eksikse hata listesine eklenir. DB'de kolonu olan her alan zorunludur, boş kolonlu kayıt açılmaz; opsiyonel olanlar sadece `F37` (saklanmaz) ve transferin `F48`'i.
 - **F13 özel**: JSON'da `yyyymmdd` (gerçek bir tarih olmalı) gelir; ISO mesajına standart `MMDD` olarak girer, yıllı hali ayrıca Payment'a taşınır.
 - `cvv` 3 ya da 4 rakam olmalı; değeri hiçbir yere loglanmaz.
 - Herhangi bir hata varsa: `400 ValidationProblem` — her alanın hatası ayrı yazılır. İstek Payment'a **gitmez**.
@@ -359,11 +360,11 @@ Sisteme işlem sokmanın **tek** yolu. Satış, bakiye sorgu ve transfer aynı e
 | `F41` | Terminal no | tam 8 karakter (ans) | evet | |
 | `F42` | İşyeri no | tam **15** karakter (ans) | evet | Kısa no sağdan boşlukla doldurulur: `"TRENDYOL       "`. `Merchant` tablosunda olmalı |
 | `F49` | Para birimi | n3 | evet | `949` TRY, `840` USD, `978` EUR … |
-| `F14` | Son kullanma | n4 `YYMM` | | Gelirse kartla uyuşmalı |
-| `F18` | İşyeri tipi (MCC) | n4 | | Gelirse işyerinin MCC'siyle aynı olmalı |
-| `F22` | Giriş yöntemi | n3 | | `051` çip · `071` temassız · `011` elle · `812` e-ticaret |
+| `F14` | Son kullanma | n4 `YYMM` | evet | Kartla uyuşmalı |
+| `F18` | İşyeri tipi (MCC) | n4 | evet | İşyerinin MCC'siyle aynı olmalı |
+| `F22` | Giriş yöntemi | n3 | evet | `051` çip · `071` temassız · `011` elle · `812` e-ticaret |
 | `F37` | RRN | an12 | | Doğrulanır ve iletilir; şu an saklanmaz |
-| `F43` | İşyeri adı/yeri | tam **40** karakter | | E-postada görünür |
+| `F43` | İşyeri adı/yeri | tam **40** karakter | evet | E-postada görünür |
 | `F48` | Ek veri | ans, 1–999 (LLLVAR) | transferde | Bu sistemde **alıcı kart no** |
 | `cvv` | — | 3 ya da 4 rakam | elle girişte / e-ticarette | ISO alanı değildir; loglanmaz, saklanmaz |
 
@@ -400,8 +401,12 @@ Diğer tüm kodlar Payment'tan gelir (bkz. [Bölüm 9](#9-karar-motoru-kontrolle
     "F7":  ["F7 is required."],
     "F11": ["F11 is required."],
     "F12": ["F12 is required."],
+    "F14": ["F14 is required."],
+    "F18": ["F18 is required."],
+    "F22": ["F22 is required."],
     "F41": ["F41 is required."],
     "F42": ["F42 is required."],
+    "F43": ["F43 is required."],
     "F49": ["F49: Contains characters that are not allowed for Numeric."],
     "F13": ["F13: Must be a date in yyyymmdd format, e.g. 20261002."]
   }
@@ -414,7 +419,8 @@ Diğer tüm kodlar Payment'tan gelir (bkz. [Bölüm 9](#9-karar-motoru-kontrolle
 ```json
 { "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949",
   "F7": "1016095959", "F11": "000001", "F12": "125959", "F13": "20261016",
-  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F22": "051" }
+  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F18": "5399", "F22": "051",
+  "F43": "TRENDYOL                 ISTANBUL     TR" }
 ```
 Bakiye düşer, kartın `LastTransactionDate/Amount`'ı güncellenir.
 
@@ -433,8 +439,8 @@ Para hareketi yoktur. (Bakiyenin cevapta F54 ile dönmesi henüz yok.)
 ```json
 { "mti": "0200", "F2": "4111111111111111", "F3": "400000", "F4": 15000, "F49": "949",
   "F7": "1016100300", "F11": "000005", "F12": "130300", "F13": "20261016",
-  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F22": "051",
-  "F48": "5406680000000002" }
+  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F18": "5399", "F22": "051",
+  "F43": "TRENDYOL                 ISTANBUL     TR", "F48": "5406680000000002" }
 ```
 Gönderenden düşülür, alıcıya eklenir — ikisi aynı SQL transaction'ında. Dövizle de olabilir: iki tarafa da aynı TL karşılığı yansır.
 
@@ -484,15 +490,15 @@ Model:
 |---|---|
 | `accountNo` | 10 haneli **sayı** (`1000000000`–`9999999999`), JSON'da string değil |
 | `accountStatus` | zorunlu, ≤20 karakter. İşlem için `Active` olmalı (`Blocked`, `Closed` … red sebebidir) |
-| `balance` | TL. Sadece `POST`'ta verilir |
-| `email` | opsiyonel, geçerli e-posta. Doluysa onaylı satış/transferde bildirim gider |
+| `balance` | TL, zorunlu (`0` olabilir; gönderilmezse `400`). Sadece `POST`'ta işlenir, `PUT`'ta yok sayılır |
+| `email` | zorunlu, geçerli e-posta. Onaylı satış/transferde bildirim buraya gider |
 
 | Metot | Route | Açıklama | Cevaplar |
 |---|---|---|---|
 | `GET` | `/api/bank-accounts` | Tüm hesaplar | `200 [ ... ]` |
 | `GET` | `/api/bank-accounts/{accountNo}` | Tek hesap | `200`, `404` (sayısal olmayan no da `404`) |
 | `POST` | `/api/bank-accounts` | Hesap aç (başlangıç bakiyesiyle) | `201`, `400`, `409` |
-| `PUT` | `/api/bank-accounts/{accountNo}` | **Sadece** `accountStatus` ve `email` değişir. Gövdedeki `balance` yok sayılır; `email` gönderilmezse **silinir** | `204`, `400`, `404` |
+| `PUT` | `/api/bank-accounts/{accountNo}` | **Sadece** `accountStatus` ve `email` değişir. Gövdedeki `balance` yok sayılır; `email` zorunlu | `204`, `400`, `404` |
 | `DELETE` | `/api/bank-accounts/{accountNo}` | Hesabı sil | `204`, `404` |
 
 > Bakiye neden PUT ile değişmiyor? Gerçek bir bankada bakiye sadece işlemlerle (kayıt bırakarak) değişir; doğrudan üzerine yazılamaz.
@@ -511,9 +517,10 @@ Model:
 | `id` | DB üretir (IDENTITY) |
 | `cardNumber` | zorunlu, ≤19, benzersiz. **Değiştirilemez** |
 | `accountNo` | 10 haneli sayı; kartın bağlı olduğu hesap |
-| `expiryDate` | `MMYY`, tam 4 karakter (ISO F14 ise `YYMM` — dikkat!). Boşsa süre kontrolü yapılmaz |
-| `contactlessAllowed` | temassız işlem izni |
-| `contactlessLimit` | TL; boşsa limit yok |
+| `cardType` | zorunlu, ≤20 karakter (`Debit`, `Credit` …) |
+| `expiryDate` | zorunlu, `MMYY`, tam 4 karakter (ISO F14 ise `YYMM` — dikkat!) |
+| `contactlessAllowed` | zorunlu (gönderilmezse `400`); temassız işlem izni |
+| `contactlessLimit` | TL. `contactlessAllowed: true` ise zorunlu, `false` ise boş olmalı |
 | `lastTransactionDate/Amount` | sadece işlem akışı yazar; CRUD ile yazılamaz |
 
 | Metot | Route | Açıklama | Cevaplar |

@@ -14,10 +14,12 @@ internal static class TestMessages
         .Set(12, "173015")
         .Set(13, "1002")
         .Set(14, "2812")
+        .Set(18, "5399")
         .Set(22, "051")
         .Set(37, "261002123456")
         .Set(41, "TERM0001")
         .Set(42, "TRENDYOL       ")
+        .Set(43, "TRENDYOL                 ISTANBUL     TR")
         .Set(49, "949");
 
     public static IsoMessage Echo() => new IsoMessage("0800")
