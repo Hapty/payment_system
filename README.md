@@ -11,7 +11,7 @@ ardından her endpoint'in tek tek anlatımı gelir. En sonda "hangi dosyayı han
 1. [Büyük resim](#1-büyük-resim)
 2. [Temel kavramlar (sözlük)](#2-temel-kavramlar-sözlük)
 3. [Kurulum ve çalıştırma](#3-kurulum-ve-çalıştırma)
-4. [İlk işlemine kadar: adım adım senaryo](#4-ilk-işlemine-kadar-adım-adım-senaryo)
+4. [Uygulamalı lab: sıfırdan uçtan uca test](#4-uygulamalı-lab-sıfırdan-uçtan-uca-test)
 5. [Uçtan uca akış: bir satışın yolculuğu](#5-uçtan-uca-akış-bir-satışın-yolculuğu)
 6. [Endpoint'ler — Gate](#6-endpointler--gate-işlem-girişi)
 7. [Endpoint'ler — Payment yönetim API'si](#7-endpointler--payment-yönetim-apisi)
@@ -81,14 +81,14 @@ Kodda ve bu dokümanda sürekli geçen terimler:
 | **F4 – Tutar** | Kuruş cinsinden: `15000` = 150,00. |
 | **F11 – STAN** | System Trace Audit Number: terminalin işleme verdiği sıra no. İstemci cevabı isteğiyle bununla eşleştirir. |
 | **F14** | Kartın son kullanma tarihi, `YYMM`. (DB'deki `Card.ExpiryDate` ise `MMYY`.) |
-| **F18 – MCC** | Merchant Category Code: işyeri tipi (`5411` market …). |
+| **F18 – MCC** | Merchant Category Code: işyeri tipi (`5411` market, `5399` genel mağaza, `4829` para transferi …). İstekteki F18, işyerinin tablodaki MCC'siyle aynı olmalı. |
 | **F22 – Entry mode** | Kartın nasıl okunduğu: `05x` çip, `07x` temassız, `01x` elle giriş, `81x` e-ticaret. |
 | **F39 – Response code** | Kararın kendisi: `00` onay, `51` yetersiz bakiye, `14` geçersiz kart, `91` sistem ulaşılamıyor … |
-| **F41 / F42 / F43** | Terminal no / işyeri no / işyeri adı-yeri. |
+| **F41 / F42 / F43** | Terminal no / işyeri no / işyeri adı-yeri. F42 ve F43 sabit uzunluktadır (15 / 40), kısa değer sağdan boşlukla doldurulur. Transferde F42 bir mağaza değil, işlemin başladığı **kanaldır** (mobil uygulama, ATM). |
 | **F48** | "Ek veri" alanı; bu sistemde **transferde alıcı kart no**. |
 | **F49** | Para birimi, ISO 4217 sayısal: `949` TRY, `840` USD, `978` EUR. |
 | **CVV2** | Kartın arkasındaki 3-4 hane. ISO8583:1987'de alanı yoktur, JSON'da ayrı `cvv` alanıyla gelir. Kart fiziksel olarak yokken (elle giriş, e-ticaret) zorunludur. |
-| **IRC** | Internal Response Code. Payment'ın kararı önce 4 haneli bir iç koddur (`3002` = bakiye yetersiz); POS'a dönen F39 bir tablodan (`InternalResponseCode`) bulunur. Böylece birkaç sebep aynı F39'a çıkabilir ve eşleme kod değiştirmeden değişebilir. |
+| **IRC** | Internal Response Code. Payment'ın kararı önce 4 haneli bir iç koddur (`3002` = bakiye yetersiz); POS'a dönen F39 bir tablodan (`InternalResponseCode`) bulunur. Böylece birkaç sebep aynı F39'a çıkabilir ve eşleme kod değiştirmeden değişebilir. IRC DB kaydında tutulmaz; **Payment logunda** ve Kafka olayında görünür. |
 | **Otc / Ots** | İşlem tipini tanımlayan iki haneli kod çifti. `MTI + F3 → (Otc, Ots) → işlem adı` (`Sale`, `MoneyTransfer`, `BalanceInquiry`). |
 | **On-us** | Gönderen ve alıcı kartın ikisi de bu bankada. Bu sistemdeki transfer sadece on-us'tır. |
 | **Request-reply** | Kuyruk üzerinden "istek gönder, cevabını bekle" kalıbı. `CorrelationId` ile istek-cevap eşleşir. |
@@ -196,24 +196,49 @@ ne döner. Tarif koddan üretilir, kod değişince kendiliğinden güncellenir.
 - Açıklamalar koddan gelir: Gate'te `.WithSummary` / `.WithDescription` ve istek alanlarındaki `[Description]`
   (F2, F3 ... ne demek); Payment'ta action'lardaki `[EndpointSummary]` ve `[ProducesResponseType]` (hangi durum kodu döner).
   Gate'in `POST /api/transactions` gövdesi örnek bir satış isteğiyle dolu gelir (`Program.cs`'teki operation transformer).
+- ⚠️ "Try it out" ile atılan istek **gerçektir**: Gate'teki örnek satış onaylanırsa bakiye düşer, kayıt açılır, e-posta gider.
+  Aynı örneği ikinci kez gönderirsen tekrar sayılır ([11.1](#111-idempotency-aynı-istek-iki-kez-gelirse)); yeni işlem için F11/F12'yi değiştir.
 
 ---
 
-## 4. İlk işlemine kadar: adım adım senaryo
+## 4. Uygulamalı lab: sıfırdan uçtan uca test
 
-Hazır istekler: `src/PaymentSystem.Payment/PaymentSystem.Payment.http` (yönetim) ve `src/PaymentSystem.Gate/PaymentSystem.Gate.http` (işlemler).
+Bu bölümde boş bir veritabanından başlayıp sistemi baştan sona test ediyorsun: önce veriyi oluşturuyorsun, sonra bir satış
+ve bir karttan karta transfer (KKPT) yapıyorsun, ardından sistemi bilerek reddettiriyorsun. Her adımda **ne beklediğini**
+ve **nasıl doğrulayacağını** göreceksin. İstekleri Postman'den, Swagger'dan ya da hazır `.http` dosyalarından
+(`src/PaymentSystem.Payment/PaymentSystem.Payment.http`, `src/PaymentSystem.Gate/PaymentSystem.Gate.http`) atabilirsin.
 
-Seed verisiyle işyerleri (`TRENDYOL`, `GETIR`, `IYZICO`, `NETFLIX`) ve tanım tabloları hazır gelir; **hesap ve kart gelmez**, onları sen açarsın.
+> **Bir sonucu doğrulamanın üç yolu var**, lab boyunca üçünü de kullan:
+>
+> | Nereye bakıyorsun | Ne görürsün | Nasıl |
+> |---|---|---|
+> | Payment API | Bakiye, kartın son işlemi | `GET /api/bank-accounts/{no}`, `GET /api/cards` |
+> | Veritabanı | İşlem kaydının kendisi (`DebitTransaction`) | `sqlcmd` (bkz. [4.7](#47-veritabanından-son-kontrol)) |
+> | Loglar | Kararın **asıl sebebi** (IRC) | `docker logs payment_system_payment` |
 
-**1) Gönderen hesabı aç** (1000 TL bakiye, e-postalı)
+### 4.0 Hazırlık
+```bash
+docker compose up -d --build
+docker compose ps          # db, payment, gate, rabbitmq, kafka, notification "Up"; db-init çalışıp biter
+```
+Tanım tabloları (işlem tipleri, giriş yöntemleri, cevap kodları, işyerleri) `db-init` ile **otomatik dolar**; hesap ve kart
+gelmez. Önce seed'in geldiğini gör:
+```http
+GET http://localhost:5002/api/merchants               # TRENDYOL (5399), GETIR, IYZICO, NETFLIX
+GET http://localhost:5002/api/mti-processing-codes    # 000000 satış, 400000 transfer, 310000 bakiye sorgu
+```
+
+### 4.1 Veriyi oluştur
+> **Kural: boş kolonlu kayıt açılmaz.** Hesapta ve kartta her alan zorunludur. Tek istisnalar: kartın `lastTransaction*`
+> alanları (yeni kartta işlem yok) ve temassıza kapalı kartın `contactlessLimit`'i. Eksik alan → `400`. Ayrıntı: [10.1](#101-boş-kalabilen-kolonlar).
+
+**Gönderen hesap ve kartı**
 ```http
 POST http://localhost:5002/api/bank-accounts
 Content-Type: application/json
 
 { "accountNo": 1000000001, "accountStatus": "Active", "balance": 1000.00, "email": "sen@example.com" }
 ```
-
-**2) Bu hesaba kart çıkar** — cevaptaki `cvv` ve `pin`'i **not al**, bir daha hiçbir yerde göremezsin.
 ```http
 POST http://localhost:5002/api/cards
 Content-Type: application/json
@@ -221,45 +246,178 @@ Content-Type: application/json
 { "cardNumber": "4111111111111111", "accountNo": 1000000001, "cardType": "Debit",
   "expiryDate": "1228", "contactlessAllowed": true, "contactlessLimit": 750.00 }
 ```
+Cevapta kartın `cvv` ve `pin`'i **bir kez** döner — not al, bir daha hiçbir yerde göremezsin (DB'de sadece hash'leri var):
 ```json
 { "id": 1, "cardNumber": "4111111111111111", "accountNo": 1000000001, "cardType": "Debit", "expiryDate": "1228",
   "lastTransactionDate": null, "lastTransactionAmount": null, "contactlessAllowed": true, "contactlessLimit": 750.00,
   "cvv": "482", "pin": "0731" }
 ```
 
-**3) Gate üzerinden 150,00 TL satış yap** (`F14` = `2812`, yani kartın `1228`'inin YYMM hali)
+**Alıcı hesap ve kartı** (transfer için; alıcı **başka bir hesapta** olmalı)
+```http
+POST http://localhost:5002/api/bank-accounts
+Content-Type: application/json
+
+{ "accountNo": 1000000002, "accountStatus": "Active", "balance": 500.00, "email": "alici@example.com" }
+```
+```http
+POST http://localhost:5002/api/cards
+Content-Type: application/json
+
+{ "cardNumber": "5406680000000002", "accountNo": 1000000002, "cardType": "Debit",
+  "expiryDate": "1228", "contactlessAllowed": true, "contactlessLimit": 750.00 }
+```
+
+**Transfer kanalı.** F42 her işlemde zorunludur, transferde de. Ama transferde F42 bir mağazayı değil, işlemin **başladığı
+kanalı** (mobil uygulama, ATM, fintech) anlatır ve MCC'si genelde `4829` (Money Transfer) olur. "Trendyol'da para transferi"
+anlamsız olacağı için bir kanal ekle:
+```http
+POST http://localhost:5002/api/merchants
+Content-Type: application/json
+
+{ "merchantId": "MOBILEBANK", "name": "MOBILE BANKING", "merchantType": "4829", "status": "Active" }
+```
+
+### 4.2 Satış
 ```http
 POST http://localhost:8080/api/transactions
 Content-Type: application/json
 
-{ "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949",
-  "F7": "1016095959", "F11": "000001", "F12": "125959", "F13": "20261016",
-  "F41": "TERM0001", "F42": "TRENDYOL       ", "F14": "2812", "F18": "5399", "F22": "051",
-  "F43": "TRENDYOL                 ISTANBUL     TR" }
+{
+  "mti": "0200",
+  "F2": "4111111111111111",
+  "F3": "000000",
+  "F4": 15000,
+  "F49": "949",
+  "F7": "1021100000",
+  "F11": "000001",
+  "F12": "100000",
+  "F13": "20261021",
+  "F14": "2812",
+  "F18": "5399",
+  "F22": "051",
+  "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
+  "F43": "TRENDYOL                 ISTANBUL     TR"
+}
 ```
-```json
-{ "mti": "0210", "F39": "00", "F11": "000001" }
-```
+Alanları okumayı öğren:
 
-**4) Sonucu doğrula**
+| Alan | Değer | Neden böyle |
+|---|---|---|
+| `F4` | `15000` | Tutar **kuruş** cinsinden: 150,00 TL |
+| `F14` | `2812` | Kartın son kullanması `YYMM`. Karttaki `expiryDate` ise `MMYY` (`1228`) — ters yazılır! |
+| `F18` | `5399` | İşyerinin MCC'siyle **aynı** olmalı (TRENDYOL = 5399) |
+| `F22` | `051` | Çip. Kart fiziksel olarak okunduğu için CVV istenmez |
+| `F42` | `"TRENDYOL       "` | Sabit **15** karakter: kısa no sağdan boşlukla doldurulur |
+| `F43` | 40 karakter | Sabit **40**: 25 isim + 13 şehir + 2 ülke |
+| `F11` / `F12` | `000001` / `100000` | Her yeni işlemde değiştir (bkz. [4.5](#45-aynı-isteği-tekrar-gönder-idempotency)) |
+
+**Beklenen:** `{ "mti": "0210", "F39": "00", "F11": "000001" }`
+
+**Doğrula:** `GET /api/bank-accounts/1000000001` → `balance: 850.00`. `GET /api/cards/1` → `lastTransactionAmount: 150.00`.
+E-posta ayarlıysa "Kartınızla 150,00 TRY tutarında satış yapıldı" maili gelir.
+
+### 4.3 Karttan karta transfer (KKPT)
+Satıştan farkı: `F3 400000`, `F48` = alıcı kart no, kanal `MOBILEBANK` / `4829`.
 ```http
-GET http://localhost:5002/api/bank-accounts/1000000001
+POST http://localhost:8080/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "F2": "4111111111111111",
+  "F3": "400000",
+  "F4": 20000,
+  "F49": "949",
+  "F7": "1021101000",
+  "F11": "000002",
+  "F12": "101000",
+  "F13": "20261021",
+  "F14": "2812",
+  "F18": "4829",
+  "F22": "051",
+  "F41": "TERM0001",
+  "F42": "MOBILEBANK     ",
+  "F43": "MOBILE BANKING           ISTANBUL     TR",
+  "F48": "5406680000000002"
+}
 ```
-Bakiye `850.00` olmalı. E-posta tanımlıysa ve SMTP ayarlıysa gelen kutuna "Kartınızla 150,00 TL tutarında satış yapıldı" benzeri bir e-posta düşer.
+**Beklenen:** `F39 00`. **Doğrula:** gönderen `650.00`, alıcı `700.00`. İki tarafa da e-posta gider. Düşme ve ekleme
+aynı SQL transaction'ındadır: ya ikisi birden olur ya hiçbiri.
 
-**5) Aynı satışı tekrar gönder** → yine `00` döner ama bakiye `850.00`'de kalır (idempotency, bkz. [11.1](#111-idempotency-aynı-istek-iki-kez-gelirse)).
+### 4.4 Red senaryoları: sistemi bilerek reddettir
+4.3'teki transfer gövdesini al; her senaryoda **sadece tablodaki alanı** değiştir, `F11` ve `F12`'yi de yeni bir değer yap
+(örn. `000003` / `110000`, `000004` / `111000` …).
 
-**6) Transfer dene**: ikinci bir hesap + kart aç (`1000000002` / `5406680000000002`), sonra `F3: "400000"` ve
-`F48: "5406680000000002"` ile istek at. İki tarafın bakiyesi de değişir, iki tarafa da e-posta gider.
+| Senaryo | Değiştir | Beklenen F39 | IRC (logda) | Ne öğretiyor |
+|---|---|---|---|---|
+| Yetersiz bakiye | `F4: 100000` (1.000 TL) | `51` | `3002` | Bakiye kontrolü ve düşme tek SQL'de (`WHERE Balance >= @amount`) |
+| Aynı hesaba transfer | `F48: "4111111111111111"` | `12` | `1006` | Alıcı kart **başka hesapta** olmalı |
+| Yanlış MCC | `F18: "5399"` | `03` | `4003` | F18 işyerinin MCC'siyle aynı olmalı |
+| Bilinmeyen işyeri | `F42: "BILINMEYEN     "` | `03` | `4001` | F42 `Merchant` tablosunda olmalı |
+| Olmayan kart | `F2: "4000000000000001"` | `14` | `2001` | |
+| Olmayan alıcı | `F48: "5406680000000099"` | `14` | `2007` | |
+| E-ticaret, CVV yok | `F3: "000000"`, `F22: "812"`, `F18: "5399"`, `F42`/`F43`: TRENDYOL, `F48`'i sil | `N7` | `2006` | Kart fiziksel yokken CVV2 zorunlu; `"cvv": "<4.1'de not aldığın>"` ekleyince `00` |
 
-**7) Red senaryoları dene**: `F4`'ü bakiyeden büyük yap (`51`), olmayan kart (`14`), `F22: "812"` ve `cvv` yok (`N7`),
-`F42: "BILINMEYEN     "` (`03`), `F49: "840"` ile döviz satışı (TCMB kuru cache'teyse `00`).
+Her redde HTTP yine **`200`**'dür; karar `F39`'dadır. Bakiyeler değişmez. Reddedilen işlem de `DebitTransaction`'a
+kendi F39'uyla yazılır (iz kalsın diye) ama kartın `lastTransaction*`'ı güncellenmez ve e-posta gitmez.
+
+**Aynı F39, farklı sebep: IRC'yi nereden göreceksin?** `InternalResponseCode` tablosunda F39'u `12` olan beş satır var
+(`1001`, `1002`, `1003`, `1004`, `1006`). F39 POS'a giden **kaba** koddur; asıl sebep IRC'dir ve DB kaydında tutulmaz.
+Logda her redde yazılır:
+```bash
+docker logs payment_system_payment --since 10m | findstr IRC        # Linux/macOS: grep IRC
+```
+```
+TransferAsync: declined F11 (STAN)=000004 ... F48 (Alıcı Kart No)=411111********11 is on the same account 1000000001 -> IRC 1006
+DecideAsync: ... not approved: F39 (Cevap Kodu)=12 Transfer to the same account (IRC 1006) transaction d5f71c98-... account 1000000001
+```
+Logdaki `transaction` Guid'i `DebitTransaction.Guid` ile aynıdır: log satırını DB kaydıyla böyle eşleştirirsin. IRC ayrıca
+Kafka olayında (`irc` alanı) taşınır. Gerçek bankalarda da böyledir: dışarıya kaba kod, ayrıntı bankanın içinde kalır.
+
+### 4.5 Aynı isteği tekrar gönder (idempotency)
+4.3'teki onaylı transferi **hiçbir alanını değiştirmeden** tekrar gönder.
+
+**Beklenen:** yine `F39 00` (ilk kararın kendisi), ama bakiyeler **değişmez**, `DebitTransaction`'a yeni satır **açılmaz**.
+Logda: `PreviousResponseAsync: duplicate request ... - returning previous F39 (Cevap Kodu)=00`.
+
+Neden? Kaydın anahtarı isteğin `MTI | F2 | F3 | F4 | F13 | F12` alanlarından üretilir; aynı istek aynı anahtarı üretir ve
+ikinci `INSERT` PK'ya takılır (bkz. [11.1](#111-idempotency-aynı-istek-iki-kez-gelirse)). Yeni bir işlem yapmak
+istediğinde bu yüzden en az `F12`'yi değiştirmen gerekir.
+
+### 4.6 Lab sonunda beklenen durum
+| | Başlangıç | Satış | KKPT | Redler + tekrar | **Son** |
+|---|---|---|---|---|---|
+| Gönderen (1000000001) | 1000,00 | −150 | −200 | 0 | **650,00** |
+| Alıcı (1000000002) | 500,00 | | +200 | 0 | **700,00** |
+
+### 4.7 Veritabanından son kontrol
+```bash
+docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<MSSQL_SA_PASSWORD>' -C -d PaymentSystem \
+  -Q "SELECT CreatedAt, F3_ProcessingCode, F4_Amount, F18_MerchantCode, F39_ResponseCode, F42_MerchantId, F48_RecipientCardNo FROM dbo.DebitTransaction ORDER BY CreatedAt"
+```
+Her işlem (onay ve red) bir satırdır, tekrar gelen istek satır açmaz. Satışta `F48_RecipientCardNo` NULL'dır; bu kolon
+sadece transferde dolar. Başka bir kolonda NULL görüyorsan bir şey ters gitmiştir.
+
+### 4.8 Bir şey ters giderse
+| Ne görüyorsun | Ne demek | Ne yap |
+|---|---|---|
+| `400` ve **gövde boş** (`content-length: 0`), Gate logunda hiçbir satır yok | JSON **okunamadı**: istek bizim koda hiç ulaşmadı. Eksik virgül/tırnak, yapıştırırken kalan eski metin, ya da sayı olması gereken alan tırnakta (`"F4": "5000"`) | Gövdeyi tamamen sil (Ctrl+A), yeniden yapıştır |
+| `400` ve `errors: { "F18": ["F18 is required."] }` | JSON geçerli ama bir alan eksik ya da formatı bozuk; **bizim** doğrulamamız. Hangi alanın ne sorunu olduğu yazar | Belirtilen alanı düzelt |
+| `400`, `errors: { "$": ["... missing required properties including: 'balance'"] }` | Hesap/kartta değer tipli zorunlu alan (`balance`, `contactlessAllowed`) body'de yok. Bu hata önce gelir; diğer eksikler o düzelince görünür | Alanı ekle |
+| `200` ve `F39` `00` değil | İstek geçerliydi, **sistem reddetti** | IRC'ye logdan bak ([4.4](#44-red-senaryoları-sistemi-bilerek-reddettir)), [Bölüm 9](#9-karar-motoru-kontroller-irc-ve-f39)'daki tabloda bul |
+| `F39 00` ama bakiye değişmedi | Tekrar gelen istek: ilk kararın cevabı döndü | `F12`'yi (ve `F11`'i) değiştir |
+| Swagger'da "Try it out" → Execute bakiyeyi düşürdü | Swagger örnek gövdesi **gerçek** bir satıştır, sisteme normal işlem olarak gider | Denemeden önce F11/F12/F13'ü değiştir; istemediğin işlemi Postman'deki gibi düşün |
+| `F39 91` | Payment 10 sn içinde cevap vermedi ya da döviz kuru yok/bayat | `docker compose ps`, Payment logu; dövizde `GET /api/exchange-rates` |
+| E-postaların bir kısmı **Gereksiz**'e, bir kısmı **Diğer**'e düşüyor | Kişisel Gmail'den "kartınızdan para transferi" içerikli otomatik mail, Microsoft'un filtresinde eşiğe yakın puan alıyor; "Diğer" ise sadece sıralama | Bir maili "Gereksiz değil" işaretle, göndereni Güvenilir Gönderenler'e ekle. Gerçek sistemde: kendi alan adı + SPF/DKIM/DMARC + transactional mail servisi |
+| `docker ps`: `failed to connect to the docker API` | Docker Desktop kapalı | Docker Desktop'ı aç |
 
 ---
 
 ## 5. Uçtan uca akış: bir satışın yolculuğu
 
-Yukarıdaki 3. adımdaki satış isteğinin sistemde izlediği yol, dosya ve metot adlarıyla:
+[4.2](#42-satış)'deki satış isteğinin sistemde izlediği yol, dosya ve metot adlarıyla:
 
 ```
 İstemci          Gate                              RabbitMQ            Payment                                 SQL        Kafka     Notification
@@ -559,7 +717,8 @@ Model:
 | `PUT` | `/api/merchants/{merchantId}` | `name`, `merchantType`, `status` değişir | `204`, `400`, `404` |
 | `DELETE` | `/api/merchants/{merchantId}` | Sil | `204`, `404` |
 
-Seed: `IYZICO` (7399), `TRENDYOL` (5399), `GETIR` (5411), `NETFLIX` (4899). İşlem akışı işyerini cache'ten değil kendi
+Seed: `IYZICO` (7399), `TRENDYOL` (5399), `GETIR` (5411), `NETFLIX` (4899). Transfer için bir kanal seed'de yoktur;
+lab'da `MOBILEBANK` (4829) eklenir ([4.1](#41-veriyi-oluştur)). İşlem akışı işyerini cache'ten değil kendi
 SQL transaction'ında okur; değişiklik **bir sonraki işlemde** geçerlidir.
 
 ---
@@ -644,8 +803,8 @@ Payment'ın OpenAPI şeması ve Swagger UI. `Swagger:Enabled` ile açılır, bkz
 ```json
 { "mti": "0200", "cardNumber": "4111111111111111", "processingCode": "000000", "amountMinor": 15000,
   "currencyCode": "949", "transmissionDateTime": "1016095959", "stan": "000001", "localTime": "125959",
-  "localDate": "20261016", "terminalId": "TERM0001", "cardExpiry": "2812", "merchantType": null,
-  "entryMode": "051", "rrn": null, "merchantId": "TRENDYOL       ", "cardAcceptor": null,
+  "localDate": "20261016", "terminalId": "TERM0001", "cardExpiry": "2812", "merchantType": "5399",
+  "entryMode": "051", "rrn": null, "merchantId": "TRENDYOL       ", "cardAcceptor": "TRENDYOL                 ISTANBUL     TR",
   "recipientCardNumber": null, "cvv": null }
 ```
 Cevap gövdesi:
@@ -684,14 +843,18 @@ Payment'ın teknik cevapları: gövde okunamadı / geçersiz → `30`; DB'ye ula
 `TransactionHandler.DecideAsync` kontrolleri **bu sırayla** yapar; ilk başarısız olan kararı verir. F39 değerleri
 `InternalResponseCode` tablosunun seed değerleridir.
 
+> **Sıra neden önemli?** Kontroller ucuzdan pahalıya ve dıştan içe dizilidir: önce işyeri, sonra kart, sonra hesap, en son para.
+> Bu yüzden yanlış MCC'li bir istekte logda `account -` görürsün: işlem işyeri aşamasında reddedildi, kart ve hesap hiç okunmadı.
+> Hangi satırın tetiklendiğini F39'tan değil, logdaki IRC'den anlarsın (bkz. [4.4](#44-red-senaryoları-sistemi-bilerek-reddettir)).
+
 | # | Kontrol | Hangi işlemde | IRC | F39 |
 |---|---|---|---|---|
 | 0 | `MTI + F3` tanımsız (kayıt açılmaz) | hepsi | `1001` | `12` |
-| 1 | F22 geldi ama ilk iki hanesi `EntryMode`'da yok | hepsi | `1002` | `12` |
-| 2 | F42 yok | hepsi | `1007` | `30` |
+| 1 | F22'nin ilk iki hanesi `EntryMode`'da yok | hepsi | `1002` | `12` |
+| 2 | F42 yok (Gate zaten `400` döner; savunma) | hepsi | `1007` | `30` |
 | 3 | İşyeri `Merchant` tablosunda yok | hepsi | `4001` | `03` |
 | 4 | İşyeri `Active` değil | hepsi | `4002` | `03` |
-| 5 | F18 geldi ama işyerinin MCC'si değil | hepsi | `4003` | `03` |
+| 5 | F18 işyerinin MCC'si değil | hepsi | `4003` | `03` |
 | 6 | Kart yok | hepsi | `2001` | `14` |
 | 7 | Kartın süresi geçmiş ya da F14 kartla uyuşmuyor | hepsi | `2002` | `54` |
 | 8 | Kart fiziksel yok (`01x`/`81x`) ve CVV2 yok; ya da CVV2 geldi ama tutmuyor | hepsi | `2006` | `N7` |
@@ -747,6 +910,21 @@ Kontrol için:
 docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<şifre>' -C -d PaymentSystem \
   -Q "SELECT TOP 10 Guid, F2_CardNo, F3_ProcessingCode, F4_Amount, F39_ResponseCode FROM dbo.DebitTransaction ORDER BY CreatedAt DESC"
 ```
+
+### 10.1 Boş kalabilen kolonlar
+Kural: **boş kolonlu kayıt açılmaz.** Gate, DB'ye yazılan her ISO alanını zorunlu tutar; Payment'ın yönetim API'si hesap ve
+kartta her alanı ister. Şema `NULL`'a izin verse de uygulama vermez. Sadece doğası gereği boş olması gereken kolonlar boş kalır:
+
+| Tablo | Kolon | Ne zaman boş | Neden |
+|---|---|---|---|
+| `Card` | `LastTransactionDate`, `LastTransactionAmount` | Kart hiç onaylı işlem yapmadıysa | İşlem akışı yazar. Transferde sadece **gönderen** kartınki güncellenir |
+| `Card` | `ContactlessLimit` | `ContactlessAllowed = 0` ise (boş **olmalı**) | Temassıza kapalı kartta limit anlamsız |
+| `DebitTransaction` | `F48_RecipientCardNo` | Satış ve bakiye sorguda; transferde F48 kart no değilse (`1005`) | Sadece transferin alıcısı |
+| `DebitTransaction` | `LocalTxnAmount` | Döviz kuru bulunamadıysa (işlem `91`/`12` ile reddedilir) | TL karşılığı hesaplanamadı |
+
+Kontrolün yeri: `Gate/TransactionHandler.RequiredFinancialFields` (işlem), `Payment/Models/BankAccount.cs` ve `Card.cs`
+(`[Required]`, `[JsonRequired]`, `Card.Validate`). Değer tipli alanlarda (`balance`, `contactlessAllowed`) `[Required]` işe
+yaramaz — body'de yoksa C# varsayılanı (`0`, `false`) sessizce yazılırdı; `[JsonRequired]` alanın body'de **bulunmasını** ister.
 
 ---
 
@@ -936,7 +1114,8 @@ payment_system/
 
 Projeyi sıfırdan anlamak için önerilen okuma sırası:
 
-1. **Çalıştır ve dene** — [Bölüm 4](#4-ilk-işlemine-kadar-adım-adım-senaryo)'teki senaryoyu uygula; logları üç pencerede izle.
+1. **Çalıştır ve dene** — [Bölüm 4](#4-uygulamalı-lab-sıfırdan-uçtan-uca-test)'teki lab'ı uygula; logları üç pencerede izle.
+   Her redde önce F39'a, sonra logdaki IRC'ye bak ve [Bölüm 9](#9-karar-motoru-kontroller-irc-ve-f39)'daki satırı bul.
 2. **ISO8583'ü anla** — `Iso87Fields.cs` → `IsoFieldDefinition.cs` → `IsoMessage.cs` → `IsoMessagePacker.cs` (bitmap mantığı). `IsoMessagePackerTests.cs` örnek mesajları gösterir.
 3. **Gate'i takip et** — `Program.cs` → `TransactionEndpoint.HandleAsync` → `TransactionHandler.ProcessAsync` → `RabbitMqPaymentClient.AuthorizeAsync`.
    Soru: Payment kapalıyken ne olur? (`TransactionEndpointTests`, `RabbitMqPaymentClientTests`)
