@@ -40,7 +40,9 @@ builder.Services.AddOpenApi(options => options.AddOperationTransformer((operatio
             ["F41"] = new OpenApiString("TERM0001"),
             ["F42"] = new OpenApiString("TRENDYOL       "),
             ["F14"] = new OpenApiString("2812"),
-            ["F22"] = new OpenApiString("051")
+            ["F18"] = new OpenApiString("5399"),
+            ["F22"] = new OpenApiString("051"),
+            ["F43"] = new OpenApiString("TRENDYOL                 ISTANBUL     TR")
         };
     }
     return Task.CompletedTask;

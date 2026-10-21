@@ -9,7 +9,9 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
 {
     public const string FinancialRequestMti = "0200";
 
-    public static IReadOnlyList<int> RequiredFinancialFields { get; } = [2, 3, 4, 7, 11, 12, 13, 41, 42, 49];
+    // DebitTransaction'ın kolonu olan her alan zorunludur; boş kolonlu kayıt açılmaz. Sadece F48 (transferin alıcı kartı)
+    // ve F37 (DB'de kolonu yok) opsiyoneldir.
+    public static IReadOnlyList<int> RequiredFinancialFields { get; } = [2, 3, 4, 7, 11, 12, 13, 14, 18, 22, 41, 42, 43, 49];
 
     // Cevapta geri gönderilen istek alanları: istemci cevabı kendi isteğiyle bunlarla eşleştirir.
     private static readonly int[] EchoedFinancialFields = [2, 3, 4, 7, 11, 12, 13, 37, 41, 42, 49];

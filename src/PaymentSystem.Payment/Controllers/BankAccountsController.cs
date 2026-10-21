@@ -30,7 +30,7 @@ public class BankAccountsController(BankAccountHandler accounts) : ControllerBas
             : CreatedAtAction(nameof(Get), new { accountNo = account.AccountNo }, account);
 
     // Body'deki Balance yok sayılır: bakiye sadece hesap açılırken verilir, sonra işlemlerle değişir.
-    // Email body'de yoksa silinir (PUT tüm düzenlenebilir alanları yazar).
+    // Email zorunludur (boş kolonlu hesap olmaz); Balance body'de olmalı ama yok sayılır.
     [EndpointSummary("Bir banka hesabını günceller")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]

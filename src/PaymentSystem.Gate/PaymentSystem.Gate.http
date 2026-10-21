@@ -5,6 +5,8 @@
 # karar cevaptaki F39'dadır.
 # Önce Payment'ın CRUD endpoint'leriyle hesap ve kart oluştur (src/PaymentSystem.Payment/PaymentSystem.Payment.http).
 # F42 (işyeri no, sabit 15 karakter) zorunlu ve Merchant tablosunda olmalı: seed TRENDYOL, GETIR, IYZICO, NETFLIX.
+# DB'ye yazılan her alan zorunlu (boş kolonlu kayıt açılmaz): F14, F18 (işyerinin MCC'si), F22, F43 (sabit 40 karakter) dahil.
+# Opsiyonel olanlar sadece F37 ve transferin alıcı kartı F48.
 # Aynı isteği (MTI + F2 + F3 + F4 + F13 + F12) ikinci kez gönderirsen para tekrar düşmez, ilk cevap döner.
 
 ### Satış: 150,00 TL (F4 kuruş cinsinden, F49 949 = TRY, F22 051 = çip, F13 yyyymmdd)
@@ -23,6 +25,8 @@ Content-Type: application/json
   "F13": "20261016",
   "F41": "TERM0001",
   "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
   "F14": "2812",
   "F22": "051"
 }
@@ -43,7 +47,10 @@ Content-Type: application/json
   "F13": "20261016",
   "F41": "TERM0001",
   "F42": "TRENDYOL       ",
-  "F14": "2812"
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
+  "F14": "2812",
+  "F22": "051"
 }
 
 ### Döviz satışı: 10,00 USD (840). TL karşılığı TCMB kuruyla hesaplanıp bakiyeden düşer.
@@ -62,6 +69,8 @@ Content-Type: application/json
   "F13": "20261016",
   "F41": "TERM0001",
   "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
   "F14": "2812",
   "F22": "051"
 }
@@ -83,6 +92,8 @@ Content-Type: application/json
   "F13": "20261016",
   "F41": "TERM0001",
   "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
   "F14": "2812",
   "F22": "812",
   "cvv": "123"
@@ -104,6 +115,8 @@ Content-Type: application/json
   "F13": "20261016",
   "F41": "TERM0001",
   "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
   "F14": "2812",
   "F22": "051",
   "F48": "5406680000000002"
@@ -125,6 +138,8 @@ Content-Type: application/json
   "F13": "20261016",
   "F41": "TERM0001",
   "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
   "F14": "2812",
   "F22": "051",
   "F48": "5406680000000002"
