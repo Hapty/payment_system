@@ -76,6 +76,24 @@ public class TransactionEndpointTests
     public async Task InvalidCvv_IsRejectedWith400(string cvv) =>
         Assert.Equal(["Must be 3 or 4 digits."], (await ValidationErrorsAsync(Sale() with { Cvv = cvv }))["cvv"]);
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(1)]
+    [InlineData(36)]
+    public async Task InstallmentCount_IsForwardedToPayment(int? installments)
+    {
+        Assert.IsType<Ok<TransactionResponse>>(await PostAsync(Sale() with { InstallmentCount = installments }));
+
+        Assert.Equal(installments, Assert.Single(_payment.Requests).InstallmentCount);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(37)]
+    [InlineData(-3)]
+    public async Task InvalidInstallmentCount_IsRejectedWith400(int installments) =>
+        Assert.Equal(["Must be between 1 and 36."], (await ValidationErrorsAsync(Sale() with { InstallmentCount = installments }))["installmentCount"]);
+
     [Fact]
     public async Task InvalidFields_LogWhichFieldsFailedWithMaskedPan()
     {
@@ -185,14 +203,14 @@ public class TransactionEndpointTests
             """
             { "mti": "0200", "F2": "5406680000000001", "F3": "400000", "F4": 15000, "F7": "1002143025", "F11": "000001",
               "F12": "143025", "F13": "20261002", "F14": "2712", "F22": "051", "F41": "TERM0001", "F48": "5406680000000002",
-              "F49": "949", "cvv": "123" }
+              "F49": "949", "cvv": "123", "installmentCount": 3 }
             """, JsonSerializerOptions.Web)!;
 
         Assert.Equal(Sale() with
         {
             CardNumber = "5406680000000001", ProcessingCode = "400000", TransmissionDateTime = "1002143025", Stan = "000001",
             LocalTime = "143025", CardExpiry = "2712", MerchantType = null, Rrn = null, MerchantId = null, CardAcceptor = null,
-            RecipientCardNumber = "5406680000000002", Cvv = "123"
+            RecipientCardNumber = "5406680000000002", Cvv = "123", InstallmentCount = 3
         }, request);
         Assert.Equal("""{"mti":"0210","F39":"00","F11":"000001"}""",
             JsonSerializer.Serialize(new TransactionResponse("0210", "00", "000001"), JsonSerializerOptions.Web));

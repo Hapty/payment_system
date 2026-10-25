@@ -8,7 +8,7 @@ namespace PaymentSystem.Payment.Data;
 public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
 {
     private const string Columns =
-        "Id, CardNumber, AccountNo, CardType, ExpiryDate, LastTransactionDate, LastTransactionAmount, ContactlessAllowed, ContactlessLimit";
+        "Id, CardNumber, AccountNo, CardType, ExpiryDate, LastTransactionDate, LastTransactionAmount, ContactlessAllowed, ContactlessLimit, Status";
 
     public async Task<IReadOnlyList<Card>> GetAllAsync()
     {
@@ -42,9 +42,9 @@ public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
         {
             card.Id = await connection.ExecuteScalarAsync<int>(
                 """
-                INSERT INTO dbo.Card (CardNumber, AccountNo, CardType, ExpiryDate, ContactlessAllowed, ContactlessLimit)
+                INSERT INTO dbo.Card (CardNumber, AccountNo, CardType, ExpiryDate, ContactlessAllowed, ContactlessLimit, Status)
                 OUTPUT INSERTED.Id
-                VALUES (@CardNumber, @AccountNo, @CardType, @ExpiryDate, @ContactlessAllowed, @ContactlessLimit)
+                VALUES (@CardNumber, @AccountNo, @CardType, @ExpiryDate, @ContactlessAllowed, @ContactlessLimit, @Status)
                 """,
                 card, transaction);
             await connection.ExecuteAsync(
@@ -70,10 +70,10 @@ public sealed class CardRepository(SqlConnectionFactory db) : ICardRepository
             """
             UPDATE dbo.Card
             SET AccountNo = @AccountNo, CardType = @CardType, ExpiryDate = @ExpiryDate,
-                ContactlessAllowed = @ContactlessAllowed, ContactlessLimit = @ContactlessLimit
+                ContactlessAllowed = @ContactlessAllowed, ContactlessLimit = @ContactlessLimit, Status = @Status
             WHERE Id = @Id
             """,
-            new { Id = id, input.AccountNo, input.CardType, input.ExpiryDate, input.ContactlessAllowed, input.ContactlessLimit });
+            new { Id = id, input.AccountNo, input.CardType, input.ExpiryDate, input.ContactlessAllowed, input.ContactlessLimit, input.Status });
         return affected == 0 ? WriteResult.NotFound : WriteResult.Ok;
     }
 

@@ -46,9 +46,19 @@ BEGIN
         LastTransactionDate     DATETIME2       NULL,
         LastTransactionAmount   DECIMAL(18,2)   NULL,
         ContactlessAllowed      BIT             NOT NULL DEFAULT 0,
-        ContactlessLimit        DECIMAL(18,2)   NULL
+        ContactlessLimit        DECIMAL(18,2)   NULL,
+        Status                  VARCHAR(20)     NOT NULL
+                                CONSTRAINT DF_Card_Status DEFAULT 'Active'
+                                CONSTRAINT CK_Card_Status CHECK (Status IN ('Active', 'Blocked', 'Cancelled'))
     );
 END
+GO
+
+-- Status kolonu sonradan eklendi: tablo bu kolondan önce oluşturulduysa (mevcut volume) burada eklenir, mevcut kartlar Active olur.
+IF COL_LENGTH('dbo.Card', 'Status') IS NULL
+    ALTER TABLE dbo.Card ADD Status VARCHAR(20) NOT NULL
+        CONSTRAINT DF_Card_Status DEFAULT 'Active'
+        CONSTRAINT CK_Card_Status CHECK (Status IN ('Active', 'Blocked', 'Cancelled'));
 GO
 
 -- CVV Card tablosunda durmaz, hash'lenmiş olarak CardSecret'tadır. Eski şemadaki (hep boş) Cvv kolonu burada silinir.
@@ -165,6 +175,81 @@ BEGIN
         MerchantType    CHAR(4)         NOT NULL,               -- MCC (F18)
         Status          VARCHAR(20)     NOT NULL,               -- Active / Blocked ...
         CreatedAt       DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+END
+GO
+
+-- 9) CreditCardLimit: kredi kartının limiti. Alışveriş UsedLimit'i, nakit avans hem UsedLimit'i hem UsedCashLimit'i artırır;
+-- kart borcu ödemesi UsedLimit'i düşürür. AvailableLimit saklanmaz, DB hesaplar.
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'CreditCardLimit')
+BEGIN
+    CREATE TABLE dbo.CreditCardLimit
+    (
+        CardNumber      VARCHAR(19)     NOT NULL PRIMARY KEY
+                        CONSTRAINT FK_CreditCardLimit_Card REFERENCES dbo.Card (CardNumber) ON DELETE CASCADE,
+        CreditLimit     DECIMAL(18,2)   NOT NULL,
+        UsedLimit       DECIMAL(18,2)   NOT NULL DEFAULT 0,
+        AvailableLimit  AS (CreditLimit - UsedLimit),
+        CashLimit       DECIMAL(18,2)   NOT NULL DEFAULT 0,
+        UsedCashLimit   DECIMAL(18,2)   NOT NULL DEFAULT 0,
+        StatementDay    TINYINT         NOT NULL,               -- hesap kesim günü
+        DueDay          TINYINT         NOT NULL,               -- son ödeme günü
+        CONSTRAINT CK_CreditCardLimit_Amounts CHECK (CreditLimit >= 0 AND UsedLimit >= 0 AND UsedCashLimit >= 0
+                                                     AND CashLimit >= 0 AND CashLimit <= CreditLimit),
+        -- 28'den büyük gün her ayda yok (Şubat)
+        CONSTRAINT CK_CreditCardLimit_Days CHECK (StatementDay BETWEEN 1 AND 28 AND DueDay BETWEEN 1 AND 28)
+    );
+END
+GO
+
+-- 10) CreditTransaction: kredi kartı işlemleri (alışveriş, nakit avans, kart borcu ödemesi; tip otc/ots'den).
+-- DebitTransaction ile aynı alanlar; F48 (alıcı kart) yok, taksit sayısı var.
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'CreditTransaction')
+BEGIN
+    CREATE TABLE dbo.CreditTransaction
+    (
+        Guid                    UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
+        CreatedAt               DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME(),
+        UpdatedAt               DATETIME2       NULL,
+        Mti                     CHAR(4)         NOT NULL,
+        F2_CardNo               VARCHAR(19)     NOT NULL,
+        F3_ProcessingCode       CHAR(6)         NULL,
+        Otc                     CHAR(2)         NOT NULL,
+        Ots                     CHAR(2)         NOT NULL,
+        F4_Amount               DECIMAL(18,2)   NOT NULL,
+        F49_CurrencyCode        CHAR(3)         NULL,
+        LocalTxnAmount          DECIMAL(18,2)   NULL,           -- kur x tutar
+        F12_TransactionTime     CHAR(6)         NULL,           -- hhmmss
+        F13_TransactionDate     CHAR(8)         NULL,           -- yyyymmdd
+        F14_CardExpiry          CHAR(4)         NULL,
+        F18_MerchantCode        VARCHAR(15)     NULL,
+        F22_EntryMode           CHAR(3)         NULL,
+        F39_ResponseCode        CHAR(2)         NULL,
+        F42_MerchantId          VARCHAR(15)     NULL,           -- işyeri no (sondaki boşluklar silinmiş)
+        F43_Description         VARCHAR(100)    NULL,
+        InstallmentCount        TINYINT         NOT NULL DEFAULT 1
+                                CONSTRAINT CK_CreditTransaction_InstallmentCount CHECK (InstallmentCount >= 1)   -- 1 = tek çekim
+    );
+END
+GO
+
+-- 11) Statement: kesilen ekstre. Kesim anındaki borç burada donar; taksitli işlemin her dönemki payı
+-- (F4_Amount / InstallmentCount) kesimde hesaplanır. MinPayment = TotalDebt x %20. Ödeme PaidAmount'u artırır.
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Statement')
+BEGIN
+    CREATE TABLE dbo.Statement
+    (
+        Id              INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        CardNumber      VARCHAR(19)     NOT NULL
+                        CONSTRAINT FK_Statement_Card REFERENCES dbo.Card (CardNumber) ON DELETE CASCADE,
+        PeriodStart     DATE            NOT NULL,
+        PeriodEnd       DATE            NOT NULL,               -- kesim tarihi
+        DueDate         DATE            NOT NULL,
+        TotalDebt       DECIMAL(18,2)   NOT NULL,
+        MinPayment      DECIMAL(18,2)   NOT NULL,
+        PaidAmount      DECIMAL(18,2)   NOT NULL DEFAULT 0,
+        CreatedAt       DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT UQ_Statement_CardNumber_PeriodEnd UNIQUE (CardNumber, PeriodEnd)   -- aynı dönem için iki ekstre olmaz
     );
 END
 GO

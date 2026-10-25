@@ -79,6 +79,38 @@ Content-Type: application/json
 ###
 DELETE {{host}}/api/cards/1
 
+### ---------- Kredi kartı ve limiti ----------
+# Kredi kartı: satış hesaptan değil limitten düşer. Limit tanımlanmadan satış 57 alır.
+POST {{host}}/api/cards
+Content-Type: application/json
+
+{
+  "cardNumber": "4111111111111129",
+  "accountNo": 1000000001,
+  "cardType": "Credit",
+  "expiryDate": "1228",
+  "contactlessAllowed": true,
+  "contactlessLimit": 750.00
+}
+
+###
+POST {{host}}/api/credit-limits
+Content-Type: application/json
+
+{ "cardNumber": "4111111111111129", "creditLimit": 5000.00, "cashLimit": 1000.00, "statementDay": 25, "dueDay": 5 }
+
+###
+GET {{host}}/api/credit-limits/4111111111111129
+
+###
+PUT {{host}}/api/credit-limits/4111111111111129
+Content-Type: application/json
+
+{ "cardNumber": "4111111111111129", "creditLimit": 7500.00, "cashLimit": 1500.00, "statementDay": 25, "dueDay": 5 }
+
+###
+GET {{host}}/api/credit-limits
+
 ### ---------- TransactionType (Otc/Ots) ----------
 GET {{host}}/api/transaction-types
 

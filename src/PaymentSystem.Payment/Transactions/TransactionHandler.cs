@@ -12,7 +12,8 @@ namespace PaymentSystem.Payment.Transactions;
 
 // Gate'ten gelen bir finansal isteği karara bağlar. Kararlar burada, SQL TransactionRepository'de.
 // Karar bir iç koddur (IRC, bkz. InternalResponseCodes); POS'a dönen F39 InternalResponseCode tablosundan (ParameterCache) okunur.
-// İşlem kaydı, bakiye ve kart güncellemesi tek bir SQL transaction'ında (IDebitSession) yapılır: ya hepsi yazılır ya hiçbiri.
+// İşlem kaydı, bakiye / kredi limiti ve kart güncellemesi tek bir SQL transaction'ında (ITransactionSession) yapılır: ya hepsi yazılır ya hiçbiri.
+// Kartın tipi Credit ise işlem CreditTransaction'a yazılır ve satış banka hesabından değil kredi limitinden düşer; diğer kartlar debit'tir.
 // Commit edilen her karar (onay da red de) TransactionCompleted olayı olarak yayımlanır; yayımlama işlemi bekletmez.
 // Onayda F39'u döner; onaylanmayan her işlem (red ya da teknik hata) TransactionException fırlatır.
 public sealed class TransactionHandler(
@@ -22,6 +23,7 @@ public sealed class TransactionHandler(
     private const string TurkishLira = "949";
     private const string ActiveAccount = "Active";
     private const string ActiveMerchant = "Active";
+    private const string Sale = "Sale";
     private const string MoneyTransfer = "MoneyTransfer";
 
     // Kart fiziksel olarak okutulmadığında CVV2 zorunludur: elle giriş (F22 01x) ve e-ticaret (81x).
@@ -87,20 +89,33 @@ public sealed class TransactionHandler(
         InternalResponseCode? definition = null;
         await using (var session = await repository.BeginAsync())
         {
-            var inserted = await session.TryInsertAsync(new DebitTransaction(
-                id, request.Mti, request.CardNumber, request.ProcessingCode, type.Otc, type.Ots,
-                Amount: ToAmount(request),
-                request.CurrencyCode,
-                LocalAmount: lira,
-                request.LocalTime,
-                TransactionDate: transactionDate,
-                request.CardExpiry, request.MerchantType, request.EntryMode, MerchantId: request.MerchantId?.TrimEnd(),
-                CardAcceptor: request.CardAcceptor?.TrimEnd(),
-                // Kolon VARCHAR(19): kart numarası olmayan F48 yazılmaz, transfer 1005 ile reddedilir.
-                RecipientCardNumber: type.Name == MoneyTransfer && IsCardNumber(request.RecipientCardNumber) ? request.RecipientCardNumber : null));
+            // Kaydın hangi tabloya açılacağını kartın tipi belirler; kart yoksa debit tablosuna yazılır (2001 ile reddedilir).
+            var card = await session.GetCardAsync(request.CardNumber);
+            var inserted = card is { CardType: CardTypes.Credit }
+                ? await session.TryInsertAsync(new CreditTransaction(
+                    id, request.Mti, request.CardNumber, request.ProcessingCode, type.Otc, type.Ots,
+                    Amount: ToAmount(request),
+                    request.CurrencyCode,
+                    LocalAmount: lira,
+                    request.LocalTime,
+                    TransactionDate: transactionDate,
+                    request.CardExpiry, request.MerchantType, request.EntryMode, MerchantId: request.MerchantId?.TrimEnd(),
+                    CardAcceptor: request.CardAcceptor?.TrimEnd(),
+                    InstallmentCount: request.InstallmentCount ?? 1))
+                : await session.TryInsertAsync(new DebitTransaction(
+                    id, request.Mti, request.CardNumber, request.ProcessingCode, type.Otc, type.Ots,
+                    Amount: ToAmount(request),
+                    request.CurrencyCode,
+                    LocalAmount: lira,
+                    request.LocalTime,
+                    TransactionDate: transactionDate,
+                    request.CardExpiry, request.MerchantType, request.EntryMode, MerchantId: request.MerchantId?.TrimEnd(),
+                    CardAcceptor: request.CardAcceptor?.TrimEnd(),
+                    // Kolon VARCHAR(19): kart numarası olmayan F48 yazılmaz, transfer 1005 ile reddedilir.
+                    RecipientCardNumber: type.Name == MoneyTransfer && IsCardNumber(request.RecipientCardNumber) ? request.RecipientCardNumber : null));
             if (inserted)
             {
-                irc = await DecideAsync(session, request, type.Name, lira, trace);
+                irc = await DecideAsync(session, request, type.Name, lira, card, trace);
                 definition = await parameters.FindInternalResponseCodeAsync(irc);
                 await session.SetResponseCodeAsync(id, definition?.ResponseCode ?? ResponseCodes.SystemMalfunction);
                 await session.CommitAsync();
@@ -129,7 +144,8 @@ public sealed class TransactionHandler(
         throw Failure(request, irc, definition, trace);
     }
 
-    private async Task<string> DecideAsync(IDebitSession session, TransactionRequest request, string typeName, decimal? lira, Trace trace)
+    private async Task<string> DecideAsync(
+        ITransactionSession session, TransactionRequest request, string typeName, decimal? lira, Card? card, Trace trace)
     {
         // F22 opsiyonel; geldiyse ilk iki hanesi EntryMode tablosunda tanımlı olmalı (3. hane PIN yeteneği, karara girmez).
         EntryMode? entryMode = null;
@@ -154,10 +170,12 @@ public sealed class TransactionHandler(
             return Decline(nameof(DecideAsync), request, InternalResponseCodes.MerchantTypeMismatch,
                 $"{IsoLog.Field(18, mcc)} does not match merchant {merchantId} MCC {merchant.MerchantType}");
 
-        var card = await session.GetCardAsync(request.CardNumber);
         if (card is null)
             return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardNotFound, "card not found");
         trace.AccountNo = card.AccountNo;
+
+        if (card.Status != CardStatus.Active)
+            return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardNotActive, $"card is {card.Status}");
 
         if (IsExpired(card.ExpiryDate) || !ExpiryMatches(card.ExpiryDate, request.CardExpiry))
             return Decline(nameof(DecideAsync), request, InternalResponseCodes.CardExpired, $"card expired or {IsoLog.Field(14, request.CardExpiry)} does not match");
@@ -177,30 +195,34 @@ public sealed class TransactionHandler(
             return Decline(nameof(DecideAsync), request, InternalResponseCodes.AccountNotActive,
                 $"account {card.AccountNo} is {account?.AccountStatus ?? "missing"}");
 
-        return typeName switch
+        // Kredi kartı da bir hesaba bağlıdır: hesap Active değilse (yukarıda) kredi kartı da çalışmaz.
+        var credit = card.CardType == CardTypes.Credit;
+
+        // Taksit sadece kredi kartıyla satışta olur; tek çekim (1) her işlemde geçerlidir.
+        if (request.InstallmentCount > 1 && !(credit && typeName == Sale))
+            return Decline(nameof(DecideAsync), request, InternalResponseCodes.InstallmentsNotAllowed,
+                $"{request.InstallmentCount} installments not allowed for {(credit ? "credit" : "debit")} card {typeName}");
+
+        return (typeName, credit) switch
         {
-            "BalanceInquiry" => InternalResponseCodes.Approved,     // bakiye cevaba (F54) sonraki adımda eklenecek
-            "Sale" => await SaleAsync(session, request, card, lira, entryMode),
-            MoneyTransfer => await TransferAsync(session, request, card, lira, trace),
-            _ => Decline(nameof(DecideAsync), request, InternalResponseCodes.TransactionNotSupported, $"{typeName} is not supported")
+            ("BalanceInquiry", _) => InternalResponseCodes.Approved,     // bakiye cevaba (F54) sonraki adımda eklenecek
+            (Sale, false) => await SaleAsync(session, request, card, lira, entryMode),
+            (Sale, true) => await CreditSaleAsync(session, request, card, lira, entryMode),
+            (MoneyTransfer, false) => await TransferAsync(session, request, card, lira, trace),
+            _ => Decline(nameof(DecideAsync), request, InternalResponseCodes.TransactionNotSupported,
+                $"{typeName} is not supported for {(credit ? "credit" : "debit")} cards")
         };
     }
 
     // Limit, bakiye ve kartın son işlem tutarı hep TL karşılık (lira) üzerinden yürür; hesaplar TL'dir.
-    private async Task<string> SaleAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira, EntryMode? entryMode)
+    private async Task<string> SaleAsync(ITransactionSession session, TransactionRequest request, Card card, decimal? lira, EntryMode? entryMode)
     {
         var (amount, declined) = CheckAmount(nameof(SaleAsync), request, lira);
         if (declined is not null)
             return declined;
 
-        // Temassız olup olmadığı EntryMode.IsContactless'tan gelir; F22 yoksa temassız sayılmaz.
-        if (entryMode is { IsContactless: true })
-        {
-            if (!card.ContactlessAllowed)
-                return Decline(nameof(SaleAsync), request, InternalResponseCodes.ContactlessNotAllowed, "contactless not allowed for card");
-            if (card.ContactlessLimit is { } limit && amount > limit)
-                return Decline(nameof(SaleAsync), request, InternalResponseCodes.ContactlessLimitExceeded, $"TRY {amount} exceeds contactless limit {limit}");
-        }
+        if (CheckContactless(nameof(SaleAsync), request, card, amount, entryMode) is { } contactlessDeclined)
+            return contactlessDeclined;
 
         // Bakiye kontrolü ve düşme tek sorguda: aynı hesaba aynı anda gelen iki satış bakiyeyi eksiye düşüremez.
         if (!await session.TryDebitAsync(card.AccountNo, amount))
@@ -212,10 +234,46 @@ public sealed class TransactionHandler(
         return InternalResponseCodes.Approved;
     }
 
+    // Kredi kartıyla satış: banka hesabının bakiyesine dokunulmaz, TL karşılığı kartın kullanılabilir limitinden düşer.
+    // Taksitli satışta da toplam tutar bir kerede limitten düşer; taksitler ekstrelere bölünür (InstallmentCount kayıtta durur).
+    private async Task<string> CreditSaleAsync(ITransactionSession session, TransactionRequest request, Card card, decimal? lira, EntryMode? entryMode)
+    {
+        var (amount, declined) = CheckAmount(nameof(CreditSaleAsync), request, lira);
+        if (declined is not null)
+            return declined;
+
+        if (CheckContactless(nameof(CreditSaleAsync), request, card, amount, entryMode) is { } contactlessDeclined)
+            return contactlessDeclined;
+
+        if (await session.GetCreditLimitAsync(card.CardNumber) is null)
+            return Decline(nameof(CreditSaleAsync), request, InternalResponseCodes.CreditLimitNotDefined, "credit limit not defined for card");
+
+        // Limit kontrolü ve kullanılan limitin artması tek sorguda: aynı karta aynı anda gelen iki satış limiti aşamaz.
+        if (!await session.TryUseCreditLimitAsync(card.CardNumber, amount))
+            return Decline(nameof(CreditSaleAsync), request, InternalResponseCodes.InsufficientFunds, $"available credit limit is less than TRY {amount}");
+
+        await session.SetCardLastTransactionAsync(card.CardNumber, amount);
+        logger.LogInformation("{Method}: used TRY {Amount} of credit limit in {InstallmentCount} installment(s) {Stan} {Pan}",
+            nameof(CreditSaleAsync), amount, request.InstallmentCount ?? 1, IsoLog.Field(11, request.Stan), IsoLog.Field(2, request.CardNumber));
+        return InternalResponseCodes.Approved;
+    }
+
+    // Temassız olup olmadığı EntryMode.IsContactless'tan gelir; F22 yoksa temassız sayılmaz. Red IRC'si ya da null döner.
+    private string? CheckContactless(string method, TransactionRequest request, Card card, decimal amount, EntryMode? entryMode)
+    {
+        if (entryMode is not { IsContactless: true })
+            return null;
+        if (!card.ContactlessAllowed)
+            return Decline(method, request, InternalResponseCodes.ContactlessNotAllowed, "contactless not allowed for card");
+        if (card.ContactlessLimit is { } limit && amount > limit)
+            return Decline(method, request, InternalResponseCodes.ContactlessLimitExceeded, $"TRY {amount} exceeds contactless limit {limit}");
+        return null;
+    }
+
     // Karttan karta para transferi (sadece bu sistemdeki kartlar arası): F48'deki alıcı kartın hesabına, gönderenin hesabından.
     // Döviz de olabilir; iki hesap da TL olduğu için TL karşılığı düşülür ve eklenir. Temassız limit uygulanmaz,
     // alıcı kartın son kullanma tarihine bakılmaz. Gönderen kartın kontrolleri (kart, F14, CVV2, hesap) DecideAsync'te yapıldı.
-    private async Task<string> TransferAsync(IDebitSession session, TransactionRequest request, Card card, decimal? lira, Trace trace)
+    private async Task<string> TransferAsync(ITransactionSession session, TransactionRequest request, Card card, decimal? lira, Trace trace)
     {
         if (request.RecipientCardNumber is not { } recipientNumber || !IsCardNumber(recipientNumber))
             return Decline(nameof(TransferAsync), request, InternalResponseCodes.RecipientCardInvalid, $"{IsoLog.Label(48)} missing or not a card number");
@@ -349,7 +407,7 @@ public sealed class TransactionHandler(
 
     // CVV düz saklanmaz: gelen değer hash'lenip dbo.CardSecret'taki hash ile karşılaştırılır (sabit zamanlı; süre hangi
     // baytın tuttuğunu ele vermez). CardSecret'ı olmayan kart (bu tablodan önce açılmış) eşleşmemiş sayılır.
-    private async Task<bool> CvvMatchesAsync(IDebitSession session, string cardNumber, string received) =>
+    private async Task<bool> CvvMatchesAsync(ITransactionSession session, string cardNumber, string received) =>
         await session.GetCvvHashAsync(cardNumber) is { } stored
         && CryptographicOperations.FixedTimeEquals(stored, secrets.HashCvv(cardNumber, received));
 

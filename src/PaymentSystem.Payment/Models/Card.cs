@@ -35,6 +35,10 @@ public class Card : IValidatableObject
     // Temassıza açık kartta zorunlu, kapalı kartta boş olmalı.
     public decimal? ContactlessLimit { get; set; }
 
+    // Active olmayan kartla (Blocked / Cancelled) işlem yapılamaz. Body'de yoksa yeni kart Active açılır.
+    [Required, RegularExpression("^(Active|Blocked|Cancelled)$")]
+    public string Status { get; set; } = CardStatus.Active;
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (ContactlessAllowed && ContactlessLimit is null)
@@ -42,4 +46,16 @@ public class Card : IValidatableObject
         if (!ContactlessAllowed && ContactlessLimit is not null)
             yield return new ValidationResult("ContactlessLimit must be empty when contactless is not allowed.", [nameof(ContactlessLimit)]);
     }
+}
+
+// Card.CardType ve Card.Status değerleri (dbo.Card'daki CHECK ile aynı).
+public static class CardStatus
+{
+    public const string Active = "Active";
+}
+
+public static class CardTypes
+{
+    // Kredi kartı işlemleri banka hesabının bakiyesinden değil, CreditCardLimit'ten düşer. Diğer her tip debit sayılır.
+    public const string Credit = "Credit";
 }

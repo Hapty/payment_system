@@ -7,7 +7,7 @@ using PaymentSystem.Iso8583;
 namespace PaymentSystem.Gate;
 
 // POST /api/transactions gövdesi: bir finansal isteğin ISO8583 alanları. JSON'da alan numarasıyla gelir ("F2", "F3" ...);
-// C# tarafında okunabilir isimler kullanılır. cvv ISO alanı olmadığı için adıyla gelir.
+// C# tarafında okunabilir isimler kullanılır. cvv ve installmentCount ISO alanı olmadığı için adıyla gelir.
 public sealed record TransactionRequest(
     [property: JsonPropertyName("mti"), Description("İstek MTI'ı, örn. 0200 (finansal istek)")] string? Mti,
     [property: JsonPropertyName("F2"), Description("Kart numarası (PAN)")] string? CardNumber,
@@ -27,7 +27,10 @@ public sealed record TransactionRequest(
     [property: JsonPropertyName("F43"), Description("İşyeri adı / yeri")] string? CardAcceptor,
     [property: JsonPropertyName("F48"), Description("Bu sistemde: para transferinde alıcı kart no")] string? RecipientCardNumber = null,
     // CVV2 (kartın arkası): ISO8583:1987'de standart alanı yok, Payment'a ayrı alan olarak gider
-    [property: JsonPropertyName("cvv"), Description("CVV2, 3 ya da 4 hane (ISO alanı değil)")] string? Cvv = null);
+    [property: JsonPropertyName("cvv"), Description("CVV2, 3 ya da 4 hane (ISO alanı değil)")] string? Cvv = null,
+    // Taksit sayısı: ISO8583:1987'de standart alanı yok, Payment'a ayrı alan olarak gider
+    [property: JsonPropertyName("installmentCount"), Description("Taksit sayısı, 1-36; yoksa tek çekim. Sadece kredi kartıyla satışta 1'den büyük olabilir (ISO alanı değil)")]
+    int? InstallmentCount = null);
 
 // ResponseCode = F39. Onay da red de (örn. 51 yetersiz bakiye) 200 ile döner.
 public sealed record TransactionResponse(
@@ -39,6 +42,10 @@ public sealed record TransactionResponse(
 // bozuk ya da eksik alan 400 ile, hangi alanda ne sorun olduğu yazılarak döner. Geçerli istek TransactionHandler'a gider.
 public static class TransactionEndpoint
 {
+    // Payment'taki TransactionRequest.InstallmentCount ile aynı aralık.
+    private const int MinInstallments = 1;
+    private const int MaxInstallments = 36;
+
     // F13 ayrıca ele alınır (bkz. LocalDate): JSON'da yyyymmdd, ISO mesajında MMDD.
     private static readonly (int Field, Func<TransactionRequest, string?> Value)[] Fields =
     [
@@ -111,6 +118,9 @@ public static class TransactionEndpoint
         if (request.Cvv is { } cvv && (cvv.Length is not (3 or 4) || !cvv.All(char.IsAsciiDigit)))
             errors["cvv"] = ["Must be 3 or 4 digits."];
 
+        if (request.InstallmentCount is < MinInstallments or > MaxInstallments)
+            errors["installmentCount"] = [$"Must be between {MinInstallments} and {MaxInstallments}."];
+
         if (errors.Count > 0)
         {
             logger.LogWarning("{Method}: validation failed {Stan} {Pan} fields {Fields} - responding 400",
@@ -118,7 +128,7 @@ public static class TransactionEndpoint
             return TypedResults.ValidationProblem(errors);
         }
 
-        var response = await handler.ProcessAsync(message, request.Cvv, request.LocalDate, cancellationToken);
+        var response = await handler.ProcessAsync(message, request.Cvv, request.LocalDate, cancellationToken, request.InstallmentCount);
         logger.LogInformation("{Method}: responding {ResponseMti} {Stan} {ResponseCode}",
             nameof(HandleAsync), response.Mti, IsoLog.Field(11, response[11]), IsoLog.Field(39, response[39]));
         return TypedResults.Ok(new TransactionResponse(response.Mti, response[39]!, response[11]));
