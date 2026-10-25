@@ -213,4 +213,24 @@ public class CardsControllerTests(SqlServerFixture fixture) : DatabaseTest(fixtu
     [Fact]
     public async Task Delete_MissingCard_ReturnsNotFound() =>
         Assert.IsType<NotFoundResult>(await Controller.Delete(999_999));
+
+    [Fact]
+    public async Task Create_WithoutStatus_IsActive()
+    {
+        var id = await SeedCardAsync();
+
+        Assert.Equal("Active", (await Repository.GetAsync(id))!.Status);
+    }
+
+    [Fact]
+    public async Task Update_CanBlockCard()
+    {
+        var id = await SeedCardAsync();
+        var input = NewCard();
+        input.Status = "Blocked";
+
+        Assert.IsType<NoContentResult>(await Controller.Update(id, input));
+
+        Assert.Equal("Blocked", (await Repository.GetAsync(id))!.Status);
+    }
 }

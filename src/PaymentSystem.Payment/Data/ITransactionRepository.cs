@@ -10,17 +10,20 @@ public sealed record PreviousResponse(string ResponseCode, long? AccountNo);
 public interface ITransactionRepository
 {
     // İşlem kaydı, bakiye ve kart güncellemesi bu oturumdaki tek SQL transaction'ında yapılır.
-    Task<IDebitSession> BeginAsync();
+    Task<ITransactionSession> BeginAsync();
 
-    // Tekrar gelen istek için ilk kararın F39'u; kayıt yoksa null.
+    // Tekrar gelen istek için ilk kararın F39'u (DebitTransaction ya da CreditTransaction'da); kayıt yoksa null.
     Task<PreviousResponse?> GetPreviousAsync(Guid id);
 }
 
 // Açık bir SQL transaction'ı. CommitAsync çağrılmadan dispose edilirse her şey geri alınır.
-public interface IDebitSession : IAsyncDisposable
+public interface ITransactionSession : IAsyncDisposable
 {
     // false: aynı Guid'li kayıt zaten var (tekrar gelen istek). Aynı anda gelirse ilk transaction bitene kadar bekler.
+    // Oturumda tek kayıt açılır: debit kartın işlemi DebitTransaction'a, kredi kartınınki CreditTransaction'a.
     Task<bool> TryInsertAsync(DebitTransaction transaction);
+
+    Task<bool> TryInsertAsync(CreditTransaction transaction);
 
     // F42 ile işyeri; tabloda yoksa null.
     Task<Merchant?> GetMerchantAsync(string merchantId);
@@ -39,8 +42,15 @@ public interface IDebitSession : IAsyncDisposable
     // Para transferi: gönderenden düşme ve alıcıya ekleme bu transaction'da birlikte; false: gönderenin bakiyesi yetersiz.
     Task<bool> TryTransferAsync(long fromAccountNo, long toAccountNo, decimal amount);
 
+    // Kredi kartının limiti; kayıt yoksa null. Kullanılabilir limit okunmaz, TryUseCreditLimitAsync'te kontrol edilir.
+    Task<CreditCardLimit?> GetCreditLimitAsync(string cardNumber);
+
+    // Kullanılabilir limit kontrolü ve UsedLimit'in artması tek sorguda; false: limit yetersiz.
+    Task<bool> TryUseCreditLimitAsync(string cardNumber, decimal amount);
+
     Task SetCardLastTransactionAsync(string cardNumber, decimal amount);
 
+    // Bu oturumda açılan kaydın (debit ya da kredi) F39'u.
     Task SetResponseCodeAsync(Guid id, string responseCode);
 
     Task CommitAsync();

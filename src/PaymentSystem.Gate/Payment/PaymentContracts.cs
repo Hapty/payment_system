@@ -20,6 +20,7 @@ public sealed record PaymentRequest(
     string? MerchantId,             // F42
     string? CardAcceptor,           // F43
     string? RecipientCardNumber,    // F48: para transferinde alıcı kart no
-    string? Cvv);                   // CVV2; ISO alanı değil, Payment doğrular
+    string? Cvv,                    // CVV2; ISO alanı değil, Payment doğrular
+    int? InstallmentCount = null);  // taksit sayısı; ISO alanı değil, yoksa tek çekim
 
 public sealed record PaymentResponse(string ResponseCode);

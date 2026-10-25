@@ -18,6 +18,7 @@ public sealed class IssuedCard : Card
         LastTransactionAmount = card.LastTransactionAmount,
         ContactlessAllowed = card.ContactlessAllowed,
         ContactlessLimit = card.ContactlessLimit,
+        Status = card.Status,
         Cvv = cvv,
         Pin = pin
     };

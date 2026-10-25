@@ -194,4 +194,69 @@ public class ModelValidationTests
         request.TerminalId = "TERM00011";
         Assert.False(IsValid(request));
     }
+
+    [Theory]
+    [InlineData("Active", true)]
+    [InlineData("Blocked", true)]
+    [InlineData("Cancelled", true)]
+    [InlineData("Closed", false)]
+    [InlineData("", false)]
+    public void Card_Status_MustBeKnown(string status, bool valid)
+    {
+        var card = ValidCard();
+        card.Status = status;
+        Assert.Equal(valid, IsValid(card));
+    }
+
+    private static CreditCardLimit ValidLimit() =>
+        new() { CardNumber = "4111111111111111", CreditLimit = 50_000m, CashLimit = 10_000m, StatementDay = 25, DueDay = 5 };
+
+    [Fact]
+    public void CreditCardLimit_Valid() => Assert.True(IsValid(ValidLimit()));
+
+    [Fact]
+    public void CreditCardLimit_CashLimitOverCreditLimit_IsInvalid()
+    {
+        var limit = ValidLimit();
+        limit.CashLimit = 50_000.01m;
+        Assert.False(IsValid(limit));
+    }
+
+    [Theory]
+    [InlineData(0, 5)]
+    [InlineData(29, 5)]
+    [InlineData(25, 0)]
+    [InlineData(25, 31)]
+    public void CreditCardLimit_DaysOutsideOneToTwentyEight_AreInvalid(byte statementDay, byte dueDay)
+    {
+        var limit = ValidLimit();
+        (limit.StatementDay, limit.DueDay) = (statementDay, dueDay);
+        Assert.False(IsValid(limit));
+    }
+
+    [Fact]
+    public void CreditCardLimit_NegativeLimit_IsInvalid()
+    {
+        var limit = ValidLimit();
+        (limit.CreditLimit, limit.CashLimit) = (-1m, 0m);
+        Assert.False(IsValid(limit));
+    }
+
+    [Fact]
+    public void CreditCardLimit_WithoutCreditLimit_IsRejectedWhenRead() =>
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<CreditCardLimit>(
+            """{"cardNumber":"4111111111111111","cashLimit":0,"statementDay":25,"dueDay":5}""", JsonSerializerOptions.Web));
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(1, true)]
+    [InlineData(36, true)]
+    [InlineData(0, false)]
+    [InlineData(37, false)]
+    public void TransactionRequest_InstallmentCount_IsOneToThirtySix(int? installments, bool valid)
+    {
+        var request = ValidTransaction();
+        request.InstallmentCount = installments;
+        Assert.Equal(valid, IsValid(request));
+    }
 }
