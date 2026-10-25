@@ -1,15 +1,101 @@
-# Payment System
+# 💳 Payment System
 
-Kartlı ödeme işlemlerini (debit ve kredi kartıyla satış, taksit, bakiye sorgu, karttan karta transfer) uçtan uca işleyen, eğitim amaçlı ama gerçek
-bankacılık kavramlarıyla kurulmuş bir ödeme sistemi. .NET 9, SQL Server, RabbitMQ, Kafka ve SMTP kullanır.
+[![CI](https://github.com/Hapty/payment_system/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Hapty/payment_system/actions/workflows/ci.yml)
+![.NET 9](https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet)
+![SQL Server](https://img.shields.io/badge/SQL%20Server-2022-CC2927?logo=microsoftsqlserver&logoColor=white)
+![RabbitMQ](https://img.shields.io/badge/RabbitMQ-request--reply-FF6600?logo=rabbitmq&logoColor=white)
+![Kafka](https://img.shields.io/badge/Kafka-events-231F20?logo=apachekafka)
+![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-429%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-%E2%89%A594%25-brightgreen)
 
-Bu README projeyi **öğrenmek** için yazıldı: önce büyük resim ve kavramlar, sonra bir işlemin baştan sona yolculuğu,
-ardından her endpoint'in tek tek anlatımı gelir. En sonda "hangi dosyayı hangi sırayla okumalıyım" diye bir öğrenme yolu var.
+Kartlı ödeme işlemlerini **ISO 8583** standardına göre uçtan uca işleyen bir ödeme sistemi. POS'tan gelen bir satış isteği
+doğrulanır, karara bağlanır (onay / red), para hesaptan ya da kredi kartı limitinden düşülür, kayıt veritabanına yazılır
+ve müşteriye e-posta gider. Gerçek bankacılık kavramlarıyla (MTI, F39 cevap kodları, idempotency, PCI) kurulmuş bir
+**staj projesidir**.
 
-> **Staj sunumu için:** projenin ilk günden bugüne nasıl geliştiği — hangi adımda ne yapıldı, hangi karar neden alındı, hangi
-> sorunla karşılaşılıp nasıl çözüldü — [Bölüm 18](#18-proje-süreci-baştan-sona-ne-yapıldı)'de sırasıyla anlatılıyor.
+> 📌 **Proje nasıl gelişti?** İlk günden bugüne her adım, alınan kararlar ve sebepleri: [Bölüm 18 — Proje süreci](#18-proje-süreci-baştan-sona-ne-yapıldı)
 
-## İçindekiler
+## ✨ Neler yapabiliyor?
+
+| | |
+|---|---|
+| 🛒 **Satış** | Debit kartla (bakiyeden) ve kredi kartıyla (limitten) satış. Çip, temassız, elle giriş, e-ticaret |
+| 🧾 **Taksit** | Kredi kartıyla 1–36 taksitli satış |
+| 🔁 **Karttan karta transfer** | Gönderenden düşme ve alıcıya ekleme tek SQL transaction'ında |
+| 💱 **Döviz** | TCMB kurlarıyla TL karşılığı. Kurlar saatte bir çekilip cache'te tutulur |
+| 🔍 **Bakiye sorgu** | Kart, işyeri ve hesap kontrolleriyle |
+| 🛡️ **Güvenlik** | CVV2/PIN sadece HMAC-SHA256 hash olarak saklanır, kart numarası her logda maskeli |
+| ♻️ **Idempotency** | Aynı istek iki kez gelirse para bir kez düşer |
+| ⚖️ **Eşzamanlılık** | Aynı anda gelen işlemler bakiyeyi ya da limiti asla aşamaz |
+| 📧 **Bildirim** | Onaylı satış ve transferde Kafka üzerinden asenkron e-posta |
+| 🚦 **25 red sebebi** | Her sebebin bir iç kodu (IRC) var, POS'a dönen ISO cevap koduna (F39) tablodan eşlenir |
+
+## 🏗️ Mimari
+
+```mermaid
+flowchart LR
+    POS["🖥️ İstemci / POS<br/>(Postman)"] -- "HTTP / JSON<br/>POST /api/transactions" --> GATE
+    subgraph Servisler
+        GATE["🚪 Gate<br/>doğrulama, ISO8583"]
+        PAY["🧠 Payment<br/>karar motoru + CRUD API"]
+        NOTI["📧 Notification<br/>e-posta"]
+    end
+    GATE -- "RabbitMQ<br/>request-reply" --> PAY
+    PAY -- "Dapper / SQL" --> DB[("🗄️ SQL Server")]
+    PAY -- "Kafka<br/>TransactionCompleted" --> NOTI
+    NOTI -- SMTP --> MAIL["✉️ Müşteri"]
+    TCMB["🏦 TCMB kurları"] -. saatte bir .-> PAY
+    ADMIN["👤 Yönetici"] -- "HTTP :5002<br/>hesap, kart, limit" --> PAY
+```
+
+| Servis | Görevi |
+|---|---|
+| **Gate** | Sistemin tek giriş kapısı. JSON'u ISO 8583 kurallarına göre doğrular, isteği kuyruğa koyar, cevabı bekler. İş kuralı bilmez |
+| **Payment** | Sistemin beyni. İşlemi karara bağlar, parayı hareket ettirir, kaydı yazar, olay yayımlar. Hesap/kart/limit yönetim API'si de buradadır |
+| **Notification** | Kafka'daki olayları dinler, onaylı işlemlerde müşteriye e-posta atar |
+
+**Teknolojiler:** .NET 9 (C#) · ASP.NET Core · Dapper · SQL Server 2022 · RabbitMQ · Apache Kafka · MailKit (SMTP) ·
+Docker Compose · xUnit + Testcontainers · GitHub Actions · Swagger / OpenAPI
+
+## 🚀 Hızlı başlangıç
+
+Gereken tek şey Docker Desktop.
+
+```bash
+git clone https://github.com/Hapty/payment_system.git && cd payment_system
+cp .env.example .env            # şifreleri ve CARD_SECRET_KEY'i doldur (bkz. Bölüm 3)
+docker compose up -d --build    # SQL Server, RabbitMQ, Kafka ve 3 servis ayağa kalkar
+```
+
+Sonra http://localhost:8080/swagger (Gate) ve http://localhost:5002/swagger (Payment) adreslerinden denenebilir.
+Örnek bir satış:
+
+```http
+POST http://localhost:8080/api/transactions
+{ "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949", ... }
+```
+```json
+{ "mti": "0210", "F39": "00", "F11": "000001" }        ← 00 = onaylandı
+```
+
+Adım adım deneme rehberi (hesap aç, kart aç, satış, transfer, kredi kartı, red senaryoları): [Bölüm 4 — Uygulamalı lab](#4-uygulamalı-lab-sıfırdan-uçtan-uca-test)
+
+## ✅ Kalite
+
+- **429 otomatik test.** Testler sahte değil, Testcontainers ile açılan **gerçek** SQL Server, RabbitMQ, Kafka ve SMTP (Mailpit) container'larına karşı koşar.
+- **Coverage:** Payment %98, Gate %100, Notification %94.
+- **CI:** GitHub Actions her PR'da build ve testleri çalıştırır. Coverage %80'in altına düşerse PR merge edilemez.
+- **Branch akışı:** geliştirme `develop`'ta yapılır, `master`'a sadece PR ile girer.
+
+---
+
+## 📚 Detaylı dokümantasyon
+
+Aşağıdaki bölümler projeyi **öğrenmek** için yazıldı: önce büyük resim ve kavramlar, sonra bir işlemin baştan sona
+yolculuğu, ardından her endpoint'in tek tek anlatımı gelir. En sonda "hangi dosyayı hangi sırayla okumalıyım" diye bir öğrenme yolu var.
+
+### İçindekiler
 
 1. [Büyük resim](#1-büyük-resim)
 2. [Temel kavramlar (sözlük)](#2-temel-kavramlar-sözlük)
