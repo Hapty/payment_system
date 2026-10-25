@@ -99,6 +99,30 @@ Content-Type: application/json
   "cvv": "123"
 }
 
+### Kredi kartıyla 6 taksitli satış: 1.200,00 TL. Tutarın tamamı kartın limitinden bir kerede düşer, hesaba dokunulmaz.
+# installmentCount: 1-36, yoksa tek çekim. Debit kartla 1'den büyük taksit F39 57 alır.
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "F2": "4111111111111129",
+  "F3": "000000",
+  "F4": 120000,
+  "F49": "949",
+  "F7": "1016100250",
+  "F11": "000020",
+  "F12": "130250",
+  "F13": "20261016",
+  "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
+  "F14": "2812",
+  "F22": "051",
+  "installmentCount": 6
+}
+
 ### Karttan karta transfer: 150,00 TL (F3 400000, F48 = alıcı kart no; alıcı kart bu sistemde olmalı)
 POST {{gate}}/api/transactions
 Content-Type: application/json
