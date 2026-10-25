@@ -75,18 +75,19 @@ public class HandlerTests
         public string? PreviousResponseCode { get; init; }
         public FakeSession? Session { get; private set; }
 
-        public Task<IDebitSession> BeginAsync() => Task.FromResult<IDebitSession>(Session = new FakeSession(!Duplicate));
+        public Task<ITransactionSession> BeginAsync() => Task.FromResult<ITransactionSession>(Session = new FakeSession(!Duplicate));
         public Task<PreviousResponse?> GetPreviousAsync(Guid id) =>
             Task.FromResult<PreviousResponse?>(PreviousResponseCode is null ? null : new(PreviousResponseCode, 1000000001));
     }
 
-    private sealed class FakeSession(bool insertSucceeds) : IDebitSession
+    private sealed class FakeSession(bool insertSucceeds) : ITransactionSession
     {
         public bool Committed { get; private set; }
         public bool Disposed { get; private set; }
         public string? ResponseCode { get; private set; }
 
         public Task<bool> TryInsertAsync(DebitTransaction transaction) => Task.FromResult(insertSucceeds);
+        public Task<bool> TryInsertAsync(CreditTransaction transaction) => Task.FromResult(insertSucceeds);
         public Task<Merchant?> GetMerchantAsync(string merchantId) =>
             Task.FromResult<Merchant?>(new Merchant { MerchantId = merchantId, Name = merchantId, MerchantType = "5399", Status = "Active" });
         public Task<Card?> GetCardAsync(string cardNumber) =>
@@ -96,6 +97,8 @@ public class HandlerTests
             Task.FromResult<BankAccount?>(new BankAccount { AccountNo = accountNo, AccountStatus = "Active", Email = "musteri@example.com" });
         public Task<bool> TryDebitAsync(long accountNo, decimal amount) => Task.FromResult(true);
         public Task<bool> TryTransferAsync(long fromAccountNo, long toAccountNo, decimal amount) => Task.FromResult(true);
+        public Task<CreditCardLimit?> GetCreditLimitAsync(string cardNumber) => Task.FromResult<CreditCardLimit?>(null);
+        public Task<bool> TryUseCreditLimitAsync(string cardNumber, decimal amount) => Task.FromResult(true);
         public Task SetCardLastTransactionAsync(string cardNumber, decimal amount) => Task.CompletedTask;
 
         public Task SetResponseCodeAsync(Guid id, string responseCode)

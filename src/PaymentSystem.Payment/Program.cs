@@ -37,6 +37,7 @@ builder.Services.AddSingleton<ICardRepository, CardRepository>();
 builder.Services.AddSingleton<ITransactionTypeRepository, TransactionTypeRepository>();
 builder.Services.AddSingleton<IMtiProcessingCodeRepository, MtiProcessingCodeRepository>();
 builder.Services.AddSingleton<IMerchantRepository, MerchantRepository>();
+builder.Services.AddSingleton<ICreditCardLimitRepository, CreditCardLimitRepository>();
 builder.Services.AddSingleton<ITransactionRepository, TransactionRepository>();
 builder.Services.AddSingleton<IParameterRepository, ParameterRepository>();
 builder.Services.AddSingleton<BankAccountHandler>();
@@ -44,6 +45,7 @@ builder.Services.AddSingleton<CardHandler>();
 builder.Services.AddSingleton<TransactionTypeHandler>();
 builder.Services.AddSingleton<MtiProcessingCodeHandler>();
 builder.Services.AddSingleton<MerchantHandler>();
+builder.Services.AddSingleton<CreditCardLimitHandler>();
 builder.Services.AddSingleton<ExchangeRateHandler>();
 builder.Services.AddSingleton<TransactionHandler>();
 

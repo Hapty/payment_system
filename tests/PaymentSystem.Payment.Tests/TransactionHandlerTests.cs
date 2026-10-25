@@ -50,7 +50,7 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
     // Her test DB'yi boşalttığı için seed verisini (02_seed_transaction_types.sql, 03_seed_entry_modes.sql, 04_seed_internal_response_codes.sql) ve bir hesap + kartı yeniden ekler.
     private async Task SeedAsync(decimal balance = 1000m, string status = "Active", string? expiry = "1228",
         bool contactless = true, decimal? contactlessLimit = 750m, string? email = Email, bool withSecret = true,
-        string merchantStatus = "Active")
+        string merchantStatus = "Active", string? cardType = null, string cardStatus = "Active")
     {
         await using var connection = Db.Create();
         await connection.ExecuteAsync(
@@ -61,13 +61,13 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
             INSERT INTO dbo.EntryMode (Code, Name, IsContactless)
                 VALUES ('00', 'Unknown', 0), ('01', 'Manual', 0), ('02', 'MagneticStripe', 0), ('05', 'Chip', 0),
                        ('07', 'ContactlessChip', 1), ('90', 'MagneticStripeFullTrack', 0), ('91', 'ContactlessMagneticStripe', 1), ('81', 'ECommerce', 0);
-            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('1005', 'Recipient card (F48) missing or invalid', '30'), ('1006', 'Transfer to the same account', '12'), ('1007', 'Merchant ID (F42) missing', '30'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('2006', 'CVV2 missing or does not match', 'N7'), ('2007', 'Recipient card not found', '14'), ('2008', 'Recipient account not active', '62'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('4001', 'Merchant not found', '03'), ('4002', 'Merchant not active', '03'), ('4003', 'Merchant type (F18) does not match merchant', '03'), ('9001', 'Exchange rate unavailable or stale', '91');
+            INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('1001', 'Transaction type not defined (MTI + F3)', '12'), ('1002', 'Entry mode (F22) not defined', '12'), ('1003', 'Transaction type not supported', '12'), ('1004', 'Currency not supported', '12'), ('1005', 'Recipient card (F48) missing or invalid', '30'), ('1006', 'Transfer to the same account', '12'), ('1007', 'Merchant ID (F42) missing', '30'), ('1008', 'Installments not allowed for this transaction', '57'), ('2001', 'Card not found', '14'), ('2002', 'Card expired or F14 does not match', '54'), ('2003', 'Account not active', '62'), ('2004', 'Contactless not allowed for card', '57'), ('2005', 'Contactless limit exceeded', '65'), ('2006', 'CVV2 missing or does not match', 'N7'), ('2007', 'Recipient card not found', '14'), ('2008', 'Recipient account not active', '62'), ('2009', 'Card not active', '62'), ('3001', 'Amount is zero', '13'), ('3002', 'Insufficient funds', '51'), ('3003', 'Credit limit not defined', '57'), ('4001', 'Merchant not found', '03'), ('4002', 'Merchant not active', '03'), ('4003', 'Merchant type (F18) does not match merchant', '03'), ('9001', 'Exchange rate unavailable or stale', '91');
             INSERT INTO dbo.Merchant (MerchantId, Name, MerchantType, Status) VALUES (@MerchantId, 'TRENDYOL', @MerchantType, @merchantStatus);
             INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance, Email) VALUES (@AccountNo, @status, @balance, @email);
-            INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit)
-                VALUES (@Pan, @AccountNo, @expiry, @contactless, @contactlessLimit);
+            INSERT INTO dbo.Card (CardNumber, AccountNo, CardType, ExpiryDate, ContactlessAllowed, ContactlessLimit, Status)
+                VALUES (@Pan, @AccountNo, @cardType, @expiry, @contactless, @contactlessLimit, @cardStatus);
             """,
-            new { AccountNo, Pan, status, balance, expiry, contactless, contactlessLimit, email, MerchantId, MerchantType, merchantStatus });
+            new { AccountNo, Pan, status, balance, expiry, contactless, contactlessLimit, email, MerchantId, MerchantType, merchantStatus, cardType, cardStatus });
         if (withSecret)
             await connection.ExecuteAsync(
                 "INSERT INTO dbo.CardSecret (CardNumber, CvvHash, PinHash) VALUES (@Pan, @cvvHash, @pinHash)",
@@ -1132,6 +1132,278 @@ public class TransactionHandlerTests(SqlServerFixture fixture) : DatabaseTest(fi
 
         Assert.Equal("00", await AuthorizeAsync(request));
         Assert.Null(await StoredRecipientAsync());
+    }
+
+    // ---------- Kart durumu ----------
+
+    [Theory]
+    [InlineData("Blocked", null)]
+    [InlineData("Cancelled", null)]
+    [InlineData("Blocked", "Credit")]
+    public async Task Sale_WithInactiveCard_IsDeclined62AndRecorded(string cardStatus, string? cardType)
+    {
+        await SeedAsync(cardStatus: cardStatus, cardType: cardType);
+        await SeedCreditLimitAsync();
+
+        Assert.Equal("62", await AuthorizeAsync(Sale(15000)));
+
+        Assert.Equal(InternalResponseCodes.CardNotActive, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+        Assert.Equal(0m, (await CreditLimitAsync())?.UsedLimit ?? 0m);
+    }
+
+    // ---------- Kredi kartıyla satış ----------
+
+    private async Task SeedCreditLimitAsync(decimal creditLimit = 500m, decimal usedLimit = 0m)
+    {
+        await using var connection = Db.Create();
+        await connection.ExecuteAsync(
+            """
+            IF EXISTS (SELECT 1 FROM dbo.Card WHERE CardNumber = @Pan AND CardType = 'Credit')
+                INSERT INTO dbo.CreditCardLimit (CardNumber, CreditLimit, UsedLimit, CashLimit, StatementDay, DueDay)
+                VALUES (@Pan, @creditLimit, @usedLimit, 0, 25, 5)
+            """,
+            new { Pan, creditLimit, usedLimit });
+    }
+
+    private async Task<CreditCardLimit?> CreditLimitAsync()
+    {
+        await using var connection = Db.Create();
+        return await connection.QuerySingleOrDefaultAsync<CreditCardLimit>(
+            "SELECT CardNumber, CreditLimit, UsedLimit, AvailableLimit, CashLimit, UsedCashLimit FROM dbo.CreditCardLimit WHERE CardNumber = @Pan", new { Pan });
+    }
+
+    private sealed record StoredCreditTransaction(string F2_CardNo, string Otc, string Ots, decimal F4_Amount, decimal? LocalTxnAmount,
+        string? F42_MerchantId, string? F39_ResponseCode, byte InstallmentCount);
+
+    private async Task<IReadOnlyList<StoredCreditTransaction>> CreditTransactionsAsync()
+    {
+        await using var connection = Db.Create();
+        return (await connection.QueryAsync<StoredCreditTransaction>(
+            "SELECT F2_CardNo, Otc, Ots, F4_Amount, LocalTxnAmount, F42_MerchantId, F39_ResponseCode, InstallmentCount FROM dbo.CreditTransaction")).AsList();
+    }
+
+    private static TransactionRequest CreditSale(long amountMinor = 15000, int? installments = null, string localTime = "125959")
+    {
+        var request = Sale(amountMinor, localTime);
+        request.InstallmentCount = installments;
+        return request;
+    }
+
+    [Fact]
+    public async Task CreditSale_UsesCreditLimitAndLeavesAccountBalance()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync(creditLimit: 500m);
+
+        Assert.Equal("00", await AuthorizeAsync(CreditSale(15000)));
+
+        var limit = (await CreditLimitAsync())!;
+        Assert.Equal((150m, 350m), (limit.UsedLimit, limit.AvailableLimit));
+        Assert.Equal(1000m, await BalanceAsync());
+        Assert.Empty(await TransactionsAsync());        // debit tablosuna yazılmaz
+        var stored = Assert.Single(await CreditTransactionsAsync());
+        Assert.Equal((Pan, "10", "11", 150m, (decimal?)150m, MerchantId, "00", (byte)1),
+            (stored.F2_CardNo, stored.Otc, stored.Ots, stored.F4_Amount, stored.LocalTxnAmount, stored.F42_MerchantId, stored.F39_ResponseCode, stored.InstallmentCount));
+
+        await using var connection = Db.Create();
+        Assert.Equal(150m, await connection.ExecuteScalarAsync<decimal>("SELECT LastTransactionAmount FROM dbo.Card WHERE CardNumber = @Pan", new { Pan }));
+    }
+
+    [Fact]
+    public async Task CreditSale_InInstallments_UsesWholeAmountAndRecordsInstallmentCount()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync(creditLimit: 500m);
+
+        Assert.Equal("00", await AuthorizeAsync(CreditSale(30000, installments: 6)));
+
+        Assert.Equal(300m, (await CreditLimitAsync())!.UsedLimit);
+        Assert.Equal(6, Assert.Single(await CreditTransactionsAsync()).InstallmentCount);
+    }
+
+    [Fact]
+    public async Task CreditSale_WithExactAvailableLimit_IsApproved()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync(creditLimit: 500m, usedLimit: 350m);
+
+        Assert.Equal("00", await AuthorizeAsync(CreditSale(15000)));
+
+        Assert.Equal(0m, (await CreditLimitAsync())!.AvailableLimit);
+    }
+
+    [Fact]
+    public async Task CreditSale_OverAvailableLimit_IsDeclined51AndRecordedWithoutUsingLimit()
+    {
+        await SeedAsync(cardType: "Credit", balance: 1_000_000m);     // hesaptaki para kredi kartını etkilemez
+        await SeedCreditLimitAsync(creditLimit: 500m, usedLimit: 400m);
+
+        Assert.Equal("51", await AuthorizeAsync(CreditSale(15000)));
+
+        Assert.Equal(InternalResponseCodes.InsufficientFunds, LastFailure!.Irc);
+        Assert.Equal(400m, (await CreditLimitAsync())!.UsedLimit);
+        Assert.Equal("51", Assert.Single(await CreditTransactionsAsync()).F39_ResponseCode);
+    }
+
+    [Fact]
+    public async Task CreditSale_WithoutCreditLimit_IsDeclined57()
+    {
+        await SeedAsync(cardType: "Credit");
+
+        Assert.Equal("57", await AuthorizeAsync(CreditSale(15000)));
+
+        Assert.Equal(InternalResponseCodes.CreditLimitNotDefined, LastFailure!.Irc);
+        Assert.Equal("57", Assert.Single(await CreditTransactionsAsync()).F39_ResponseCode);
+    }
+
+    [Fact]
+    public async Task CreditSale_OnInactiveAccount_IsRestricted()
+    {
+        await SeedAsync(cardType: "Credit", status: "Closed");
+        await SeedCreditLimitAsync();
+
+        Assert.Equal("62", await AuthorizeAsync(CreditSale(15000)));
+
+        Assert.Equal(InternalResponseCodes.AccountNotActive, LastFailure!.Irc);
+        Assert.Equal(0m, (await CreditLimitAsync())!.UsedLimit);
+    }
+
+    [Fact]
+    public async Task CreditSale_ContactlessOverLimit_AsksForChipAndPin()
+    {
+        await SeedAsync(cardType: "Credit", contactlessLimit: 100m);
+        await SeedCreditLimitAsync();
+        var request = CreditSale(15000);
+        request.EntryMode = "071";
+
+        Assert.Equal("65", await AuthorizeAsync(request));
+
+        Assert.Equal(0m, (await CreditLimitAsync())!.UsedLimit);
+    }
+
+    [Fact]
+    public async Task CreditSale_InForeignCurrency_UsesLiraEquivalent()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync(creditLimit: 500m);
+        StoreRates(("USD", 40m));
+        var request = CreditSale(500);
+        request.CurrencyCode = "840";
+
+        Assert.Equal("00", await AuthorizeAsync(request));
+
+        Assert.Equal(200m, (await CreditLimitAsync())!.UsedLimit);
+    }
+
+    [Fact]
+    public async Task CreditSale_Duplicate_UsesLimitOnceAndReturnsFirstAnswer()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync(creditLimit: 500m);
+
+        Assert.Equal("00", await AuthorizeAsync(CreditSale(15000)));
+        Assert.Equal("00", await AuthorizeAsync(CreditSale(15000)));
+
+        Assert.Equal(150m, (await CreditLimitAsync())!.UsedLimit);
+        Assert.Single(await CreditTransactionsAsync());
+        Assert.Single(Events.Events);
+    }
+
+    [Fact]
+    public async Task CreditSale_DuplicateOfDeclined_StaysDeclined()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync(creditLimit: 100m);
+
+        Assert.Equal("51", await AuthorizeAsync(CreditSale(15000)));
+        Assert.Equal("51", await AuthorizeAsync(CreditSale(15000)));
+
+        Assert.Equal(AccountNo, LastFailure!.AccountNo);
+        Assert.Equal(0m, (await CreditLimitAsync())!.UsedLimit);
+    }
+
+    [Fact]
+    public async Task ConcurrentCreditSales_CannotExceedCreditLimit()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync(creditLimit: 300m);
+
+        var codes = await Task.WhenAll(Enumerable.Range(1, 5).Select(i => AuthorizeAsync(CreditSale(10000, localTime: $"1259{i:D2}"))));
+
+        Assert.Equal(3, codes.Count(c => c == "00"));
+        Assert.Equal(2, codes.Count(c => c == "51"));
+        Assert.Equal(0m, (await CreditLimitAsync())!.AvailableLimit);
+    }
+
+    [Fact]
+    public async Task CreditSale_PublishesEventWithAccount()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync();
+
+        Assert.Equal("00", await AuthorizeAsync(CreditSale(15000)));
+
+        var published = Assert.Single(Events.Events);
+        Assert.Equal(("Sale", "00", AccountNo, Email), (published.TransactionType, published.ResponseCode, published.AccountNo, published.Email));
+    }
+
+    [Fact]
+    public async Task DebitSale_InInstallments_IsDeclined57WithoutDebit()
+    {
+        await SeedAsync();
+
+        Assert.Equal("57", await AuthorizeAsync(CreditSale(15000, installments: 3)));
+
+        Assert.Equal(InternalResponseCodes.InstallmentsNotAllowed, LastFailure!.Irc);
+        Assert.Equal(1000m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task DebitSale_WithSingleInstallment_IsApproved()
+    {
+        await SeedAsync();
+
+        Assert.Equal("00", await AuthorizeAsync(CreditSale(15000, installments: 1)));
+
+        Assert.Equal(850m, await BalanceAsync());
+    }
+
+    [Fact]
+    public async Task Transfer_FromCreditCard_IsNotSupported()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync();
+        await SeedRecipientAsync();
+
+        Assert.Equal("12", await AuthorizeAsync(Transfer(10000)));
+
+        Assert.Equal(InternalResponseCodes.TransactionNotSupported, LastFailure!.Irc);
+        Assert.Equal((0m, 200m), ((await CreditLimitAsync())!.UsedLimit, await BalanceOfAsync(RecipientAccountNo)));
+    }
+
+    [Fact]
+    public async Task Transfer_FromCreditCardInInstallments_IsDeclined57()
+    {
+        await SeedAsync(cardType: "Credit");
+        await SeedCreditLimitAsync();
+        await SeedRecipientAsync();
+        var request = Transfer(10000);
+        request.InstallmentCount = 2;
+
+        Assert.Equal("57", await AuthorizeAsync(request));
+
+        Assert.Equal(InternalResponseCodes.InstallmentsNotAllowed, LastFailure!.Irc);
+    }
+
+    [Fact]
+    public async Task BalanceInquiry_WithCreditCard_IsApproved()
+    {
+        await SeedAsync(cardType: "Credit");
+        var request = Sale();
+        request.ProcessingCode = "310000";
+
+        Assert.Equal("00", await AuthorizeAsync(request));
     }
 
     // A->B ve B->A transferleri aynı anda: hesap satırları aynı sırayla kilitlendiği için deadlock (91) olmaz.

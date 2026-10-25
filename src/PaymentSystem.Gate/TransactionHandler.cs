@@ -16,15 +16,17 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
     // Cevapta geri gönderilen istek alanları: istemci cevabı kendi isteğiyle bunlarla eşleştirir.
     private static readonly int[] EchoedFinancialFields = [2, 3, 4, 7, 11, 12, 13, 37, 41, 42, 49];
 
-    // ISO mesajının dışında taşınan, olduğu gibi Payment'a iletilen iki değer:
+    // ISO mesajının dışında taşınan, olduğu gibi Payment'a iletilen değerler:
     // cvv: CVV2 (ISO8583:1987'de alanı yok), loglanmaz. transactionDate: F13'ün yıllı hali (yyyymmdd); mesajdaki F13 sadece MMDD.
-    public async Task<IsoMessage> ProcessAsync(IsoMessage request, string? cvv, string? transactionDate, CancellationToken cancellationToken)
+    // installmentCount: taksit sayısı (ISO8583:1987'de alanı yok); yoksa tek çekim.
+    public async Task<IsoMessage> ProcessAsync(
+        IsoMessage request, string? cvv, string? transactionDate, CancellationToken cancellationToken, int? installmentCount = null)
     {
         var stopwatch = Stopwatch.StartNew();
         if (request.Mti != FinancialRequestMti)
             logger.LogWarning("{Method}: unsupported MTI {Mti} {Stan} - responding 12", nameof(ProcessAsync), request.Mti, IsoLog.Field(11, request[11]));
         var response = request.Mti == FinancialRequestMti
-            ? await AuthorizeAsync(request, cvv, transactionDate, cancellationToken)
+            ? await AuthorizeAsync(request, cvv, transactionDate, installmentCount, cancellationToken)
             : new IsoMessage(request.ToResponseMti()).Set(39, ResponseCodes.InvalidTransaction);
 
         logger.LogInformation("{Method}: {RequestMti} -> {ResponseMti} {Stan} {Pan} {ResponseCode} in {ElapsedMs} ms",
@@ -33,7 +35,8 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         return response;
     }
 
-    private async Task<IsoMessage> AuthorizeAsync(IsoMessage request, string? cvv, string? transactionDate, CancellationToken cancellationToken)
+    private async Task<IsoMessage> AuthorizeAsync(
+        IsoMessage request, string? cvv, string? transactionDate, int? installmentCount, CancellationToken cancellationToken)
     {
         // F13'ün yılı da gerekir: Payment tarihi yyyymmdd olarak saklar.
         var missing = RequiredFinancialFields.Where(f => !request.Has(f) || (f == 13 && transactionDate is null)).ToArray();
@@ -45,11 +48,11 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         }
 
         // Payment'a giden alanların tamamı; F13 yıllı haliyle (Payment'a giden değer), CVV sadece geldiyse "***".
-        logger.LogInformation("{Method}: forwarding to Payment MTI {Mti} | {Fields}{Cvv}",
+        logger.LogInformation("{Method}: forwarding to Payment MTI {Mti} | {Fields}{Cvv}{Installments}",
             nameof(AuthorizeAsync), request.Mti,
             IsoLog.Fields(request.Fields.Select(f => KeyValuePair.Create(f.Key, (string?)(f.Key == 13 ? transactionDate : f.Value)))),
-            cvv is null ? "" : " cvv=***");
-        var result = await paymentClient.AuthorizeAsync(ToPaymentRequest(request, cvv, transactionDate!), cancellationToken);
+            cvv is null ? "" : " cvv=***", installmentCount is null ? "" : $" installmentCount={installmentCount}");
+        var result = await paymentClient.AuthorizeAsync(ToPaymentRequest(request, cvv, transactionDate!, installmentCount), cancellationToken);
         logger.LogInformation("{Method}: Payment answered {Stan} {ResponseCode}", nameof(AuthorizeAsync),
             IsoLog.Field(11, request[11]), IsoLog.Field(39, result.ResponseCode));
         return Echo(request).Set(39, result.ResponseCode);
@@ -67,7 +70,7 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
     }
 
     // Sadece zorunlu alanlar kontrol edildikten sonra çağrılır; bu yüzden aşağıdaki ! işaretleri güvenlidir.
-    private static PaymentRequest ToPaymentRequest(IsoMessage m, string? cvv, string transactionDate) => new(
+    private static PaymentRequest ToPaymentRequest(IsoMessage m, string? cvv, string transactionDate, int? installmentCount) => new(
         Mti: m.Mti,
         CardNumber: m[2]!,
         ProcessingCode: m[3]!,
@@ -85,5 +88,6 @@ public sealed class TransactionHandler(IPaymentClient paymentClient, ILogger<Tra
         MerchantId: m[42],
         CardAcceptor: m[43],
         RecipientCardNumber: m[48],
-        Cvv: cvv);
+        Cvv: cvv,
+        InstallmentCount: installmentCount);
 }

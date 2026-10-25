@@ -100,6 +100,19 @@ public class TransactionHandlerTests
     }
 
     [Fact]
+    public async Task InstallmentSale_LogsAndForwardsInstallmentCount()
+    {
+        var logger = new ListLogger<TransactionHandler>();
+
+        await new TransactionHandler(_payment, logger).ProcessAsync(
+            TestMessages.Sale(), cvv: null, TransactionDate, CancellationToken.None, installmentCount: 6);
+
+        var forwarding = Assert.Single(logger.Messages, m => m.StartsWith("AuthorizeAsync: forwarding to Payment"));
+        Assert.EndsWith("F49 (Para Birimi)=949 installmentCount=6", forwarding);
+        Assert.Equal(6, Assert.Single(_payment.Requests).InstallmentCount);
+    }
+
+    [Fact]
     public async Task MissingRequiredField_IsLoggedWithItsLabel()
     {
         var logger = new ListLogger<TransactionHandler>();

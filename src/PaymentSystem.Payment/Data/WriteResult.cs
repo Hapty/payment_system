@@ -8,7 +8,8 @@ public enum WriteResult
     Ok,
     NotFound,
     Duplicate,
-    CardNumberChanged       // kartın numarası değiştirilemez (CVV / PIN hash'i numaraya bağlı)
+    CardNumberChanged,      // kartın numarası değiştirilemez (CVV / PIN hash'i numaraya bağlı)
+    NotCreditCard           // limit sadece CardType Credit olan karta tanımlanır
 }
 
 internal static class SqlErrors

@@ -63,6 +63,11 @@ public class TransactionRequest
     [RegularExpression("^[0-9]{3,4}$")]
     public string? Cvv { get; set; }
 
+    // Taksit sayısı; ISO8583:1987'de standart alanı yok, Gate ayrı bir alan olarak iletir. Yoksa tek çekim (1).
+    // Taksit sadece kredi kartıyla satışta olur; başka işlemde 1'den büyükse TransactionHandler reddeder.
+    [Range(1, 36)]
+    public int? InstallmentCount { get; set; }
+
     // Loglar için alan numarasıyla (bkz. IsoLog). CVV ISO alanı değildir, burada yoktur.
     public IEnumerable<KeyValuePair<int, string?>> IsoFields() =>
     [
