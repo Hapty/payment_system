@@ -72,6 +72,25 @@ istek geliyor → karar veriliyor → veritabanına yazılıyor → müşteriye 
 
 ### 2. Veritabanı (DBeaver)
 
+**Şema.** `PaymentSystem` veritabanının tabloları (DBeaver ER diyagramı):
+
+![Tablolar](docs/images/14-db-diagram-tables.png)
+
+- Üst sıradakiler **tanım tabloları**: giriş yöntemleri, iç cevap kodları (IRC), işlem tipleri, MTI eşlemeleri. Bunlar işyerleriyle
+  birlikte seed edilir.
+- Alttaki iki tablo **işlem kayıtları**: `CreditTransaction` ve `DebitTransaction`. Kolon adları ISO alan numarasını taşır (`F2_CardNo`, `F4_Amount` …).
+
+<img src="docs/images/13-db-diagram-card.png" alt="Card ilişkileri" width="560">
+
+Kart numarası üzerinden `Card`'a bağlı tablolar:
+- `CardSecret`: CVV ve PIN'in sadece hash'leri.
+- `CreditCardLimit`: kredi kartının limiti.
+- `Statement`: ekstre. Görüntüde aşağı inen çizgi.
+
+Kart silinince bunlar da cascade ile silinir.
+
+**Kayıtlar.**
+
 ![CreditTransaction tablosu](docs/images/03-db-credit-transactions.png)
 
 Kredi kartıyla yapılan her işlem, onaylansa da reddedilse de `CreditTransaction` tablosuna kendi F39'uyla bir satır olarak yazılır:
