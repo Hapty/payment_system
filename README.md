@@ -1,15 +1,169 @@
-# Payment System
+# 💳 Payment System
 
-Kartlı ödeme işlemlerini (debit ve kredi kartıyla satış, taksit, bakiye sorgu, karttan karta transfer) uçtan uca işleyen, eğitim amaçlı ama gerçek
-bankacılık kavramlarıyla kurulmuş bir ödeme sistemi. .NET 9, SQL Server, RabbitMQ, Kafka ve SMTP kullanır.
+[![CI](https://github.com/Hapty/payment_system/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Hapty/payment_system/actions/workflows/ci.yml)
+![.NET 9](https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet)
+![SQL Server](https://img.shields.io/badge/SQL%20Server-2022-CC2927?logo=microsoftsqlserver&logoColor=white)
+![RabbitMQ](https://img.shields.io/badge/RabbitMQ-request--reply-FF6600?logo=rabbitmq&logoColor=white)
+![Kafka](https://img.shields.io/badge/Kafka-events-231F20?logo=apachekafka)
+![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-429%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-%E2%89%A594%25-brightgreen)
 
-Bu README projeyi **öğrenmek** için yazıldı: önce büyük resim ve kavramlar, sonra bir işlemin baştan sona yolculuğu,
-ardından her endpoint'in tek tek anlatımı gelir. En sonda "hangi dosyayı hangi sırayla okumalıyım" diye bir öğrenme yolu var.
+Kartlı ödeme işlemlerini **ISO 8583** standardına göre uçtan uca işleyen bir ödeme sistemi. POS'tan gelen bir satış isteği
+doğrulanır, karara bağlanır (onay / red), para hesaptan ya da kredi kartı limitinden düşülür, kayıt veritabanına yazılır
+ve müşteriye e-posta gider. Gerçek bankacılık kavramlarıyla (MTI, F39 cevap kodları, idempotency, PCI) kurulmuş bir
+**staj projesidir**.
 
-> **Staj sunumu için:** projenin ilk günden bugüne nasıl geliştiği — hangi adımda ne yapıldı, hangi karar neden alındı, hangi
-> sorunla karşılaşılıp nasıl çözüldü — [Bölüm 18](#18-proje-süreci-baştan-sona-ne-yapıldı)'de sırasıyla anlatılıyor.
+> 📌 **Proje nasıl gelişti?** İlk günden bugüne her adım, alınan kararlar ve sebepleri: [Bölüm 16 — Proje süreci](#16-proje-süreci-baştan-sona-ne-yapıldı)
 
-## İçindekiler
+## ✨ Neler yapabiliyor?
+
+| | |
+|---|---|
+| 🛒 **Satış** | Debit kartla (bakiyeden) ve kredi kartıyla (limitten) satış. Çip, temassız, elle giriş, e-ticaret |
+| 🧾 **Taksit** | Kredi kartıyla 1–36 taksitli satış |
+| 🔁 **Karttan karta transfer** | Gönderenden düşme ve alıcıya ekleme tek SQL transaction'ında |
+| 💱 **Döviz** | TCMB kurlarıyla TL karşılığı. Kurlar saatte bir çekilip cache'te tutulur |
+| 🔍 **Bakiye sorgu** | Kart, işyeri ve hesap kontrolleriyle |
+| 🛡️ **Güvenlik** | CVV2/PIN sadece HMAC-SHA256 hash olarak saklanır, kart numarası her logda maskeli |
+| ♻️ **Idempotency** | Aynı istek iki kez gelirse para bir kez düşer |
+| ⚖️ **Eşzamanlılık** | Aynı anda gelen işlemler bakiyeyi ya da limiti asla aşamaz |
+| 📧 **Bildirim** | Onaylı satış ve transferde Kafka üzerinden asenkron e-posta |
+| 🚦 **25 red sebebi** | Her sebebin bir iç kodu (IRC) var, POS'a dönen ISO cevap koduna (F39) tablodan eşlenir |
+
+## 🏗️ Mimari
+
+```mermaid
+flowchart LR
+    POS["🖥️ İstemci / POS<br/>(Postman)"] -- "HTTP / JSON<br/>POST /api/transactions" --> GATE
+    subgraph Servisler
+        GATE["🚪 Gate<br/>doğrulama, ISO8583"]
+        PAY["🧠 Payment<br/>karar motoru + CRUD API"]
+        NOTI["📧 Notification<br/>e-posta"]
+    end
+    GATE -- "RabbitMQ<br/>request-reply" --> PAY
+    PAY -- "Dapper / SQL" --> DB[("🗄️ SQL Server")]
+    PAY -- "Kafka<br/>TransactionCompleted" --> NOTI
+    NOTI -- SMTP --> MAIL["✉️ Müşteri"]
+    TCMB["🏦 TCMB kurları"] -. saatte bir .-> PAY
+    ADMIN["👤 Yönetici"] -- "HTTP :5002<br/>hesap, kart, limit" --> PAY
+```
+
+| Servis | Görevi |
+|---|---|
+| **Gate** | Sistemin tek giriş kapısı. JSON'u ISO 8583 kurallarına göre doğrular, isteği kuyruğa koyar, cevabı bekler. İş kuralı bilmez |
+| **Payment** | Sistemin beyni. İşlemi karara bağlar, parayı hareket ettirir, kaydı yazar, olay yayımlar. Hesap/kart/limit yönetim API'si de buradadır |
+| **Notification** | Kafka'daki olayları dinler, onaylı işlemlerde müşteriye e-posta atar |
+
+**Teknolojiler:** .NET 9 (C#) · ASP.NET Core · Dapper · SQL Server 2022 · RabbitMQ · Apache Kafka · MailKit (SMTP) ·
+Docker Compose · xUnit + Testcontainers · GitHub Actions · Swagger / OpenAPI
+
+## 📸 Ekran görüntüleri
+
+Aşağıdaki görüntüler, bir kredi kartıyla yapılan 3 taksitli 300 TL'lik satışın sistemdeki yolculuğunu sırayla gösteriyor:
+istek geliyor → karar veriliyor → veritabanına yazılıyor → müşteriye e-posta gidiyor.
+
+### 1. İstek ve cevap (Postman)
+
+| ✅ Onaylanan satış: 300 TL, 3 taksit | ❌ Reddedilen satış: 5.000 TL, limit yetmiyor |
+|---|---|
+| ![Onaylı satış](docs/images/01-postman-approved.png) | ![Reddedilen satış](docs/images/02-postman-declined.png) |
+| Cevap `F39: "00"`: işlem onaylandı | Cevap `F39: "51"`: yetersiz limit. HTTP yine `200`, çünkü karar F39'da |
+
+### 2. Veritabanı (DBeaver)
+
+**Şema.** `PaymentSystem` veritabanının tabloları (DBeaver ER diyagramı):
+
+![Tablolar](docs/images/14-db-diagram-tables.png)
+
+- Üst sıradakiler **tanım tabloları**: giriş yöntemleri, iç cevap kodları (IRC), işlem tipleri, MTI eşlemeleri. Bunlar işyerleriyle
+  birlikte seed edilir.
+- Alttaki iki tablo **işlem kayıtları**: `CreditTransaction` ve `DebitTransaction`. Kolon adları ISO alan numarasını taşır (`F2_CardNo`, `F4_Amount` …).
+
+<img src="docs/images/13-db-diagram-card.png" alt="Card ilişkileri" width="560">
+
+Kart numarası üzerinden `Card`'a bağlı tablolar:
+- `CardSecret`: CVV ve PIN'in sadece hash'leri.
+- `CreditCardLimit`: kredi kartının limiti.
+- `Statement`: ekstre. Görüntüde aşağı inen çizgi.
+
+Kart silinince bunlar da cascade ile silinir.
+
+**Kayıtlar.**
+
+![CreditTransaction tablosu](docs/images/03-db-credit-transactions.png)
+
+Kredi kartıyla yapılan her işlem, onaylansa da reddedilse de `CreditTransaction` tablosuna kendi F39'uyla bir satır olarak yazılır:
+- `57` = limit henüz tanımlı değildi
+- `00` = onaylandı
+- `51` = limit yetmedi
+
+Taksit sayısı, işyeri (F42), MCC (F18) ve giriş yöntemi (F22) de kayıtta durur. Hiçbir kolon boş kalmaz.
+
+![CreditCardLimit tablosu](docs/images/04-db-credit-limit.png)
+
+Kartın limiti 5.000 TL. Onaylanan iki satış (1.200 + 300) kullanılan limiti 1.500'e çıkardı, kullanılabilir limit 3.500 kaldı.
+Reddedilen satışlar limite dokunmadı.
+
+### 3. Müşteriye giden e-posta
+
+<img src="docs/images/05-email.png" alt="Bildirim e-postası" width="520">
+
+Onaylanan satıştan birkaç saniye sonra Notification servisi Kafka'daki olayı okuyup müşteriye e-posta atar. Kart numarası
+burada da maskelidir (`411111********29`).
+
+### 4. Payment logu
+
+![Payment logu](docs/images/06-logs.png)
+
+Her kararın asıl sebebi, yani iç kod (IRC), logda yazar: onayda `IRC 0000 → F39 00`, reddedilende
+`available credit limit is less than TRY 5000 → IRC 3002 → F39 51`. Kart numarası loglarda da maskelidir (PCI).
+
+### 5. Çalışan servisler (Docker Desktop)
+
+![Docker Desktop](docs/images/12-docker-desktop.png)
+
+`docker compose up` ile 7 container ayağa kalkar:
+- servisler: `gate`, `payment`, `notification`
+- altyapı: `db`, `rabbitmq`, `kafka`
+- şemayı kurup kapanan `db-init`
+
+Sağda Payment'ın, saatlik TCMB kur çekimini yaptığı an görünüyor.
+
+### 6. CI (GitHub Actions)
+
+![CI](docs/images/07-ci.png)
+
+Her PR'da build ve testler çalışır. Coverage %80'in altına düşerse PR merge edilemez.
+
+### 7. Payment yönetim API'si (Swagger)
+
+![Swagger: kredi kartı limitleri](docs/images/09-swagger-credit-limits.png)
+
+<details>
+<summary>Diğer endpoint'ler (hesaplar, kartlar, işyerleri, işlem tipleri)</summary>
+
+![Swagger: hesaplar ve kartlar](docs/images/08-swagger-accounts-cards.png)
+![Swagger: işyerleri ve MTI eşlemeleri](docs/images/10-swagger-merchants-mti.png)
+![Swagger: işlem tipleri](docs/images/11-swagger-transaction-types.png)
+
+</details>
+
+## ✅ Kalite
+
+- **429 otomatik test.** Testler sahte değil, Testcontainers ile açılan **gerçek** SQL Server, RabbitMQ, Kafka ve SMTP (Mailpit) container'larına karşı koşar.
+- **Coverage:** Payment %98, Gate %100, Notification %94.
+- **CI:** GitHub Actions her PR'da build ve testleri çalıştırır. Coverage %80'in altına düşerse PR merge edilemez.
+- **Branch akışı:** geliştirme `develop`'ta yapılır, `master`'a sadece PR ile girer.
+
+---
+
+## 📚 Detaylı dokümantasyon
+
+Aşağıdaki bölümler projeyi **öğrenmek** için yazıldı: önce büyük resim ve kavramlar, sonra bir işlemin baştan sona
+yolculuğu, ardından her endpoint'in tek tek anlatımı gelir.
+
+### İçindekiler
 
 1. [Büyük resim](#1-büyük-resim)
 2. [Temel kavramlar (sözlük)](#2-temel-kavramlar-sözlük)
@@ -26,9 +180,7 @@ ardından her endpoint'in tek tek anlatımı gelir. En sonda "hangi dosyayı han
 13. [Ayarlar ve ortam değişkenleri](#13-ayarlar-ve-ortam-değişkenleri)
 14. [Testler, CI ve branch akışı](#14-testler-ci-ve-branch-akışı)
 15. [Kod haritası](#15-kod-haritası)
-16. [Öğrenme yolu](#16-öğrenme-yolu)
-17. [Bilinen sınırlar ve sıradaki adımlar](#17-bilinen-sınırlar-ve-sıradaki-adımlar)
-18. [Proje süreci: baştan sona ne yapıldı](#18-proje-süreci-baştan-sona-ne-yapıldı)
+16. [Proje süreci: baştan sona ne yapıldı](#16-proje-süreci-baştan-sona-ne-yapıldı)
 
 ---
 
@@ -1210,53 +1362,13 @@ payment_system/
 
 ---
 
-## 16. Öğrenme yolu
-
-Projeyi sıfırdan anlamak için önerilen okuma sırası:
-
-1. **Çalıştır ve dene** — [Bölüm 4](#4-uygulamalı-lab-sıfırdan-uçtan-uca-test)'teki lab'ı uygula; logları üç pencerede izle.
-   Her redde önce F39'a, sonra logdaki IRC'ye bak ve [Bölüm 9](#9-karar-motoru-kontroller-irc-ve-f39)'daki satırı bul.
-2. **ISO8583'ü anla** — `Iso87Fields.cs` → `IsoFieldDefinition.cs` → `IsoMessage.cs` → `IsoMessagePacker.cs` (bitmap mantığı). `IsoMessagePackerTests.cs` örnek mesajları gösterir.
-3. **Gate'i takip et** — `Program.cs` → `TransactionEndpoint.HandleAsync` → `TransactionHandler.ProcessAsync` → `RabbitMqPaymentClient.AuthorizeAsync`.
-   Soru: Payment kapalıyken ne olur? (`TransactionEndpointTests`, `RabbitMqPaymentClientTests`)
-4. **Payment'ın kalbini oku** — `TransactionQueueConsumer.DecideAsync` → `TransactionHandler.AuthorizeAsync` → `DecideAsync` → `SaleAsync` / `CreditSaleAsync` / `TransferAsync`.
-   Yanına `TransactionRepository.cs` aç: hangi kontrol hangi SQL'e karşılık geliyor?
-5. **Tanım tablolarını kurcala** — `/api/mti-processing-codes`'a yeni bir eşleme ekle, sonuçlarını gözle (`12` → `00`).
-6. **Yan konular** — `ParameterCache`, `ExchangeRateRefresher` + `ExchangeRateCache`, `HmacCardSecretHasher`.
-7. **Olay tarafı** — `KafkaTransactionEventPublisher` → `TransactionEventConsumer` → `TransactionNotifier`.
-8. **Testleri oku** — `TransactionHandlerTests.cs` iş kurallarının en iyi "çalıştırılabilir dokümantasyonu"dur.
-
-Kendine sorabileceğin sorular:
-- Aynı satış iki kez gelince DB'de kaç satır oluşuyor? Neden?
-- Gate `91` dönerse müşterinin parası düşmüş olabilir mi? Hangi durumda?
-- Bir red neden commit edildikten sonra exception olarak fırlatılıyor?
-- `EntryMode` tablosuna `07`'yi temassız değil diye güncellersen ne değişir, ne zaman değişir?
-
----
-
-## 17. Bilinen sınırlar ve sıradaki adımlar
-
-- **Kredi kartı devamı**: nakit avans (`CashLimit` / `UsedCashLimit`), kart borcu ödemesi (`UsedLimit`'i düşürür), ekstre kesimi
-  (`Statement`: taksitli işlemin her dönemki payı `F4 / InstallmentCount`, asgari ödeme borcun %20'si).
-- **Reversal (`0400`)**: timeout'ta Gate'in iptal mesajı bırakması, Payment açılınca işlemesi (store & forward).
-- **Cevap sözleşmesini genişletmek**: F38 (onay kodu), F37 (RRN), F54 (bakiye sorgu cevabı).
-- **Kimlik doğrulama**: Gate'e API key / mTLS; Payment yönetim endpoint'lerini iç ağa almak.
-- **PIN doğrulama** (F52 PIN block).
-- **Off-us transfer**: başka bankanın kartına.
-- **Bildirim geçmişi**: gönderilen / gönderilemeyen e-postaların kaydı.
-- **Şemayı ISO'ya uydurmak**: `DebitTransaction.F13_TransactionDate` şu an `yyyymmdd` (ISO: MMDD), `Card.ExpiryDate` `MMYY` (ISO F14: YYMM).
-- **Idempotency anahtarı** STAN/terminal no içermiyor (tabloda kolon yok): aynı saniyede aynı kartla aynı tutarda iki gerçek işlem çakışır.
-- **Yeni tüketiciler**: fraud, mutabakat, raporlama `payment.transaction-events`'i kendi consumer group'larıyla okuyabilir.
-
----
-
-## 18. Proje süreci: baştan sona ne yapıldı
+## 16. Proje süreci: baştan sona ne yapıldı
 
 Bu bölüm projenin **nasıl geliştiğini** anlatır. Proje 26 Eylül 2026'da boş bir veritabanı şemasıyla başladı ve 25 Ekim 2026'da
 kredi kartıyla taksitli satışa ulaştı. Arada 48 commit ve 13 adım var. Her adımda üç şey var: **ne yapıldı**, **neden öyle yapıldı**
 ve varsa **karşılaşılan sorun ve çözümü**. Mimari birkaç kez değişti, o değişikliklerin sebebi de anlatılıyor.
 
-### 18.1 Zaman çizelgesi (özet)
+### 16.1 Zaman çizelgesi (özet)
 
 | # | Tarih | Adım | Sonuç |
 |---|---|---|---|
@@ -1274,7 +1386,7 @@ ve varsa **karşılaşılan sorun ve çözümü**. Mimari birkaç kez değişti,
 | 12 | 21 Eki | "Boş kolon kalmasın" kuralı | Zorunlu alanlar, uygulamalı lab |
 | 13 | 25 Eki | Kredi kartı | Kart durumu, kredi limiti, `CreditTransaction`, taksit |
 
-### 18.2 Adım 1 — Veritabanı ve Docker (26 Eylül)
+### 16.2 Adım 1 — Veritabanı ve Docker (26 Eylül)
 
 **Ne yapıldı**
 - `docker-compose.yml` ile SQL Server container'ı kuruldu. Veri, container silinse de kalsın diye **named volume**'de
@@ -1291,7 +1403,7 @@ ve varsa **karşılaşılan sorun ve çözümü**. Mimari birkaç kez değişti,
 - Tablolar arasındaki foreign key'ler kaldırıldı. Bu adımın amacı sadece DB'yi, tabloları ve kolonları kurmaktı. İlişkiler
   uygulama tarafında kontrol ediliyor: olmayan hesaba bağlı kartla işlem yapılırsa `62` dönüyor.
 
-### 18.3 Adım 2 — Tanım tablosu, ilk CRUD API ve CI (29 Eylül)
+### 16.3 Adım 2 — Tanım tablosu, ilk CRUD API ve CI (29 Eylül)
 
 **Ne yapıldı**
 - **`MtiProcessingCode`** tablosu eklendi: `MTI + F3 → (Otc, Ots)`. Dışarıdan gelen ISO kodunu iç işlem tipine çeviren eşleme.
@@ -1302,7 +1414,7 @@ ve varsa **karşılaşılan sorun ve çözümü**. Mimari birkaç kez değişti,
   **%80**'in altına düşerse build kırılıyor (coverlet). Coverage özeti job summary'ye basılıyor.
 - İlk PR (#1) bu adımla `master`'a girdi.
 
-### 18.4 Adım 3 — ISO8583 kütüphanesi ve Gate (2 Ekim)
+### 16.4 Adım 3 — ISO8583 kütüphanesi ve Gate (2 Ekim)
 
 Mimari burada ilk kez değişti. Hedef şuydu: `POS → (TCP/ISO8583) → Gate → (HTTP/JSON) → Payment`.
 
@@ -1320,7 +1432,7 @@ Mimari burada ilk kez değişti. Hedef şuydu: `POS → (TCP/ISO8583) → Gate �
 - Gerçek socket'li sunucu testi dahil 58 test yazıldı, coverage %97,8. PR #2 ile `master`'a girdi.
 - Bütün kod yorumları Türkçeye çevrildi. Log mesajları ve kod isimleri İngilizce kaldı.
 
-### 18.5 Adım 4 — Payment servisi (2 Ekim)
+### 16.5 Adım 4 — Payment servisi (2 Ekim)
 
 **Ne yapıldı**
 - **`PaymentSystem.Payment`** yazıldı: .NET 9 Web API, **Dapper** ile düz SQL. Dört tablo için GET/POST/PUT/DELETE.
@@ -1335,7 +1447,7 @@ Mimari burada ilk kez değişti. Hedef şuydu: `POS → (TCP/ISO8583) → Gate �
 - Testler SQLite'tan **Testcontainers**'a geçti: testler gerçek bir SQL Server container'ı açıyor ve aynı `docker/sql/init`
   script'lerini çalıştırıyor. Yani testler compose'daki şemanın birebir aynısına karşı koşuyor. 50 test, coverage %100.
 
-### 18.6 Adım 5 — İşlem akışı: satış, bakiye sorgu, idempotency, döviz (8–9 Ekim)
+### 16.6 Adım 5 — İşlem akışı: satış, bakiye sorgu, idempotency, döviz (8–9 Ekim)
 
 **Ne yapıldı**
 - Payment `0200` isteklerini karara bağlamaya başladı. Akış şöyle:
@@ -1356,7 +1468,7 @@ Mimari burada ilk kez değişti. Hedef şuydu: `POS → (TCP/ISO8583) → Gate �
   - Kurları görmek için salt okunur `GET /api/exchange-rates` eklendi.
 - SQL Server container'ının belleği 2 GB ile sınırlandı. Varsayılan ayarda makinenin belleğini tüketiyordu.
 
-### 18.7 Adım 6 — RabbitMQ ve katmanlı mimari (11 Ekim)
+### 16.7 Adım 6 — RabbitMQ ve katmanlı mimari (11 Ekim)
 
 Mimari ikinci kez değişti.
 
@@ -1385,7 +1497,7 @@ Mimari ikinci kez değişti.
   - Her reddin sebebi loglanıyor.
   - Okunamayan mesajın ham gövdesi asla loglanmıyor, çünkü içinde açık PAN olabilir.
 
-### 18.8 Adım 7 — Tanım tabloları, IRC ve parametre cache'i (11 Ekim)
+### 16.8 Adım 7 — Tanım tabloları, IRC ve parametre cache'i (11 Ekim)
 
 **Ne yapıldı**
 - **`EntryMode`** tablosu eklendi. F22'nin ilk iki hanesi bu tabloda aranıyor; bir giriş yönteminin temassız olup olmadığı da
@@ -1399,7 +1511,7 @@ Mimari ikinci kez değişti.
 - Onaylanmayan her işlem için bir **`TransactionException`** fırlatılıyor. Exception'da F39, açıklama, maskeli PAN, kaydın Guid'i ve hesap no var.
   Exception **commit'ten sonra** fırlatılıyor; böylece reddedilen işlemin kaydı geri alınmıyor, iz kalıyor.
 
-### 18.9 Adım 8 — Kafka ve Notification servisi (12 Ekim)
+### 16.9 Adım 8 — Kafka ve Notification servisi (12 Ekim)
 
 Mimariye üçüncü servis eklendi.
 
@@ -1420,7 +1532,7 @@ Mimariye üçüncü servis eklendi.
 - Kafka ve Notification docker-compose'a eklendi. Kafka iki listener açıyor: container içi `kafka:9092`, makineden `localhost:9094`.
 - Testler gerçek Kafka'ya ve SMTP için Mailpit container'ına karşı koşuyor; testlerde gerçek e-posta gitmiyor. PR #4 ile `master`'a girdi.
 
-### 18.10 Adım 9 — CVV2 ve PIN güvenliği (12–14 Ekim)
+### 16.10 Adım 9 — CVV2 ve PIN güvenliği (12–14 Ekim)
 
 Bu adım iki kez yapıldı; ikinci yaklaşım ilkinin yerini aldı.
 
@@ -1439,7 +1551,7 @@ yazılmadı. Hiç kullanılmayan `Card.Cvv` kolonu silindi.
 - Hash kart numarasına bağlı olduğu için kart numarası artık değiştirilemiyor (`400`).
 - CVV2 sadece kart fiziksel olarak yokken zorunlu: elle giriş (`01x`) ve e-ticaret (`81x`). Yoksa ya da yanlışsa `N7`.
 
-### 18.11 Adım 10 — Karttan karta transfer, ISO alan numaralı JSON, işyeri (16–18 Ekim)
+### 16.11 Adım 10 — Karttan karta transfer, ISO alan numaralı JSON, işyeri (16–18 Ekim)
 
 **Ne yapıldı**
 - **Karttan karta transfer (KKPT):** `F3 400000`, alıcı kart numarası **F48**'de geliyor.
@@ -1459,17 +1571,17 @@ yazılmadı. Hiç kullanılmayan `Card.Cvv` kolonu silindi.
 - **Transferde iki tarafa e-posta gidiyor:** gönderene "… karta gönderildi", alıcıya "… karttan geldi". Tekrar koruması
   `(işlem, kişi)` çifti üzerinden çalışıyor; bir tarafın e-postası başarısız olursa diğer tarafınki yine gidiyor.
 
-### 18.12 Adım 11 — Dokümantasyon ve Swagger (19–20 Ekim)
+### 16.12 Adım 11 — Dokümantasyon ve Swagger (19–20 Ekim)
 
 **Ne yapıldı**
 - Bu README, projeyi öğrenmek için baştan yazıldı: büyük resim, sözlük, bir satışın yolculuğu, her endpoint'in referansı,
-  karar tablosu ve öğrenme yolu.
+  ve karar tablosu.
 - Gate ve Payment'a **Swagger UI** eklendi. Şemayı .NET 9'un yerleşik OpenAPI desteği üretiyor, arayüz Swashbuckle'dan geliyor.
   - `Swagger:Enabled` bayrağıyla açılıyor; Docker'da da çalışıyor.
   - Gate'in örnek gövdesi hazır bir satış isteğiyle dolu geliyor.
   - Her Payment action'ı hangi durum kodlarını döndüğünü belirtiyor.
 
-### 18.13 Adım 12 — "Boş kolonlu kayıt açılmaz" kuralı ve uygulamalı lab (21 Ekim)
+### 16.13 Adım 12 — "Boş kolonlu kayıt açılmaz" kuralı ve uygulamalı lab (21 Ekim)
 
 **Ne yapıldı**
 - **Kural:** DB'de kolonu olan her alan zorunlu. Şema `NULL`'a izin verse de uygulama vermiyor.
@@ -1482,7 +1594,7 @@ yazılmadı. Hiç kullanılmayan `Card.Cvv` kolonu silindi.
 - README'nin 4. bölümü **uygulamalı lab**'a dönüştü. Lab boş DB'den başlıyor; satış, MOBILEBANK kanalıyla transfer, bilerek
   reddettirme (her redde hangi IRC'nin çıktığıyla), tekrar gelen istek ve bir sorun giderme tablosu içeriyor.
 
-### 18.14 Adım 13 — Kredi kartı: durum, limit, taksit (25 Ekim)
+### 16.14 Adım 13 — Kredi kartı: durum, limit, taksit (25 Ekim)
 
 Bu adım bir ekran görüntüsündeki tablo tasarımından başladı. Tasarım tek tek tartışılıp son haline getirildi.
 
@@ -1523,7 +1635,7 @@ Bu adım bir ekran görüntüsündeki tablo tasarımından başladı. Tasarım t
 
 Üç kayıtta da `CreditTransaction`'ın bütün kolonları doluydu.
 
-### 18.15 Sayılarla proje
+### 16.15 Sayılarla proje
 
 | | |
 |---|---|
@@ -1537,7 +1649,7 @@ Bu adım bir ekran görüntüsündeki tablo tasarımından başladı. Tasarım t
 | Coverage | Payment %98, Gate %100, Notification %94. CI'da alt sınır %80 |
 | Commit | 48. `develop`'ta geliştirme, `develop → master` PR'ı, korumalı `master` |
 
-### 18.16 Öne çıkan mühendislik kararları (sunum için kısa liste)
+### 16.16 Öne çıkan mühendislik kararları (sunum için kısa liste)
 
 1. **İş kuralı tek yerde:** Gate sadece format kontrolü yapar, karar Payment'tadır. Giriş protokolü değişse de (TCP → HTTP) kurallar değişmedi.
 2. **Para hiç iki kez düşmez:** Kaydın anahtarı istekten türetilen UUID v5. Şemaya kolon eklemeden idempotency sağlandı.
@@ -1549,7 +1661,7 @@ Bu adım bir ekran görüntüsündeki tablo tasarımından başladı. Tasarım t
 8. **Testler gerçeğe karşı:** Testcontainers ile gerçek SQL Server, RabbitMQ, Kafka ve Mailpit. CI %80 coverage altında merge'e izin vermiyor.
 9. **Boş kolon yok:** DB'ye yazılacak her alan girişte zorunlu.
 
-### 18.17 Sırada ne var
+### 16.17 Sırada ne var
 
-[Bölüm 17](#17-bilinen-sınırlar-ve-sıradaki-adımlar)'deki liste geçerli. En yakın adımlar kredi kartının devamı: **nakit avans**
+En yakın adımlar kredi kartının devamı: **nakit avans**
 (`CashLimit`), **kart borcu ödemesi** (`UsedLimit`'i düşürür) ve **ekstre kesimi** (`Statement`). Bunlardan sonra reversal (`0400`) var.
