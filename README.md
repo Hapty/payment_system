@@ -16,6 +16,25 @@ ve müşteriye e-posta gider. Gerçek bankacılık kavramlarıyla (MTI, F39 ceva
 
 > 📌 **Proje nasıl gelişti?** İlk günden bugüne her adım, alınan kararlar ve sebepleri: [Bölüm 16 — Proje süreci](#16-proje-süreci-baştan-sona-ne-yapıldı)
 
+## 📑 İçindekiler
+
+1. [Büyük resim](#1-büyük-resim)
+2. [Temel kavramlar (sözlük)](#2-temel-kavramlar-sözlük)
+3. [Kurulum ve çalıştırma](#3-kurulum-ve-çalıştırma)
+4. [Uygulamalı lab: sıfırdan uçtan uca test](#4-uygulamalı-lab-sıfırdan-uçtan-uca-test)
+5. [Uçtan uca akış: bir satışın yolculuğu](#5-uçtan-uca-akış-bir-satışın-yolculuğu)
+6. [Endpoint'ler — Gate](#6-endpointler--gate-işlem-girişi)
+7. [Endpoint'ler — Payment yönetim API'si](#7-endpointler--payment-yönetim-apisi)
+8. [Servisler arası sözleşmeler (RabbitMQ, Kafka)](#8-servisler-arası-sözleşmeler)
+9. [Karar motoru: kontroller, IRC ve F39](#9-karar-motoru-kontroller-irc-ve-f39)
+10. [Veritabanı](#10-veritabanı)
+11. [Önemli tasarım konuları](#11-önemli-tasarım-konuları)
+12. [Notification servisi](#12-notification-servisi)
+13. [Ayarlar ve ortam değişkenleri](#13-ayarlar-ve-ortam-değişkenleri)
+14. [Testler, CI ve branch akışı](#14-testler-ci-ve-branch-akışı)
+15. [Kod haritası](#15-kod-haritası)
+16. [Proje süreci: baştan sona ne yapıldı](#16-proje-süreci-baştan-sona-ne-yapıldı)
+
 ## ✨ Neler yapabiliyor?
 
 | | |
@@ -162,25 +181,6 @@ Her PR'da build ve testler çalışır. Coverage %80'in altına düşerse PR mer
 
 Aşağıdaki bölümler projeyi **öğrenmek** için yazıldı: önce büyük resim ve kavramlar, sonra bir işlemin baştan sona
 yolculuğu, ardından her endpoint'in tek tek anlatımı gelir.
-
-### İçindekiler
-
-1. [Büyük resim](#1-büyük-resim)
-2. [Temel kavramlar (sözlük)](#2-temel-kavramlar-sözlük)
-3. [Kurulum ve çalıştırma](#3-kurulum-ve-çalıştırma)
-4. [Uygulamalı lab: sıfırdan uçtan uca test](#4-uygulamalı-lab-sıfırdan-uçtan-uca-test)
-5. [Uçtan uca akış: bir satışın yolculuğu](#5-uçtan-uca-akış-bir-satışın-yolculuğu)
-6. [Endpoint'ler — Gate](#6-endpointler--gate-işlem-girişi)
-7. [Endpoint'ler — Payment yönetim API'si](#7-endpointler--payment-yönetim-apisi)
-8. [Servisler arası sözleşmeler (RabbitMQ, Kafka)](#8-servisler-arası-sözleşmeler)
-9. [Karar motoru: kontroller, IRC ve F39](#9-karar-motoru-kontroller-irc-ve-f39)
-10. [Veritabanı](#10-veritabanı)
-11. [Önemli tasarım konuları](#11-önemli-tasarım-konuları)
-12. [Notification servisi](#12-notification-servisi)
-13. [Ayarlar ve ortam değişkenleri](#13-ayarlar-ve-ortam-değişkenleri)
-14. [Testler, CI ve branch akışı](#14-testler-ci-ve-branch-akışı)
-15. [Kod haritası](#15-kod-haritası)
-16. [Proje süreci: baştan sona ne yapıldı](#16-proje-süreci-baştan-sona-ne-yapıldı)
 
 ---
 
