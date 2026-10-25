@@ -58,6 +58,78 @@ flowchart LR
 **Teknolojiler:** .NET 9 (C#) · ASP.NET Core · Dapper · SQL Server 2022 · RabbitMQ · Apache Kafka · MailKit (SMTP) ·
 Docker Compose · xUnit + Testcontainers · GitHub Actions · Swagger / OpenAPI
 
+## 📸 Ekran görüntüleri
+
+Aşağıdaki görüntüler, bir kredi kartıyla yapılan 3 taksitli 300 TL'lik satışın sistemdeki yolculuğunu sırayla gösteriyor:
+istek geliyor → karar veriliyor → veritabanına yazılıyor → müşteriye e-posta gidiyor.
+
+### 1. İstek ve cevap (Postman)
+
+| ✅ Onaylanan satış: 300 TL, 3 taksit | ❌ Reddedilen satış: 5.000 TL, limit yetmiyor |
+|---|---|
+| ![Onaylı satış](docs/images/01-postman-approved.png) | ![Reddedilen satış](docs/images/02-postman-declined.png) |
+| Cevap `F39: "00"`: işlem onaylandı | Cevap `F39: "51"`: yetersiz limit. HTTP yine `200`, çünkü karar F39'da |
+
+### 2. Veritabanı (DBeaver)
+
+![CreditTransaction tablosu](docs/images/03-db-credit-transactions.png)
+
+Kredi kartıyla yapılan her işlem, onaylansa da reddedilse de `CreditTransaction` tablosuna kendi F39'uyla bir satır olarak yazılır:
+- `57` = limit henüz tanımlı değildi
+- `00` = onaylandı
+- `51` = limit yetmedi
+
+Taksit sayısı, işyeri (F42), MCC (F18) ve giriş yöntemi (F22) de kayıtta durur. Hiçbir kolon boş kalmaz.
+
+![CreditCardLimit tablosu](docs/images/04-db-credit-limit.png)
+
+Kartın limiti 5.000 TL. Onaylanan iki satış (1.200 + 300) kullanılan limiti 1.500'e çıkardı, kullanılabilir limit 3.500 kaldı.
+Reddedilen satışlar limite dokunmadı.
+
+### 3. Müşteriye giden e-posta
+
+<img src="docs/images/05-email.png" alt="Bildirim e-postası" width="520">
+
+Onaylanan satıştan birkaç saniye sonra Notification servisi Kafka'daki olayı okuyup müşteriye e-posta atar. Kart numarası
+burada da maskelidir (`411111********29`).
+
+### 4. Payment logu
+
+![Payment logu](docs/images/06-logs.png)
+
+Her kararın asıl sebebi, yani iç kod (IRC), logda yazar: onayda `IRC 0000 → F39 00`, reddedilende
+`available credit limit is less than TRY 5000 → IRC 3002 → F39 51`. Kart numarası loglarda da maskelidir (PCI).
+
+### 5. Çalışan servisler (Docker Desktop)
+
+![Docker Desktop](docs/images/12-docker-desktop.png)
+
+`docker compose up` ile 7 container ayağa kalkar:
+- servisler: `gate`, `payment`, `notification`
+- altyapı: `db`, `rabbitmq`, `kafka`
+- şemayı kurup kapanan `db-init`
+
+Sağda Payment'ın, saatlik TCMB kur çekimini yaptığı an görünüyor.
+
+### 6. CI (GitHub Actions)
+
+![CI](docs/images/07-ci.png)
+
+Her PR'da build ve testler çalışır. Coverage %80'in altına düşerse PR merge edilemez.
+
+### 7. Payment yönetim API'si (Swagger)
+
+![Swagger: kredi kartı limitleri](docs/images/09-swagger-credit-limits.png)
+
+<details>
+<summary>Diğer endpoint'ler (hesaplar, kartlar, işyerleri, işlem tipleri)</summary>
+
+![Swagger: hesaplar ve kartlar](docs/images/08-swagger-accounts-cards.png)
+![Swagger: işyerleri ve MTI eşlemeleri](docs/images/10-swagger-merchants-mti.png)
+![Swagger: işlem tipleri](docs/images/11-swagger-transaction-types.png)
+
+</details>
+
 ## ✅ Kalite
 
 - **429 otomatik test.** Testler sahte değil, Testcontainers ile açılan **gerçek** SQL Server, RabbitMQ, Kafka ve SMTP (Mailpit) container'larına karşı koşar.
