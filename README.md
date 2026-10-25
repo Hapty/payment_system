@@ -1,6 +1,6 @@
 # Payment System
 
-Kartlı ödeme işlemlerini (satış, bakiye sorgu, karttan karta transfer) uçtan uca işleyen, eğitim amaçlı ama gerçek
+Kartlı ödeme işlemlerini (debit ve kredi kartıyla satış, taksit, bakiye sorgu, karttan karta transfer) uçtan uca işleyen, eğitim amaçlı ama gerçek
 bankacılık kavramlarıyla kurulmuş bir ödeme sistemi. .NET 9, SQL Server, RabbitMQ, Kafka ve SMTP kullanır.
 
 Bu README projeyi **öğrenmek** için yazıldı: önce büyük resim ve kavramlar, sonra bir işlemin baştan sona yolculuğu,
@@ -42,7 +42,7 @@ ardından her endpoint'in tek tek anlatımı gelir. En sonda "hangi dosyayı han
                                                                                    ▼
                                                                              NOTIFICATION ──SMTP──► müşterinin e-postası
 
- Yönetici (Postman) ──HTTP──► PAYMENT :5002  (hesap, kart, işyeri, tanım tabloları CRUD + kur cache'i)
+ Yönetici (Postman) ──HTTP──► PAYMENT :5002  (hesap, kart, kredi limiti, işyeri, tanım tabloları CRUD + kur cache'i)
                                  ▲
                      TCMB today.xml (saatte bir kur çekilir)
 ```
@@ -87,6 +87,10 @@ Kodda ve bu dokümanda sürekli geçen terimler:
 | **F41 / F42 / F43** | Terminal no / işyeri no / işyeri adı-yeri. F42 ve F43 sabit uzunluktadır (15 / 40), kısa değer sağdan boşlukla doldurulur. Transferde F42 bir mağaza değil, işlemin başladığı **kanaldır** (mobil uygulama, ATM). |
 | **F48** | "Ek veri" alanı; bu sistemde **transferde alıcı kart no**. |
 | **F49** | Para birimi, ISO 4217 sayısal: `949` TRY, `840` USD, `978` EUR. |
+| **Debit / kredi kartı** | `Card.CardType`. **Debit** kartla yapılan satış bağlı banka hesabının bakiyesinden düşer. **Kredi** kartıyla (`Credit`) yapılan satış hesaba dokunmaz, kartın **limitinden** (`CreditCardLimit`) düşer; kayıt `CreditTransaction` tablosuna yazılır. |
+| **Kullanılabilir limit** | `CreditLimit − UsedLimit`. Kredi kartıyla satış ancak tutar buna sığarsa onaylanır (`AvailableLimit`, DB hesaplar). |
+| **Taksit** | `installmentCount`: satışın kaç taksite bölündüğü. ISO8583:1987'de alanı yoktur, JSON'da ayrı alanla gelir. Sadece kredi kartıyla satışta 1'den büyük olabilir; toplam tutar limitten **bir kerede** düşer. |
+| **Kart durumu** | `Card.Status`: `Active`, `Blocked`, `Cancelled`. `Active` olmayan kartla hiçbir işlem yapılamaz (`62`). |
 | **CVV2** | Kartın arkasındaki 3-4 hane. ISO8583:1987'de alanı yoktur, JSON'da ayrı `cvv` alanıyla gelir. Kart fiziksel olarak yokken (elle giriş, e-ticaret) zorunludur. |
 | **IRC** | Internal Response Code. Payment'ın kararı önce 4 haneli bir iç koddur (`3002` = bakiye yetersiz); POS'a dönen F39 bir tablodan (`InternalResponseCode`) bulunur. Böylece birkaç sebep aynı F39'a çıkabilir ve eşleme kod değiştirmeden değişebilir. IRC DB kaydında tutulmaz; **Payment logunda** ve Kafka olayında görünür. |
 | **Otc / Ots** | İşlem tipini tanımlayan iki haneli kod çifti. `MTI + F3 → (Otc, Ots) → işlem adı` (`Sale`, `MoneyTransfer`, `BalanceInquiry`). |
@@ -204,7 +208,8 @@ ne döner. Tarif koddan üretilir, kod değişince kendiliğinden güncellenir.
 ## 4. Uygulamalı lab: sıfırdan uçtan uca test
 
 Bu bölümde boş bir veritabanından başlayıp sistemi baştan sona test ediyorsun: önce veriyi oluşturuyorsun, sonra bir satış
-ve bir karttan karta transfer (KKPT) yapıyorsun, ardından sistemi bilerek reddettiriyorsun. Her adımda **ne beklediğini**
+ve bir karttan karta transfer (KKPT) yapıyorsun, ardından sistemi bilerek reddettiriyorsun. En sonda bir kredi kartı açıp
+taksitli satış yapıyorsun. Her adımda **ne beklediğini**
 ve **nasıl doğrulayacağını** göreceksin. İstekleri Postman'den, Swagger'dan ya da hazır `.http` dosyalarından
 (`src/PaymentSystem.Payment/PaymentSystem.Payment.http`, `src/PaymentSystem.Gate/PaymentSystem.Gate.http`) atabilirsin.
 
@@ -213,7 +218,7 @@ ve **nasıl doğrulayacağını** göreceksin. İstekleri Postman'den, Swagger'd
 > | Nereye bakıyorsun | Ne görürsün | Nasıl |
 > |---|---|---|
 > | Payment API | Bakiye, kartın son işlemi | `GET /api/bank-accounts/{no}`, `GET /api/cards` |
-> | Veritabanı | İşlem kaydının kendisi (`DebitTransaction`) | `sqlcmd` (bkz. [4.7](#47-veritabanından-son-kontrol)) |
+> | Veritabanı | İşlem kaydının kendisi (`DebitTransaction` / `CreditTransaction`) | `sqlcmd` (bkz. [4.8](#48-veritabanından-son-kontrol)) |
 > | Loglar | Kararın **asıl sebebi** (IRC) | `docker logs payment_system_payment` |
 
 ### 4.0 Hazırlık
@@ -386,13 +391,54 @@ Neden? Kaydın anahtarı isteğin `MTI | F2 | F3 | F4 | F13 | F12` alanlarından
 ikinci `INSERT` PK'ya takılır (bkz. [11.1](#111-idempotency-aynı-istek-iki-kez-gelirse)). Yeni bir işlem yapmak
 istediğinde bu yüzden en az `F12`'yi değiştirmen gerekir.
 
-### 4.6 Lab sonunda beklenen durum
+### 4.6 Kredi kartıyla taksitli satış
+Aynı hesaba (`1000000001`) bir **kredi kartı** aç. Kredi kartı da bir hesaba bağlıdır (hesap `Active` değilse çalışmaz), ama
+satış hesabın bakiyesinden değil kartın limitinden düşer.
+```http
+POST http://localhost:5002/api/cards
+Content-Type: application/json
+
+{ "cardNumber": "4111111111111129", "accountNo": 1000000001, "cardType": "Credit",
+  "expiryDate": "1228", "contactlessAllowed": true, "contactlessLimit": 750.00 }
+```
+Limit tanımlanmadan bu kartla satış `57` alır (IRC `3003`). Limiti tanımla:
+```http
+POST http://localhost:5002/api/credit-limits
+Content-Type: application/json
+
+{ "cardNumber": "4111111111111129", "creditLimit": 5000.00, "cashLimit": 1000.00, "statementDay": 25, "dueDay": 5 }
+```
+Cevapta `usedLimit: 0`, `availableLimit: 5000.00` döner. Şimdi 4.2'deki satış gövdesini al; `F2`'yi kredi kartı yap, yeni bir
+`F11`/`F12` ver ve **6 taksit** iste:
+```json
+{ "mti": "0200", "F2": "4111111111111129", "F3": "000000", "F4": 120000, "F49": "949",
+  "F7": "1021120000", "F11": "000020", "F12": "120000", "F13": "20261021", "F14": "2812", "F18": "5399", "F22": "051",
+  "F41": "TERM0001", "F42": "TRENDYOL       ", "F43": "TRENDYOL                 ISTANBUL     TR",
+  "installmentCount": 6 }
+```
+**Beklenen:** `F39 00`. **Doğrula:** `GET /api/credit-limits/4111111111111129` → `usedLimit: 1200.00`,
+`availableLimit: 3800.00`. Hesabın bakiyesi **değişmez**. Taksitli olsa da tutarın tamamı limitten bir kerede düşer;
+taksit sayısı `CreditTransaction.InstallmentCount`'ta durur (taksitlerin ekstrelere bölünmesi ekstre adımında gelecek).
+
+Sonra kredi kartını reddettir (her seferinde yeni `F11`/`F12`):
+
+| Senaryo | Değiştir | Beklenen F39 | IRC | Ne öğretiyor |
+|---|---|---|---|---|
+| Limit yetersiz | `F4: 500000` (5.000 TL) | `51` | `3002` | Kontrol ve düşme tek SQL'de (`WHERE CreditLimit - UsedLimit >= @amount`) |
+| Debit kartla taksit | `F2: "4111111111111111"` | `57` | `1008` | Taksit sadece kredi kartıyla satışta olur |
+| Geçersiz taksit | `installmentCount: 0` ya da `37` | HTTP `400` | — | Gate 1–36 dışını Payment'a hiç göndermez |
+| Bloke kart | önce `PUT /api/cards/{id}` ile `"status": "Blocked"` | `62` | `2009` | `Active` olmayan kartla (debit de olsa) işlem yapılamaz |
+
+### 4.7 Lab sonunda beklenen durum
 | | Başlangıç | Satış | KKPT | Redler + tekrar | **Son** |
 |---|---|---|---|---|---|
 | Gönderen (1000000001) | 1000,00 | −150 | −200 | 0 | **650,00** |
 | Alıcı (1000000002) | 500,00 | | +200 | 0 | **700,00** |
 
-### 4.7 Veritabanından son kontrol
+Kredi kartının (`4111111111111129`) limiti: **5.000,00**, kullanılan **1.200,00**, kullanılabilir **3.800,00**. Kredi kartıyla
+satış hesap bakiyelerini etkilemez.
+
+### 4.8 Veritabanından son kontrol
 ```bash
 docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<MSSQL_SA_PASSWORD>' -C -d PaymentSystem \
   -Q "SELECT CreatedAt, F3_ProcessingCode, F4_Amount, F18_MerchantCode, F39_ResponseCode, F42_MerchantId, F48_RecipientCardNo FROM dbo.DebitTransaction ORDER BY CreatedAt"
@@ -400,7 +446,13 @@ docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U 
 Her işlem (onay ve red) bir satırdır, tekrar gelen istek satır açmaz. Satışta `F48_RecipientCardNo` NULL'dır; bu kolon
 sadece transferde dolar. Başka bir kolonda NULL görüyorsan bir şey ters gitmiştir.
 
-### 4.8 Bir şey ters giderse
+Kredi kartı işlemleri ayrı tablodadır:
+```bash
+docker exec -it payment_system_db /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<MSSQL_SA_PASSWORD>' -C -d PaymentSystem \
+  -Q "SELECT CreatedAt, F2_CardNo, F4_Amount, F39_ResponseCode, InstallmentCount FROM dbo.CreditTransaction ORDER BY CreatedAt"
+```
+
+### 4.9 Bir şey ters giderse
 | Ne görüyorsun | Ne demek | Ne yap |
 |---|---|---|
 | `400` ve **gövde boş** (`content-length: 0`), Gate logunda hiçbir satır yok | JSON **okunamadı**: istek bizim koda hiç ulaşmadı. Eksik virgül/tırnak, yapıştırırken kalan eski metin, ya da sayı olması gereken alan tırnakta (`"F4": "5000"`) | Gövdeyi tamamen sil (Ctrl+A), yeniden yapıştır |
@@ -450,6 +502,7 @@ sadece transferde dolar. Başka bir kolonda NULL görüyorsan bir şey ters gitm
 - `0200` için zorunlu alanlar (`F2 F3 F4 F7 F11 F12 F13 F14 F18 F22 F41 F42 F43 F49`) eksikse hata listesine eklenir. DB'de kolonu olan her alan zorunludur, boş kolonlu kayıt açılmaz; opsiyonel olanlar sadece `F37` (saklanmaz) ve transferin `F48`'i.
 - **F13 özel**: JSON'da `yyyymmdd` (gerçek bir tarih olmalı) gelir; ISO mesajına standart `MMDD` olarak girer, yıllı hali ayrıca Payment'a taşınır.
 - `cvv` 3 ya da 4 rakam olmalı; değeri hiçbir yere loglanmaz.
+- `installmentCount` geldiyse 1–36 arasında olmalı.
 - Herhangi bir hata varsa: `400 ValidationProblem` — her alanın hatası ayrı yazılır. İstek Payment'a **gitmez**.
 
 ### ② Gate: karar ver ya da ilet — `Gate/TransactionHandler.cs`
@@ -476,7 +529,8 @@ sadece transferde dolar. Başka bir kolonda NULL görüyorsan bir şey ters gitm
 1. `MTI + F3 → (Otc, Ots) → işlem adı` bulunur (`ParameterCache`, DB'ye gitmeden). Tanımsızsa `1001 → 12`, **kayıt açılmaz**.
 2. TL karşılığı hesaplanır (TL ise kendisi, dövizse cache'teki TCMB kuruyla).
 3. İsteğin alanlarından deterministik bir **UUID v5** üretilir; bu, kaydın PK'sıdır.
-4. Tek SQL transaction'ı açılır ve `DebitTransaction` INSERT edilir. PK çakışırsa → bu bir **tekrar** isteğidir, ilk kararın F39'u döner.
+4. Tek SQL transaction'ı açılır, kart okunur ve kayıt INSERT edilir: kart `Credit` ise `CreditTransaction`'a, değilse (ya da kart yoksa)
+   `DebitTransaction`'a. PK çakışırsa → bu bir **tekrar** isteğidir, ilk kararın F39'u (iki tabloda da aranır) döner.
 5. Kontroller sırayla yapılır (tam liste: [Bölüm 9](#9-karar-motoru-kontroller-irc-ve-f39)). İlk başarısız kontrol bir IRC döner.
 6. IRC → F39 tablodan bulunur, kayda yazılır, **COMMIT**. Reddedilen işlemler de kendi F39'uyla kaydedilir.
 7. Onaysa F39 döner; redse commit'ten **sonra** `TransactionException` fırlatılır (kayıt geri alınmasın diye).
@@ -501,7 +555,8 @@ Base URL: `http://localhost:8080`
 
 ### `POST /api/transactions`
 
-Sisteme işlem sokmanın **tek** yolu. Satış, bakiye sorgu ve transfer aynı endpoint'ten, `F3` ile ayrışarak gelir.
+Sisteme işlem sokmanın **tek** yolu. Satış, bakiye sorgu ve transfer aynı endpoint'ten, `F3` ile ayrışarak gelir. Debit ve
+kredi kartı istekte ayrışmaz: aynı `F3 000000` satıştır, kartın tipine Payment bakar.
 
 #### İstek alanları
 
@@ -525,6 +580,7 @@ Sisteme işlem sokmanın **tek** yolu. Satış, bakiye sorgu ve transfer aynı e
 | `F43` | İşyeri adı/yeri | tam **40** karakter | evet | E-postada görünür |
 | `F48` | Ek veri | ans, 1–999 (LLLVAR) | transferde | Bu sistemde **alıcı kart no** |
 | `cvv` | — | 3 ya da 4 rakam | elle girişte / e-ticarette | ISO alanı değildir; loglanmaz, saklanmaz |
+| `installmentCount` | — | JSON **sayı**, 1–36 | | Taksit sayısı; yoksa tek çekim. ISO alanı değildir. Sadece kredi kartıyla satışta 1'den büyük olabilir (yoksa `57`) |
 
 #### Cevaplar
 
@@ -590,6 +646,10 @@ Kur cache'te yoksa / bayatsa `91`, TCMB'nin hiç yayımlamadığı bir para biri
 
 **E-ticaret satışı** — `F22 812` ve `"cvv": "482"` (kart açılırken dönen değer). `cvv` yoksa ya da yanlışsa `N7`.
 
+**Kredi kartıyla satış** — gövde debit satışla aynıdır; `F2` tipi `Credit` olan bir kart. Tutar hesaptan değil kartın
+kullanılabilir limitinden düşer; limit yetmezse `51`, kartın limiti tanımlı değilse `57`. Taksit için `"installmentCount": 6`
+ekle: tutarın tamamı limitten bir kerede düşer. Kredi kartından para transferi desteklenmez (`12`).
+
 **Bakiye sorgu** — `F3 310000`, `F4 0`. Kart, işyeri ve hesap kontrolleri yapılır, onaylanırsa `00`.
 Para hareketi yoktur. (Bakiyenin cevapta F54 ile dönmesi henüz yok.)
 
@@ -634,7 +694,8 @@ Controller (Controllers/)   sadece HTTP: sonucu 200/201/204/400/404/409'a çevir
 
 - `PUT`'ta anahtar her zaman **URL'den** alınır; gövdedeki anahtar değişikliği yapmaz. Ama gövde yine de modelin doğrulamasından geçmelidir (örn. `accountNo` geçerli aralıkta olmalı).
 - "Var mı?" diye önce sorup sonra eklemek yerine DB'nin unique hatası (2627/2601) yakalanır; eşzamanlı iki `POST`'ta da doğru `409` döner.
-- Tablolar arasında FK yoktur (sadece `CardSecret → Card`); örneğin olmayan bir hesaba kart açılabilir, işlem sırasında `62` alır.
+- Tablolar arasında FK yoktur (sadece `CardSecret`, `CreditCardLimit` ve `Statement` → `Card`, kart silinince onlar da silinir);
+  örneğin olmayan bir hesaba kart açılabilir, işlem sırasında `62` alır.
 
 ---
 
@@ -668,18 +729,20 @@ Model:
 Model:
 ```json
 { "id": 1, "cardNumber": "4111111111111111", "accountNo": 1000000001, "cardType": "Debit", "expiryDate": "1228",
-  "lastTransactionDate": null, "lastTransactionAmount": null, "contactlessAllowed": true, "contactlessLimit": 750.00 }
+  "lastTransactionDate": null, "lastTransactionAmount": null, "contactlessAllowed": true, "contactlessLimit": 750.00,
+  "status": "Active" }
 ```
 | Alan | Kural |
 |---|---|
 | `id` | DB üretir (IDENTITY) |
 | `cardNumber` | zorunlu, ≤19, benzersiz. **Değiştirilemez** |
 | `accountNo` | 10 haneli sayı; kartın bağlı olduğu hesap |
-| `cardType` | zorunlu, ≤20 karakter (`Debit`, `Credit` …) |
+| `cardType` | zorunlu, ≤20 karakter. `Credit` kredi kartıdır (satış limitten düşer, [7.7](#77-kredi-kartı-limitleri--apicredit-limits)); diğer her değer debit sayılır |
 | `expiryDate` | zorunlu, `MMYY`, tam 4 karakter (ISO F14 ise `YYMM` — dikkat!) |
 | `contactlessAllowed` | zorunlu (gönderilmezse `400`); temassız işlem izni |
 | `contactlessLimit` | TL. `contactlessAllowed: true` ise zorunlu, `false` ise boş olmalı |
 | `lastTransactionDate/Amount` | sadece işlem akışı yazar; CRUD ile yazılamaz |
+| `status` | `Active` / `Blocked` / `Cancelled`. Gönderilmezse `Active`. `Active` olmayan kartla işlem yapılamaz (`62`) |
 
 | Metot | Route | Açıklama | Cevaplar |
 |---|---|---|---|
@@ -687,7 +750,7 @@ Model:
 | `GET` | `/api/cards/{id}` | ID ile | `200`, `404` |
 | `GET` | `/api/cards/by-number/{cardNumber}` | Kart numarasıyla | `200`, `404` |
 | `POST` | `/api/cards` | Kart çıkar. CVV2 (3 hane) ve PIN (4 hane) **rastgele üretilir**, cevapta **bir kez** `cvv` ve `pin` olarak döner | `201`, `400`, `409` |
-| `PUT` | `/api/cards/{id}` | Tip, son kullanma, hesap, temassız ayarları değişir. Farklı `cardNumber` gönderilirse `400` | `204`, `400`, `404` |
+| `PUT` | `/api/cards/{id}` | Tip, son kullanma, hesap, temassız ayarları ve durum (bloke etmek için `"status": "Blocked"`) değişir. Farklı `cardNumber` gönderilirse `400` | `204`, `400`, `404` |
 | `DELETE` | `/api/cards/{id}` | Kartı (ve `CardSecret` satırını, cascade) sil | `204`, `404` |
 
 > Kart numarası neden değiştirilemez? CVV/PIN hash'i kart numarasıyla birlikte hesaplanır (bkz. [11.4](#114-cvv2-ve-pin-güvenliği)). Numara değişirse
@@ -782,6 +845,32 @@ Bu da tanım cache'ini hemen boşaltır.
 Bu endpoint TCMB'ye **gitmez**, sadece cache'i gösterir. `isStale: true` ise işlem akışı bu kuru kullanmaz (`91`).
 Desteklenen kodlar `ExchangeRateCache.IsoToTcmb`'de (USD, EUR, GBP, CHF, JPY, …).
 
+### 7.7 Kredi kartı limitleri — `/api/credit-limits`
+
+Bir kredi kartının limiti. Kredi kartıyla satış ancak bu kayıt varsa yapılabilir.
+```json
+{ "cardNumber": "4111111111111129", "creditLimit": 5000.00, "usedLimit": 1200.00, "availableLimit": 3800.00,
+  "cashLimit": 1000.00, "usedCashLimit": 0.00, "statementDay": 25, "dueDay": 5 }
+```
+| Alan | Kural |
+|---|---|
+| `cardNumber` | anahtar; kart var olmalı ve `cardType` `Credit` olmalı |
+| `creditLimit` | zorunlu, ≥ 0 |
+| `cashLimit` | zorunlu, ≥ 0, `creditLimit`'i aşamaz (nakit avans adımında kullanılacak) |
+| `statementDay` / `dueDay` | zorunlu, 1–28 (29–31 her ayda yok). Hesap kesim günü / son ödeme günü |
+| `usedLimit`, `usedCashLimit` | sadece işlem akışı yazar; gövdedeki değer yok sayılır |
+| `availableLimit` | `creditLimit − usedLimit`, DB hesaplar (computed column) |
+
+| Metot | Route | Açıklama | Cevaplar |
+|---|---|---|---|
+| `GET` | `/api/credit-limits` | Tüm limitler | `200` |
+| `GET` | `/api/credit-limits/{cardNumber}` | Tek kartın limiti | `200`, `404` |
+| `POST` | `/api/credit-limits` | Limit tanımla (kullanılan 0 başlar) | `201`, `400` (kart kredi kartı değil / doğrulama), `404` (kart yok), `409` |
+| `PUT` | `/api/credit-limits/{cardNumber}` | `creditLimit`, `cashLimit`, `statementDay`, `dueDay` değişir; kullanılan tutarlar değişmez | `204`, `400`, `404` |
+| `DELETE` | `/api/credit-limits/{cardNumber}` | Sil | `204`, `404` |
+
+> Limit, kullanılanın altına düşürülebilir (gerçek bankalarda da olur); o durumda `availableLimit` eksiye düşer ve yeni satış `51` alır.
+
 ### `GET /openapi/v1.json` ve `/swagger`
 Payment'ın OpenAPI şeması ve Swagger UI. `Swagger:Enabled` ile açılır, bkz. [Swagger](#swagger-api-dokümanı-ve-deneme-arayüzü).
 
@@ -805,7 +894,7 @@ Payment'ın OpenAPI şeması ve Swagger UI. `Swagger:Enabled` ile açılır, bkz
   "currencyCode": "949", "transmissionDateTime": "1016095959", "stan": "000001", "localTime": "125959",
   "localDate": "20261016", "terminalId": "TERM0001", "cardExpiry": "2812", "merchantType": "5399",
   "entryMode": "051", "rrn": null, "merchantId": "TRENDYOL       ", "cardAcceptor": "TRENDYOL                 ISTANBUL     TR",
-  "recipientCardNumber": null, "cvv": null }
+  "recipientCardNumber": null, "cvv": null, "installmentCount": null }
 ```
 Cevap gövdesi:
 ```json
@@ -856,22 +945,25 @@ Payment'ın teknik cevapları: gövde okunamadı / geçersiz → `30`; DB'ye ula
 | 4 | İşyeri `Active` değil | hepsi | `4002` | `03` |
 | 5 | F18 işyerinin MCC'si değil | hepsi | `4003` | `03` |
 | 6 | Kart yok | hepsi | `2001` | `14` |
-| 7 | Kartın süresi geçmiş ya da F14 kartla uyuşmuyor | hepsi | `2002` | `54` |
-| 8 | Kart fiziksel yok (`01x`/`81x`) ve CVV2 yok; ya da CVV2 geldi ama tutmuyor | hepsi | `2006` | `N7` |
-| 9 | Hesap yok ya da `Active` değil | hepsi | `2003` | `62` |
+| 7 | Kart `Active` değil (`Blocked`, `Cancelled`) | hepsi | `2009` | `62` |
+| 8 | Kartın süresi geçmiş ya da F14 kartla uyuşmuyor | hepsi | `2002` | `54` |
+| 9 | Kart fiziksel yok (`01x`/`81x`) ve CVV2 yok; ya da CVV2 geldi ama tutmuyor | hepsi | `2006` | `N7` |
+| 10 | Hesap yok ya da `Active` değil (kredi kartında da) | hepsi | `2003` | `62` |
+| 11 | Taksit > 1 ama işlem kredi kartıyla satış değil | hepsi | `1008` | `57` |
 | — | **Bakiye sorgu** buraya kadar geçtiyse → onay | `BalanceInquiry` | `0000` | `00` |
-| 10 | F48 yok ya da kart numarası değil | transfer | `1005` | `30` |
-| 11 | Alıcı kart yok | transfer | `2007` | `14` |
-| 12 | Alıcı kart gönderenle aynı hesapta | transfer | `1006` | `12` |
-| 13 | Alıcının hesabı yok ya da `Active` değil | transfer | `2008` | `62` |
-| 14 | TCMB bu para birimi için kur yayımlamıyor (örn. `999`) | satış, transfer | `1004` | `12` |
-| 15 | Döviz ama cache'te kur yok ya da bayat | satış, transfer | `9001` | `91` |
-| 16 | Tutar 0 | satış, transfer | `3001` | `13` |
-| 17 | Temassız ama kart temassıza kapalı | satış | `2004` | `57` |
-| 18 | Temassız limit (TL karşılık) aşıldı | satış | `2005` | `65` |
-| 19 | Bakiye yetersiz | satış, transfer | `3002` | `51` |
-| ✔ | **Onay**: bakiye düşer (transferde alıcıya eklenir), kartın `LastTransaction*`'ı güncellenir | satış, transfer | `0000` | `00` |
-| — | Tip tanımlı ama kod onu işlemiyor (örn. `Refund`) | — | `1003` | `12` |
+| 12 | F48 yok ya da kart numarası değil | transfer | `1005` | `30` |
+| 13 | Alıcı kart yok | transfer | `2007` | `14` |
+| 14 | Alıcı kart gönderenle aynı hesapta | transfer | `1006` | `12` |
+| 15 | Alıcının hesabı yok ya da `Active` değil | transfer | `2008` | `62` |
+| 16 | TCMB bu para birimi için kur yayımlamıyor (örn. `999`) | satış, transfer | `1004` | `12` |
+| 17 | Döviz ama cache'te kur yok ya da bayat | satış, transfer | `9001` | `91` |
+| 18 | Tutar 0 | satış, transfer | `3001` | `13` |
+| 19 | Temassız ama kart temassıza kapalı | satış | `2004` | `57` |
+| 20 | Temassız limit (TL karşılık) aşıldı | satış | `2005` | `65` |
+| 21 | Kredi kartının `CreditCardLimit` kaydı yok | kredi satış | `3003` | `57` |
+| 22 | Debit: bakiye yetersiz · Kredi: kullanılabilir limit yetersiz | satış, transfer | `3002` | `51` |
+| ✔ | **Onay**: debit'te bakiye düşer (transferde alıcıya eklenir), kredide `UsedLimit` artar; kartın `LastTransaction*`'ı güncellenir | satış, transfer | `0000` | `00` |
+| — | Tip tanımlı ama kod onu işlemiyor (örn. `Refund`) ya da kredi kartından transfer | — | `1003` | `12` |
 
 Ayrıca: IRC tabloda yoksa → `96` (işlem asla tahminle onaylanmaz). Beklenmeyen hata (DB yok vb.) → `91`, commit edilmediği için para hareketi yok.
 
@@ -889,14 +981,17 @@ yönetilir; erişim **Dapper** ile düz SQL'dir.
 | Tablo | PK | İçerik |
 |---|---|---|
 | `BankAccount` | `AccountNo` (BIGINT, 10 hane) | Durum, bakiye (TL), e-posta |
-| `Card` | `Id` (IDENTITY), `CardNumber` UNIQUE | Hesap no, tip, `ExpiryDate` (MMYY), temassız ayarları, son işlem |
+| `Card` | `Id` (IDENTITY), `CardNumber` UNIQUE | Hesap no, tip (`Debit`/`Credit`), `ExpiryDate` (MMYY), temassız ayarları, son işlem, `Status` |
 | `CardSecret` | `CardNumber` (FK → Card, ON DELETE CASCADE) | `CvvHash`, `PinHash` (HMAC-SHA256) |
 | `Merchant` | `MerchantId` | Ad, MCC, durum |
 | `TransactionType` | `(Otc, Ots)` | İşlem adı |
 | `MtiProcessingCode` | `(Mti, F3_ProcessingCode)` | → `(Otc, Ots)` |
 | `EntryMode` | `Code` (F22'nin ilk 2 hanesi) | Ad, `IsContactless` |
 | `InternalResponseCode` | `Irc` | Açıklama, `F39_ResponseCode` |
-| `DebitTransaction` | `Guid` (UUID v5) | Her işlemin kaydı; kolonlar ISO alan numarasını taşır |
+| `DebitTransaction` | `Guid` (UUID v5) | Debit kart işlemlerinin kaydı; kolonlar ISO alan numarasını taşır |
+| `CreditCardLimit` | `CardNumber` (FK → Card, ON DELETE CASCADE) | `CreditLimit`, `UsedLimit`, `AvailableLimit` (computed), `CashLimit`, `UsedCashLimit`, `StatementDay`, `DueDay` |
+| `CreditTransaction` | `Guid` (UUID v5) | Kredi kartı işlemlerinin kaydı: `DebitTransaction` ile aynı kolonlar, `F48` yerine `InstallmentCount` |
+| `Statement` | `Id` (IDENTITY), `(CardNumber, PeriodEnd)` UNIQUE | Kesilen ekstre: dönem, son ödeme tarihi, toplam borç, asgari ödeme (%20), ödenen. **Henüz kullanılmıyor** (ekstre adımı) |
 
 `DebitTransaction` kolonları: `Mti`, `F2_CardNo`, `F3_ProcessingCode`, `Otc`, `Ots`, `F4_Amount` (orijinal para birimi),
 `F49_CurrencyCode`, `LocalTxnAmount` (TL karşılık), `F12_TransactionTime`, `F13_TransactionDate` (yyyymmdd), `F14_CardExpiry`,
@@ -949,6 +1044,7 @@ Sorun: Gate 10 sn bekleyip `91` döndü, ama Payment isteği sonradan işlerse m
 ### 11.3 Eşzamanlılık
 - Bakiye kontrolü ve düşme **tek SQL**'dedir: `UPDATE ... SET Balance = Balance - @amount WHERE AccountNo = @no AND Balance >= @amount`.
   Etkilenen satır 0 ise yetersiz bakiye. İki eşzamanlı satış hesabı eksiye düşüremez.
+- Kredi kartında aynısı limitte: `UPDATE ... SET UsedLimit = UsedLimit + @amount WHERE CardNumber = @card AND CreditLimit - UsedLimit >= @amount`.
 - Transferde iki hesabın satırı önce **PK sırasıyla** kilitlenir (`UPDLOCK`); A→B ve B→A aynı anda gelse de deadlock olmaz.
 - Kayıt + bakiye + kart güncellemesi tek transaction'dadır: ya hepsi ya hiçbiri.
 
@@ -1047,7 +1143,7 @@ Gmail dışı için `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`. `SMTP_USER` ve `SMTP_
 | Test projesi | Neyi test eder |
 |---|---|
 | `tests/PaymentSystem.Gate.Tests` | Endpoint alan doğrulaması, Gate karar mantığı (sahte Payment), gerçek RabbitMQ üzerinden request-reply (eşzamanlılık, geçersiz cevap, timeout + TTL, geç cevap), ISO8583 pack/unpack ve framing |
-| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz), kuyruk tüketicisi (gerçek RabbitMQ + SQL), 5 CRUD controller + repository'ler, model doğrulama, TCMB ayrıştırma + kur cache'i, parametre cache'i, Kafka olayları |
+| `tests/PaymentSystem.Payment.Tests` | İşlem akışı (idempotency, eşzamanlılık, tüm red kodları, döviz), kuyruk tüketicisi (gerçek RabbitMQ + SQL), 6 CRUD controller + repository'ler, model doğrulama, TCMB ayrıştırma + kur cache'i, parametre cache'i, Kafka olayları |
 | `tests/PaymentSystem.Notification.Tests` | Bildirim kuralları, e-posta içerikleri, gerçek Kafka'dan okuma, SMTP gönderimi (Mailpit container'ına; gerçek e-posta gitmez) |
 
 Testler [Testcontainers](https://dotnet.testcontainers.org/) ile **gerçek** SQL Server, RabbitMQ, Kafka ve Mailpit başlatır;
@@ -1095,7 +1191,7 @@ payment_system/
 │  │  │  ├─ InternalResponseCodes.cs      IRC sabitleri
 │  │  │  └─ TransactionException.cs
 │  │  ├─ Controllers/ Handlers/ Data/     yönetim CRUD katmanları
-│  │  ├─ Data/TransactionRepository.cs    işlem SQL'leri (insert, debit, transfer)
+│  │  ├─ Data/TransactionRepository.cs    işlem SQL'leri (insert, debit, kredi limiti, transfer)
 │  │  ├─ Parameters/                tanım tabloları cache'i
 │  │  ├─ ExchangeRates/             TCMB istemcisi, refresher, cache
 │  │  ├─ Cards/                     CVV/PIN HMAC
@@ -1119,7 +1215,7 @@ Projeyi sıfırdan anlamak için önerilen okuma sırası:
 2. **ISO8583'ü anla** — `Iso87Fields.cs` → `IsoFieldDefinition.cs` → `IsoMessage.cs` → `IsoMessagePacker.cs` (bitmap mantığı). `IsoMessagePackerTests.cs` örnek mesajları gösterir.
 3. **Gate'i takip et** — `Program.cs` → `TransactionEndpoint.HandleAsync` → `TransactionHandler.ProcessAsync` → `RabbitMqPaymentClient.AuthorizeAsync`.
    Soru: Payment kapalıyken ne olur? (`TransactionEndpointTests`, `RabbitMqPaymentClientTests`)
-4. **Payment'ın kalbini oku** — `TransactionQueueConsumer.DecideAsync` → `TransactionHandler.AuthorizeAsync` → `DecideAsync` → `SaleAsync` / `TransferAsync`.
+4. **Payment'ın kalbini oku** — `TransactionQueueConsumer.DecideAsync` → `TransactionHandler.AuthorizeAsync` → `DecideAsync` → `SaleAsync` / `CreditSaleAsync` / `TransferAsync`.
    Yanına `TransactionRepository.cs` aç: hangi kontrol hangi SQL'e karşılık geliyor?
 5. **Tanım tablolarını kurcala** — `/api/mti-processing-codes`'a yeni bir eşleme ekle, sonuçlarını gözle (`12` → `00`).
 6. **Yan konular** — `ParameterCache`, `ExchangeRateRefresher` + `ExchangeRateCache`, `HmacCardSecretHasher`.
@@ -1136,6 +1232,8 @@ Kendine sorabileceğin sorular:
 
 ## 17. Bilinen sınırlar ve sıradaki adımlar
 
+- **Kredi kartı devamı**: nakit avans (`CashLimit` / `UsedCashLimit`), kart borcu ödemesi (`UsedLimit`'i düşürür), ekstre kesimi
+  (`Statement`: taksitli işlemin her dönemki payı `F4 / InstallmentCount`, asgari ödeme borcun %20'si).
 - **Reversal (`0400`)**: timeout'ta Gate'in iptal mesajı bırakması, Payment açılınca işlemesi (store & forward).
 - **Cevap sözleşmesini genişletmek**: F38 (onay kodu), F37 (RRN), F54 (bakiye sorgu cevabı).
 - **Kimlik doğrulama**: Gate'e API key / mTLS; Payment yönetim endpoint'lerini iç ağa almak.
