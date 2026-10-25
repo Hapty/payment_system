@@ -58,29 +58,6 @@ flowchart LR
 **Teknolojiler:** .NET 9 (C#) · ASP.NET Core · Dapper · SQL Server 2022 · RabbitMQ · Apache Kafka · MailKit (SMTP) ·
 Docker Compose · xUnit + Testcontainers · GitHub Actions · Swagger / OpenAPI
 
-## 🚀 Hızlı başlangıç
-
-Gereken tek şey Docker Desktop.
-
-```bash
-git clone https://github.com/Hapty/payment_system.git && cd payment_system
-cp .env.example .env            # şifreleri ve CARD_SECRET_KEY'i doldur (bkz. Bölüm 3)
-docker compose up -d --build    # SQL Server, RabbitMQ, Kafka ve 3 servis ayağa kalkar
-```
-
-Sonra http://localhost:8080/swagger (Gate) ve http://localhost:5002/swagger (Payment) adreslerinden denenebilir.
-Örnek bir satış:
-
-```http
-POST http://localhost:8080/api/transactions
-{ "mti": "0200", "F2": "4111111111111111", "F3": "000000", "F4": 15000, "F49": "949", ... }
-```
-```json
-{ "mti": "0210", "F39": "00", "F11": "000001" }        ← 00 = onaylandı
-```
-
-Adım adım deneme rehberi (hesap aç, kart aç, satış, transfer, kredi kartı, red senaryoları): [Bölüm 4 — Uygulamalı lab](#4-uygulamalı-lab-sıfırdan-uçtan-uca-test)
-
 ## ✅ Kalite
 
 - **429 otomatik test.** Testler sahte değil, Testcontainers ile açılan **gerçek** SQL Server, RabbitMQ, Kafka ve SMTP (Mailpit) container'larına karşı koşar.
