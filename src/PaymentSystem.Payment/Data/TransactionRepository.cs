@@ -45,10 +45,12 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
                     """
                     INSERT INTO dbo.DebitTransaction
                         (Guid, Mti, F2_CardNo, F3_ProcessingCode, Otc, Ots, F4_Amount, F49_CurrencyCode, LocalTxnAmount,
-                         F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F43_Description)
+                         F12_TransactionTime, F13_TransactionDate, F14_CardExpiry, F18_MerchantCode, F22_EntryMode, F42_MerchantId, F43_Description,
+                         F48_RecipientCardNo)
                     VALUES
                         (@Id, @Mti, @CardNumber, @ProcessingCode, @Otc, @Ots, @Amount, @CurrencyCode, @LocalAmount,
-                         @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @CardAcceptor)
+                         @LocalTime, @TransactionDate, @CardExpiry, @MerchantType, @EntryMode, @MerchantId, @CardAcceptor,
+                         @RecipientCardNumber)
                     """,
                     t, transaction);
                 return true;
@@ -59,20 +61,44 @@ public sealed class TransactionRepository(SqlConnectionFactory db) : ITransactio
             }
         }
 
+        public Task<Merchant?> GetMerchantAsync(string merchantId) =>
+            connection.QuerySingleOrDefaultAsync<Merchant>(
+                "SELECT MerchantId, Name, MerchantType, Status FROM dbo.Merchant WHERE MerchantId = @merchantId",
+                new { merchantId }, transaction);
+
         public Task<Card?> GetCardAsync(string cardNumber) =>
             connection.QuerySingleOrDefaultAsync<Card>(
                 "SELECT CardNumber, AccountNo, ExpiryDate, ContactlessAllowed, ContactlessLimit FROM dbo.Card WHERE CardNumber = @cardNumber",
                 new { cardNumber }, transaction);
 
-        public Task<BankAccount?> GetAccountAsync(string accountNo) =>
+        public Task<byte[]?> GetCvvHashAsync(string cardNumber) =>
+            connection.QuerySingleOrDefaultAsync<byte[]?>(
+                "SELECT CvvHash FROM dbo.CardSecret WHERE CardNumber = @cardNumber", new { cardNumber }, transaction);
+
+        public Task<BankAccount?> GetAccountAsync(long accountNo) =>
             connection.QuerySingleOrDefaultAsync<BankAccount>(
                 "SELECT AccountNo, AccountStatus, Email FROM dbo.BankAccount WHERE AccountNo = @accountNo", new { accountNo }, transaction);
 
         // Aynı hesaba aynı anda gelen iki satış bakiyeyi eksiye düşüremez: kontrol ve düşme aynı UPDATE'te.
-        public async Task<bool> TryDebitAsync(string accountNo, decimal amount) =>
+        public async Task<bool> TryDebitAsync(long accountNo, decimal amount) =>
             await connection.ExecuteAsync(
                 "UPDATE dbo.BankAccount SET Balance = Balance - @amount WHERE AccountNo = @accountNo AND Balance >= @amount",
                 new { amount, accountNo }, transaction) > 0;
+
+        // İki hesabın satırı önce PK sırasıyla kilitlenir: A->B ve B->A transferleri aynı anda gelse de kilitler aynı sırayla
+        // alınır, deadlock olmaz. Sonra düşme (bakiye kontrolüyle aynı UPDATE'te) ve ekleme.
+        public async Task<bool> TryTransferAsync(long fromAccountNo, long toAccountNo, decimal amount)
+        {
+            await connection.ExecuteAsync(
+                "SELECT AccountNo FROM dbo.BankAccount WITH (UPDLOCK, ROWLOCK) WHERE AccountNo IN (@fromAccountNo, @toAccountNo) ORDER BY AccountNo",
+                new { fromAccountNo, toAccountNo }, transaction);
+            if (!await TryDebitAsync(fromAccountNo, amount))
+                return false;
+            await connection.ExecuteAsync(
+                "UPDATE dbo.BankAccount SET Balance = Balance + @amount WHERE AccountNo = @toAccountNo",
+                new { amount, toAccountNo }, transaction);
+            return true;
+        }
 
         public Task SetCardLastTransactionAsync(string cardNumber, decimal amount) =>
             connection.ExecuteAsync(

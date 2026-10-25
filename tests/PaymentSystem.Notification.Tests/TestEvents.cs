@@ -19,7 +19,7 @@ public static class TestEvents
         ResponseCode = "00",
         Irc = "0000",
         MaskedCardNumber = "411111********11",
-        AccountNo = "ACC1",
+        AccountNo = 1000000001,
         Email = email,
         Amount = 1500m,
         CurrencyCode = "949",
@@ -30,6 +30,21 @@ public static class TestEvents
         TerminalId = "TERM0001",
         Stan = "000001"
     };
+
+    // Payment'ın onaylı bir karttan karta TL transferi için yazdığı olay: gönderen F2, alıcı F48.
+    public static TransactionCompleted ApprovedTransfer(
+        Guid? id = null, string? email = "gonderen@example.com", string? recipientEmail = "alici@example.com") =>
+        ApprovedSale(id, email) with
+        {
+            TransactionType = "MoneyTransfer",
+            MaskedCardNumber = "540668********01",
+            Amount = 150m,
+            LocalAmount = 150m,
+            CardAcceptor = null,
+            RecipientMaskedCardNumber = "540668********02",
+            RecipientAccountNo = 1000000002,
+            RecipientEmail = recipientEmail
+        };
 }
 
 // SMTP yerine gönderilen e-postaları toplar; ilk FailTimes denemede hata fırlatır.

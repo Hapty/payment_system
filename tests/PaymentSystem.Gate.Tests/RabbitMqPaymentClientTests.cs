@@ -33,8 +33,8 @@ public sealed class RabbitMqFixture : IAsyncLifetime
 public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassFixture<RabbitMqFixture>, IAsyncLifetime
 {
     private static readonly PaymentRequest Request = new(
-        "0200", "4111111111111111", "000000", 15000, "949", "1002143015", "123456", "173015", "1002", "TERM0001",
-        "2812", null, "051", "261002123456", "MERCHANT0000001", null);
+        "0200", "4111111111111111", "000000", 15000, "949", "1002143015", "123456", "173015", "20261002", "TERM0001",
+        "2812", null, "051", "261002123456", "TRENDYOL       ", null, RecipientCardNumber: null, Cvv: null);
 
     private readonly List<IAsyncDisposable> _disposables = [];
     private IChannel _admin = null!;
@@ -108,19 +108,40 @@ public sealed class RabbitMqPaymentClientTests(RabbitMqFixture rabbit) : IClassF
     }
 
     [Fact]
-    public async Task Success_LogsQueueMessageWithMaskedPan()
+    public async Task Success_LogsSentAndReplyWithStanButNoCardNumber()
     {
         await RespondWithAsync("""{ "responseCode": "00" }""");
 
         await CreateClient().AuthorizeAsync(Request, CancellationToken.None);
 
-        // Kuyruğa giden gövdede kart numarası tam, logda maskeli.
+        // Kuyruğa giden gövdede kart numarası tam; logda gövde yazılmaz (alanları TransactionHandler maskeli yazar).
         Assert.Contains("\"cardNumber\":\"4111111111111111\"", Assert.Single(Received).Body);
-        var sent = Assert.Single(Logger.Messages, m => m.StartsWith("PublishAsync: sent"));
-        Assert.Contains("\"cardNumber\":\"411111********11\"", sent);
-        Assert.Contains("\"amountMinor\":15000", sent);
-        Assert.Contains(Logger.Messages, m => m.StartsWith("AuthorizeAsync: reply") && m.Contains("F39 00"));
+        Assert.EndsWith("to queue payment.transactions for F11 (STAN)=123456", Assert.Single(Logger.Messages, m => m.StartsWith("PublishAsync: sent")));
+        Assert.Contains(Logger.Messages, m => m.StartsWith("AuthorizeAsync: reply") && m.EndsWith("for F11 (STAN)=123456 F39 (Cevap Kodu)=00"));
         Assert.DoesNotContain(Logger.Messages, m => m.Contains("4111111111111111"));
+    }
+
+    [Fact]
+    public async Task Cvv_IsSentToPaymentButNotLogged()
+    {
+        await RespondWithAsync("""{ "responseCode": "00" }""");
+
+        await CreateClient().AuthorizeAsync(Request with { Cvv = "987" }, CancellationToken.None);
+
+        Assert.Contains("\"cvv\":\"987\"", Assert.Single(Received).Body);
+        Assert.DoesNotContain(Logger.Messages, m => m.Contains("987"));
+    }
+
+    [Fact]
+    public async Task RecipientCard_IsSentToPaymentButNotLogged()
+    {
+        await RespondWithAsync("""{ "responseCode": "00" }""");
+
+        await CreateClient().AuthorizeAsync(Request with { ProcessingCode = "400000", RecipientCardNumber = "5406680000000002" },
+            CancellationToken.None);
+
+        Assert.Contains("\"recipientCardNumber\":\"5406680000000002\"", Assert.Single(Received).Body);
+        Assert.DoesNotContain(Logger.Messages, m => m.Contains("5406680000000002"));
     }
 
     [Fact]

@@ -18,7 +18,8 @@ IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'BankAccount')
 BEGIN
     CREATE TABLE dbo.BankAccount
     (
-        AccountNo       VARCHAR(34)     NOT NULL PRIMARY KEY,
+        AccountNo       BIGINT          NOT NULL PRIMARY KEY
+                        CONSTRAINT CK_BankAccount_AccountNo CHECK (AccountNo BETWEEN 1000000000 AND 9999999999),   -- 10 hane
         AccountStatus   VARCHAR(20)     NOT NULL,
         Balance         DECIMAL(18,2)   NOT NULL DEFAULT 0,
         Email           VARCHAR(254)    NULL            -- onaylı satışta Notification servisi bu adrese e-posta atar
@@ -38,14 +39,35 @@ BEGIN
     (
         Id                      INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
         CardNumber              VARCHAR(19)     NOT NULL UNIQUE,
-        AccountNo               VARCHAR(34)     NOT NULL,
+        AccountNo               BIGINT          NOT NULL
+                                CONSTRAINT CK_Card_AccountNo CHECK (AccountNo BETWEEN 1000000000 AND 9999999999),   -- 10 hane
         CardType                VARCHAR(20)     NULL,
         ExpiryDate              CHAR(4)         NULL,           -- MMYY
-        Cvv                     CHAR(3)         NULL,
         LastTransactionDate     DATETIME2       NULL,
         LastTransactionAmount   DECIMAL(18,2)   NULL,
         ContactlessAllowed      BIT             NOT NULL DEFAULT 0,
         ContactlessLimit        DECIMAL(18,2)   NULL
+    );
+END
+GO
+
+-- CVV Card tablosunda durmaz, hash'lenmiş olarak CardSecret'tadır. Eski şemadaki (hep boş) Cvv kolonu burada silinir.
+IF COL_LENGTH('dbo.Card', 'Cvv') IS NOT NULL
+    ALTER TABLE dbo.Card DROP COLUMN Cvv;
+GO
+
+-- 2b) CardSecret: kartın CVV2'si ve PIN'i, düz değil HMAC-SHA256(CARD_SECRET_KEY, kart no + değer) olarak.
+-- Kart oluşturulurken Card ile aynı transaction'da yazılır, kart silinince silinir. Kart numarası değiştirilemez
+-- (hash kart numarasına bağlı); FK'da ON UPDATE yok, değiştirilmeye çalışılırsa DB de reddeder.
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'CardSecret')
+BEGIN
+    CREATE TABLE dbo.CardSecret
+    (
+        CardNumber  VARCHAR(19)     NOT NULL PRIMARY KEY
+                    CONSTRAINT FK_CardSecret_Card REFERENCES dbo.Card (CardNumber) ON DELETE CASCADE,
+        CvvHash     VARBINARY(32)   NOT NULL,
+        PinHash     VARBINARY(32)   NOT NULL,
+        CreatedAt   DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME()
     );
 END
 GO
@@ -85,8 +107,9 @@ BEGIN
         F18_MerchantCode        VARCHAR(15)     NULL,
         F22_EntryMode           CHAR(3)         NULL,
         F39_ResponseCode        CHAR(2)         NULL,
+        F42_MerchantId          VARCHAR(15)     NULL,           -- işyeri no (sondaki boşluklar silinmiş)
         F43_Description         VARCHAR(100)    NULL,
-        RecipientCardNumber     VARCHAR(19)     NULL            -- sadece para transferinde (kkpt)
+        F48_RecipientCardNo     VARCHAR(19)     NULL            -- sadece para transferinde (kkpt): alıcı kart no
     );
 END
 GO
@@ -127,6 +150,21 @@ BEGIN
         Description         VARCHAR(100)    NOT NULL,
         F39_ResponseCode    CHAR(2)         NOT NULL,
         CONSTRAINT PK_InternalResponseCode PRIMARY KEY (Irc)
+    );
+END
+GO
+
+-- 8) Merchant (işyeri): F42 bu tabloda olmalı ve Active olmalı; istekte F18 geldiyse işyerinin MCC'siyle aynı olmalı.
+-- MerchantId sondaki boşluklar olmadan tutulur: F42 sabit 15 karakterdir, POS kısa no'yu sağdan boşlukla doldurur.
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Merchant')
+BEGIN
+    CREATE TABLE dbo.Merchant
+    (
+        MerchantId      VARCHAR(15)     NOT NULL PRIMARY KEY,   -- F42
+        Name            VARCHAR(100)    NOT NULL,
+        MerchantType    CHAR(4)         NOT NULL,               -- MCC (F18)
+        Status          VARCHAR(20)     NOT NULL,               -- Active / Blocked ...
+        CreatedAt       DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME()
     );
 END
 GO

@@ -34,7 +34,7 @@ public sealed class KafkaTransactionEventPublisher : ITransactionEventPublisher,
     // Anahtar hesap no: aynı hesabın olayları aynı partition'a düşer ve sırası korunur.
     public void Publish(TransactionCompleted transaction)
     {
-        var message = new Message<string?, string> { Key = transaction.AccountNo, Value = JsonSerializer.Serialize(transaction, Json) };
+        var message = new Message<string?, string> { Key = transaction.AccountNo?.ToString(), Value = JsonSerializer.Serialize(transaction, Json) };
         try
         {
             _producer.Produce(_topic, message, report => OnDelivered(transaction, report));

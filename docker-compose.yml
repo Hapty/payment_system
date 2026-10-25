@@ -50,6 +50,7 @@ services:
       ConnectionStrings__PaymentSystem: "Server=db,1433;Database=PaymentSystem;User Id=sa;TrustServerCertificate=True"
       ConnectionStrings__RabbitMq: "amqp://payment@rabbitmq:5672"
       Kafka__BootstrapServers: "kafka:9092"
+      CARD_SECRET_KEY: ${CARD_SECRET_KEY}         # CVV2 / PIN'i hash'leyen HMAC anahtarı (64 hex); düz değerler saklanmaz
     ports:
       - "5002:8080"                               # sadece yönetim: CRUD + kur endpoint'leri (işlemler kuyruktan gelir)
     restart: unless-stopped

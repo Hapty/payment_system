@@ -48,8 +48,9 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
             INSERT INTO dbo.MtiProcessingCode (Mti, F3_ProcessingCode, Otc, Ots) VALUES ('0200', '000000', '10', '11');
             INSERT INTO dbo.EntryMode (Code, Name, IsContactless) VALUES ('05', 'Chip', 0);
             INSERT INTO dbo.InternalResponseCode (Irc, Description, F39_ResponseCode) VALUES ('0000', 'Approved', '00'), ('3002', 'Insufficient funds', '51');
-            INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES ('ACC1', 'Active', 1000);
-            INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed) VALUES (@Pan, 'ACC1', '1228', 1);
+            INSERT INTO dbo.Merchant (MerchantId, Name, MerchantType, Status) VALUES ('TRENDYOL', 'TRENDYOL', '5399', 'Active');
+            INSERT INTO dbo.BankAccount (AccountNo, AccountStatus, Balance) VALUES (1000000001, 'Active', 1000);
+            INSERT INTO dbo.Card (CardNumber, AccountNo, ExpiryDate, ContactlessAllowed) VALUES (@Pan, 1000000001, '1228', 1);
             """,
             new { Pan });
     }
@@ -59,7 +60,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         {
           "mti": "0200", "cardNumber": "{{Pan}}", "processingCode": "000000", "amountMinor": {{amountMinor}},
           "currencyCode": "949", "transmissionDateTime": "0315095959", "stan": "{{stan}}", "localTime": "125959",
-          "localDate": "0315", "terminalId": "TERM0001", "cardExpiry": "2812", "entryMode": "051"
+          "localDate": "20260315", "terminalId": "TERM0001", "cardExpiry": "2812", "entryMode": "051", "merchantId": "TRENDYOL       "
         }
         """;
 
@@ -72,6 +73,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
             new TransactionRepository(db ?? Db),
             TestParameters.Create(db ?? Db),
             new ExchangeRateCache(new MemoryCache(new MemoryCacheOptions()), TimeProvider.System, Options.Create(new ExchangeRateOptions())),
+            TestSecrets.Hasher,
             new RecordingEventPublisher(),
             TimeProvider.System,
             HandlerLogger);
@@ -125,7 +127,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
     private async Task<decimal> BalanceAsync()
     {
         await using var connection = Db.Create();
-        return await connection.ExecuteScalarAsync<decimal>("SELECT Balance FROM dbo.BankAccount WHERE AccountNo = 'ACC1'");
+        return await connection.ExecuteScalarAsync<decimal>("SELECT Balance FROM dbo.BankAccount WHERE AccountNo = 1000000001");
     }
 
     private async Task<int> TransactionCountAsync()
@@ -152,12 +154,42 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
 
         await WithConsumerAsync(() => SendAsync(SaleJson()));
 
-        var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
-        Assert.Contains("\"cardNumber\":\"411111********11\"", received);
-        Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("HandleAsync: replied request-1 F39 00"));
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: debited TRY 150") && m.Contains("PAN 411111********11"));
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.Contains("F39 00"));
+        // Gelen isteğin bütün alanları, numara sırasıyla ve ne olduklarıyla (Gate'in "forwarding to Payment" satırıyla aynı biçim).
+        Assert.Contains(
+            "DecideAsync: received request-1 MTI 0200 | F2 (Kart No)=411111********11 F3 (İşlem Kodu)=000000 F4 (Tutar, kuruş)=15000 " +
+            "F7 (Gönderim Zamanı)=0315095959 F11 (STAN)=000001 F12 (Yerel Saat)=125959 F13 (Yerel Tarih)=20260315 " +
+            "F14 (Son Kullanma)=2812 F22 (Giriş Yöntemi)=051 F41 (Terminal No)=TERM0001 F42 (İşyeri No)=TRENDYOL F49 (Para Birimi)=949",
+            ConsumerLogger.Messages);
+        Assert.Contains("HandleAsync: replied request-1 F39 (Cevap Kodu)=00", ConsumerLogger.Messages);
+        Assert.Contains("SaleAsync: debited TRY 150 from account 1000000001 F11 (STAN)=000001 F2 (Kart No)=411111********11", HandlerLogger.Messages);
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale ") && m.EndsWith("F41 (Terminal No)=TERM0001 F11 (STAN)=000001 F2 (Kart No)=411111********11 committed -> IRC 0000 F39 (Cevap Kodu)=00"));
         Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains(Pan));
+    }
+
+    [Fact]
+    public async Task ReceivedRequestLog_ShowsOnlyThatCvvWasSent()
+    {
+        await SeedAsync();
+
+        await WithConsumerAsync(() => SendAsync(SaleJson().Replace("\"entryMode\": \"051\"", "\"entryMode\": \"051\", \"cvv\": \"987\"")));
+
+        var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
+        Assert.EndsWith("F49 (Para Birimi)=949 cvv=***", received);
+        Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains("987"));
+    }
+
+    [Fact]
+    public async Task ReceivedRequestLog_MasksRecipientCard()
+    {
+        await SeedAsync();
+        const string recipient = "5406680000000002";
+
+        await WithConsumerAsync(() => SendAsync(SaleJson()
+            .Replace("\"processingCode\": \"000000\"", $"\"processingCode\": \"400000\", \"recipientCardNumber\": \"{recipient}\"")));
+
+        var received = Assert.Single(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: received request-1"));
+        Assert.Contains("F48 (Alıcı Kart No)=540668********02", received);
+        Assert.DoesNotContain(ConsumerLogger.Messages.Concat(HandlerLogger.Messages), m => m.Contains(recipient));
     }
 
     [Fact]
@@ -170,9 +202,10 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
         Assert.Equal("""{"responseCode":"51"}""", reply?.Body);
         Assert.Equal(1000m, await BalanceAsync());
         Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("SaleAsync: declined") && m.Contains("insufficient funds") && m.Contains("IRC 3002"));
-        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.Contains("IRC 3002 F39 51"));
-        Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: transaction") && m.Contains("not approved: F39 51 Insufficient funds (IRC 3002)")
-            && m.Contains("PAN 411111********11 account ACC1"));
+        Assert.Contains(HandlerLogger.Messages, m => m.StartsWith("AuthorizeAsync: Sale") && m.EndsWith("IRC 3002 F39 (Cevap Kodu)=51"));
+        Assert.Contains(ConsumerLogger.Messages, m => m.StartsWith("DecideAsync: transaction request-1 F41 (Terminal No)=TERM0001 F11 (STAN)=000001")
+            && m.Contains("not approved: F39 (Cevap Kodu)=51 Insufficient funds (IRC 3002)")
+            && m.EndsWith("F2 (Kart No)=411111********11 account 1000000001"));
     }
 
     [Theory]
@@ -216,7 +249,7 @@ public class TransactionQueueConsumerTests(SqlServerFixture fixture, RabbitMqFix
     {
         var consumer = new TransactionQueueConsumer(
             rabbit.Factory("amqp://payment:x@127.0.0.1:1"),
-            new TransactionHandler(new TransactionRepository(Db), TestParameters.Create(Db), null!, new RecordingEventPublisher(), TimeProvider.System,
+            new TransactionHandler(new TransactionRepository(Db), TestParameters.Create(Db), null!, TestSecrets.Hasher, new RecordingEventPublisher(), TimeProvider.System,
                 NullLogger<TransactionHandler>.Instance),
             TimeProvider.System,
             NullLogger<TransactionQueueConsumer>.Instance);

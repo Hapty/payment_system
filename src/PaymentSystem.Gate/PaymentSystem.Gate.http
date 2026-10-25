@@ -1,27 +1,34 @@
 @gate = http://localhost:8080
 
-# İşlemlerin tek girişi. Gate alanları ISO8583 tanımına göre doğrular (bozuk/eksik alan -> 400),
-# isteği RabbitMQ ile Payment'a iletir ve cevabı bekler. Onay da red de 200 ile döner; karar responseCode'dadır (F39).
+# İşlemlerin tek girişi. Alanlar ISO8583 alan numarasıyla gelir ("F2", "F3" ...). Gate alanları ISO8583 tanımına göre
+# doğrular (bozuk/eksik alan -> 400), isteği RabbitMQ ile Payment'a iletir ve cevabı bekler. Onay da red de 200 ile döner;
+# karar cevaptaki F39'dadır.
 # Önce Payment'ın CRUD endpoint'leriyle hesap ve kart oluştur (src/PaymentSystem.Payment/PaymentSystem.Payment.http).
-# Aynı isteği (MTI + kart + işlem kodu + tutar + localDate + localTime) ikinci kez gönderirsen para tekrar düşmez, ilk cevap döner.
+# F42 (işyeri no, sabit 15 karakter) zorunlu ve Merchant tablosunda olmalı: seed TRENDYOL, GETIR, IYZICO, NETFLIX.
+# DB'ye yazılan her alan zorunlu (boş kolonlu kayıt açılmaz): F14, F18 (işyerinin MCC'si), F22, F43 (sabit 40 karakter) dahil.
+# Opsiyonel olanlar sadece F37 ve transferin alıcı kartı F48.
+# Aynı isteği (MTI + F2 + F3 + F4 + F13 + F12) ikinci kez gönderirsen para tekrar düşmez, ilk cevap döner.
 
-### Satış: 150,00 TL (amountMinor kuruş cinsinden, 949 = TRY, entryMode 051 = çip)
+### Satış: 150,00 TL (F4 kuruş cinsinden, F49 949 = TRY, F22 051 = çip, F13 yyyymmdd)
 POST {{gate}}/api/transactions
 Content-Type: application/json
 
 {
   "mti": "0200",
-  "cardNumber": "4111111111111111",
-  "processingCode": "000000",
-  "amountMinor": 15000,
-  "currencyCode": "949",
-  "transmissionDateTime": "0315095959",
-  "stan": "000001",
-  "localTime": "125959",
-  "localDate": "0315",
-  "terminalId": "TERM0001",
-  "cardExpiry": "2812",
-  "entryMode": "051"
+  "F2": "4111111111111111",
+  "F3": "000000",
+  "F4": 15000,
+  "F49": "949",
+  "F7": "1016095959",
+  "F11": "000001",
+  "F12": "125959",
+  "F13": "20261016",
+  "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
+  "F14": "2812",
+  "F22": "051"
 }
 
 ### Bakiye sorgulama (F3 310000)
@@ -30,16 +37,20 @@ Content-Type: application/json
 
 {
   "mti": "0200",
-  "cardNumber": "4111111111111111",
-  "processingCode": "310000",
-  "amountMinor": 0,
-  "currencyCode": "949",
-  "transmissionDateTime": "0315100000",
-  "stan": "000002",
-  "localTime": "130000",
-  "localDate": "0315",
-  "terminalId": "TERM0001",
-  "cardExpiry": "2812"
+  "F2": "4111111111111111",
+  "F3": "310000",
+  "F4": 0,
+  "F49": "949",
+  "F7": "1016100000",
+  "F11": "000002",
+  "F12": "130000",
+  "F13": "20261016",
+  "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
+  "F14": "2812",
+  "F22": "051"
 }
 
 ### Döviz satışı: 10,00 USD (840). TL karşılığı TCMB kuruyla hesaplanıp bakiyeden düşer.
@@ -48,21 +59,94 @@ Content-Type: application/json
 
 {
   "mti": "0200",
-  "cardNumber": "4111111111111111",
-  "processingCode": "000000",
-  "amountMinor": 1000,
-  "currencyCode": "840",
-  "transmissionDateTime": "0315100100",
-  "stan": "000003",
-  "localTime": "130100",
-  "localDate": "0315",
-  "terminalId": "TERM0001",
-  "cardExpiry": "2812",
-  "entryMode": "051"
+  "F2": "4111111111111111",
+  "F3": "000000",
+  "F4": 1000,
+  "F49": "840",
+  "F7": "1016100100",
+  "F11": "000003",
+  "F12": "130100",
+  "F13": "20261016",
+  "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
+  "F14": "2812",
+  "F22": "051"
 }
 
-### Bozuk alanlar -> 400, her alanın hatası ayrı yazılır
+### E-ticaret satışı (F22 812): kart fiziksel olarak yok, CVV2 zorunlu (yanlış ya da eksikse F39 N7).
+# cvv: kart oluşturulurken POST /api/cards cevabında dönen değer (tırnak içinde).
 POST {{gate}}/api/transactions
 Content-Type: application/json
 
-{ "mti": "0200", "cardNumber": "4111-1111", "processingCode": "000000", "currencyCode": "TRY" }
+{
+  "mti": "0200",
+  "F2": "4111111111111111",
+  "F3": "000000",
+  "F4": 2500,
+  "F49": "949",
+  "F7": "1016100200",
+  "F11": "000004",
+  "F12": "130200",
+  "F13": "20261016",
+  "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
+  "F14": "2812",
+  "F22": "812",
+  "cvv": "123"
+}
+
+### Karttan karta transfer: 150,00 TL (F3 400000, F48 = alıcı kart no; alıcı kart bu sistemde olmalı)
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "F2": "4111111111111111",
+  "F3": "400000",
+  "F4": 15000,
+  "F49": "949",
+  "F7": "1016100300",
+  "F11": "000005",
+  "F12": "130300",
+  "F13": "20261016",
+  "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
+  "F14": "2812",
+  "F22": "051",
+  "F48": "5406680000000002"
+}
+
+### Dövizle transfer: 10,00 USD. Gönderenden TL karşılığı düşer, alıcıya aynı TL tutarı eklenir.
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{
+  "mti": "0200",
+  "F2": "4111111111111111",
+  "F3": "400000",
+  "F4": 1000,
+  "F49": "840",
+  "F7": "1016100400",
+  "F11": "000006",
+  "F12": "130400",
+  "F13": "20261016",
+  "F41": "TERM0001",
+  "F42": "TRENDYOL       ",
+  "F18": "5399",
+  "F43": "TRENDYOL                 ISTANBUL     TR",
+  "F14": "2812",
+  "F22": "051",
+  "F48": "5406680000000002"
+}
+
+### Bozuk alanlar -> 400, her alanın hatası alan numarasıyla ayrı yazılır
+POST {{gate}}/api/transactions
+Content-Type: application/json
+
+{ "mti": "0200", "F2": "4111-1111", "F3": "000000", "F13": "1016", "F49": "TRY" }

@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using PaymentSystem.Payment.Models;
 
 namespace PaymentSystem.Payment.Tests;
@@ -9,35 +10,126 @@ public class ModelValidationTests
     private static bool IsValid(object model) =>
         Validator.TryValidateObject(model, new ValidationContext(model), [], validateAllProperties: true);
 
-    [Fact]
-    public void BankAccount_Valid() =>
-        Assert.True(IsValid(new BankAccount { AccountNo = "ACC1", AccountStatus = "Active" }));
+    private static BankAccount ValidAccount() => new() { AccountNo = 1000000001, AccountStatus = "Active", Email = "musteri@example.com" };
+
+    private static Card ValidCard() => new()
+    {
+        CardNumber = "4111111111111111", AccountNo = 1000000001, CardType = "Debit", ExpiryDate = "1228",
+        ContactlessAllowed = true, ContactlessLimit = 750
+    };
 
     [Fact]
-    public void BankAccount_AccountNoTooLong_IsInvalid() =>
-        Assert.False(IsValid(new BankAccount { AccountNo = new string('1', 35), AccountStatus = "Active" }));
+    public void BankAccount_Valid() => Assert.True(IsValid(ValidAccount()));
+
+    [Theory]
+    [InlineData(0L)]                // body'de yok
+    [InlineData(999999999L)]        // 9 hane (ya da 0 ile başlayan 10 hane)
+    [InlineData(10000000000L)]      // 11 hane
+    [InlineData(-1000000001L)]
+    public void BankAccount_AccountNoNotTenDigits_IsInvalid(long accountNo)
+    {
+        var account = ValidAccount();
+        account.AccountNo = accountNo;
+        Assert.False(IsValid(account));
+    }
+
+    [Theory]
+    [InlineData(999999999L)]
+    [InlineData(10000000000L)]
+    public void Card_AccountNoNotTenDigits_IsInvalid(long accountNo)
+    {
+        var card = ValidCard();
+        card.AccountNo = accountNo;
+        Assert.False(IsValid(card));
+    }
+
+    [Theory]
+    [InlineData(null)]              // boş kolonlu hesap açılmaz
+    [InlineData("not-an-email")]
+    public void BankAccount_MissingOrInvalidEmail_IsInvalid(string? email)
+    {
+        var account = ValidAccount();
+        account.Email = email;
+        Assert.False(IsValid(account));
+    }
+
+    // Değer tipli alanlar body'de yoksa sessizce 0 / false yazılmaz: JSON okunurken reddedilir ([ApiController] 400 döner).
+    [Fact]
+    public void BankAccount_WithoutBalance_IsRejectedWhenRead()
+    {
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<BankAccount>(
+            """{ "accountNo": 1000000001, "accountStatus": "Active", "email": "musteri@example.com" }""", JsonSerializerOptions.Web));
+        Assert.Equal(0, JsonSerializer.Deserialize<BankAccount>(
+            """{ "accountNo": 1000000001, "accountStatus": "Active", "balance": 0, "email": "musteri@example.com" }""",
+            JsonSerializerOptions.Web)!.Balance);
+    }
 
     [Fact]
-    public void BankAccount_WithEmail_IsValid() =>
-        Assert.True(IsValid(new BankAccount { AccountNo = "ACC1", AccountStatus = "Active", Email = "musteri@example.com" }));
+    public void Card_WithoutContactlessAllowed_IsRejectedWhenRead() =>
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<Card>(
+            """{ "cardNumber": "4111111111111111", "accountNo": 1000000001, "cardType": "Debit", "expiryDate": "1228" }""",
+            JsonSerializerOptions.Web));
 
     [Fact]
-    public void BankAccount_InvalidEmail_IsInvalid() =>
-        Assert.False(IsValid(new BankAccount { AccountNo = "ACC1", AccountStatus = "Active", Email = "not-an-email" }));
+    public void Merchant_Valid() =>
+        Assert.True(IsValid(new Merchant { MerchantId = "TRENDYOL", Name = "TRENDYOL", MerchantType = "5399", Status = "Active" }));
+
+    [Theory]
+    [InlineData("539")]     // MCC tam 4 rakam
+    [InlineData("53990")]
+    [InlineData("53A9")]
+    public void Merchant_MerchantTypeNotFourDigits_IsInvalid(string mcc) =>
+        Assert.False(IsValid(new Merchant { MerchantId = "TRENDYOL", Name = "TRENDYOL", MerchantType = mcc, Status = "Active" }));
 
     [Fact]
-    public void Card_Valid() =>
-        Assert.True(IsValid(new Card { CardNumber = "4111111111111111", AccountNo = "ACC1", ExpiryDate = "1228" }));
+    public void Merchant_MerchantIdTooLong_IsInvalid() =>
+        Assert.False(IsValid(new Merchant { MerchantId = new string('M', 16), Name = "X", MerchantType = "5399", Status = "Active" }));
+
+    [Fact]
+    public void Card_Valid() => Assert.True(IsValid(ValidCard()));
+
+    [Fact]
+    public void Card_WithoutCardTypeOrExpiry_IsInvalid()
+    {
+        var withoutType = ValidCard();
+        withoutType.CardType = null;
+        var withoutExpiry = ValidCard();
+        withoutExpiry.ExpiryDate = null;
+        Assert.False(IsValid(withoutType));
+        Assert.False(IsValid(withoutExpiry));
+    }
+
+    // Limit temassıza açık kartta zorunlu, kapalı kartta anlamsız olduğu için boş olmalı.
+    [Theory]
+    [InlineData(true, 750.0, true)]
+    [InlineData(true, null, false)]
+    [InlineData(false, null, true)]
+    [InlineData(false, 750.0, false)]
+    public void Card_ContactlessLimit_FollowsContactlessAllowed(bool allowed, double? limit, bool valid)
+    {
+        var card = ValidCard();
+        card.ContactlessAllowed = allowed;
+        card.ContactlessLimit = (decimal?)limit;
+        Assert.Equal(valid, IsValid(card));
+    }
 
     [Theory]
     [InlineData("128")]     // ExpiryDate MMYY: tam 4 karakter olmalı
     [InlineData("12280")]
-    public void Card_ExpiryDateNotFourChars_IsInvalid(string expiry) =>
-        Assert.False(IsValid(new Card { CardNumber = "4111", AccountNo = "ACC1", ExpiryDate = expiry }));
+    public void Card_ExpiryDateNotFourChars_IsInvalid(string expiry)
+    {
+        var card = ValidCard();
+        card.ExpiryDate = expiry;
+        Assert.False(IsValid(card));
+    }
 
     [Fact]
-    public void Card_CardNumberTooLong_IsInvalid() =>
-        Assert.False(IsValid(new Card { CardNumber = new string('4', 20), AccountNo = "ACC1" }));
+    public void Card_CardNumberTooLong_IsInvalid()
+    {
+        var card = ValidCard();
+        card.CardNumber = new string('4', 20);
+        Assert.False(IsValid(card));
+    }
 
     [Fact]
     public void TransactionType_OtcNotTwoChars_IsInvalid() =>
@@ -56,22 +148,35 @@ public class ModelValidationTests
     private static TransactionRequest ValidTransaction() => new()
     {
         Mti = "0200", CardNumber = "4111111111111111", ProcessingCode = "000000", AmountMinor = 15000, CurrencyCode = "949",
-        TransmissionDateTime = "0315095959", Stan = "000001", LocalTime = "125959", LocalDate = "0315", TerminalId = "TERM0001"
+        TransmissionDateTime = "0315095959", Stan = "000001", LocalTime = "125959", LocalDate = "20260315", TerminalId = "TERM0001"
     };
 
     [Fact]
     public void TransactionRequest_Valid() => Assert.True(IsValid(ValidTransaction()));
 
     [Theory]
-    [InlineData("1315")]    // ay 13
-    [InlineData("0300")]    // gün 00
-    [InlineData("0332")]
-    [InlineData("315")]
+    [InlineData("20261315")]    // ay 13
+    [InlineData("20260300")]    // gün 00
+    [InlineData("20260332")]
+    [InlineData("0315")]        // yılsız MMDD
+    [InlineData("2026315")]
     public void TransactionRequest_InvalidLocalDate_IsInvalid(string localDate)
     {
         var request = ValidTransaction();
         request.LocalDate = localDate;
         Assert.False(IsValid(request));
+    }
+
+    [Theory]
+    [InlineData("123", true)]
+    [InlineData("1234", true)]      // Amex CID 4 hanelidir
+    [InlineData("12", false)]
+    [InlineData("12a", false)]
+    public void TransactionRequest_Cvv_MustBeThreeOrFourDigits(string cvv, bool valid)
+    {
+        var request = ValidTransaction();
+        request.Cvv = cvv;
+        Assert.Equal(valid, IsValid(request));
     }
 
     [Fact]

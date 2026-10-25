@@ -101,7 +101,8 @@ public sealed class TransactionQueueConsumer(
                 var reply = new BasicProperties { CorrelationId = properties.CorrelationId, ContentType = "application/json" };
                 var body = JsonSerializer.SerializeToUtf8Bytes(new TransactionResponse(responseCode), Json);
                 await channel.BasicPublishAsync(string.Empty, replyTo, mandatory: false, reply, body, cancellationToken);
-                logger.LogInformation("{Method}: replied {CorrelationId} F39 {ResponseCode}", nameof(HandleAsync), properties.CorrelationId, responseCode);
+                logger.LogInformation("{Method}: replied {CorrelationId} {ResponseCode}", nameof(HandleAsync), properties.CorrelationId,
+                    IsoLog.Field(39, responseCode));
             }
 
             // Cevap verildikten sonra (ya da süresi dolmuş istek atıldıktan sonra) onaylanır. Mesaj hiçbir durumda
@@ -143,7 +144,9 @@ public sealed class TransactionQueueConsumer(
             return ResponseCodes.FormatError;
         }
 
-        logger.LogInformation("{Method}: received {CorrelationId}: {Body}", nameof(DecideAsync), properties.CorrelationId, MaskedJson(request));
+        // Kart numaraları (F2, F48) maskeli; CVV hiç yazılmaz (PCI DSS), sadece gelip gelmediği görünür.
+        logger.LogInformation("{Method}: received {CorrelationId} MTI {Mti} | {Fields}{Cvv}", nameof(DecideAsync), properties.CorrelationId,
+            request.Mti, IsoLog.Fields(request.IsoFields()), request.Cvv is null ? "" : " cvv=***");
 
         try
         {
@@ -153,20 +156,13 @@ public sealed class TransactionQueueConsumer(
         {
             // Onaylanmayan her işlem buraya düşer: iş reddi uyarı, teknik hata (91 / 96) hata olarak loglanır. Gate'e sadece F39 gider.
             logger.Log(ex.IsTechnical ? LogLevel.Error : LogLevel.Warning, ex.InnerException,
-                "{Method}: transaction {CorrelationId} TID {TerminalId} STAN {Stan} not approved: F39 {ResponseCode} {Description} " +
-                "(IRC {Irc}) transaction {TransactionId} PAN {Pan} account {AccountNo}",
-                nameof(DecideAsync), properties.CorrelationId, request.TerminalId, request.Stan, ex.ResponseCode, ex.Description,
-                ex.Irc ?? "-", ex.TransactionId?.ToString() ?? "-", ex.CardNumber, ex.AccountNo ?? "-");
+                "{Method}: transaction {CorrelationId} {TerminalId} {Stan} not approved: {ResponseCode} {Description} " +
+                "(IRC {Irc}) transaction {TransactionId} {Pan} account {AccountNo}",
+                nameof(DecideAsync), properties.CorrelationId, IsoLog.Field(41, request.TerminalId), IsoLog.Field(11, request.Stan),
+                IsoLog.Field(39, ex.ResponseCode), ex.Description, ex.Irc ?? "-", ex.TransactionId?.ToString() ?? "-",
+                IsoLog.Field(2, ex.CardNumber), ex.AccountNo?.ToString() ?? "-");
             return ex.ResponseCode;
         }
-    }
-
-    // Kuyruktan gelen isteğin JSON'ı, kart numarası maskeli.
-    private static string MaskedJson(TransactionRequest request)
-    {
-        var json = JsonSerializer.SerializeToNode(request, Json)!;
-        json["cardNumber"] = PanMask.Mask(request.CardNumber);
-        return json.ToJsonString(Json);
     }
 
     // Gate isteği Timestamp (saniye) ve Expiration (ms, Gate'in bekleme süresi) ile gönderir. Süre dolduysa Gate 91 döndü demektir.

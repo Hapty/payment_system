@@ -12,7 +12,7 @@ public sealed record TransactionCompleted(
     string ResponseCode,            // F39
     string Irc,                     // iç karar kodu
     string MaskedCardNumber,
-    string? AccountNo,              // kart bulunamadıysa null
+    long? AccountNo,                // kart bulunamadıysa null
     string? Email,                  // hesabın e-postası; hesap / e-posta yoksa null
     decimal Amount,                 // F4, işlemin kendi para biriminde
     string CurrencyCode,            // F49, ISO 4217 sayısal (949 = TRY)
@@ -21,7 +21,11 @@ public sealed record TransactionCompleted(
     string TransactionDate,         // yyyymmdd
     string LocalTime,               // F12 hhmmss
     string TerminalId,              // F41
-    string Stan)                    // F11
+    string Stan,                    // F11
+    // Sadece para transferinde, alıcı kart bulunduysa (karar ne olursa olsun); diğer işlemlerde null.
+    string? RecipientMaskedCardNumber = null,   // F48, maskeli
+    long? RecipientAccountNo = null,
+    string? RecipientEmail = null)              // alıcı hesabın e-postası; hesap / e-posta yoksa null
 {
     public const string Type = nameof(TransactionCompleted);
     public const int CurrentVersion = 1;

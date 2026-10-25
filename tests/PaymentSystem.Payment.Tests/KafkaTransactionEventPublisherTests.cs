@@ -30,7 +30,7 @@ public class KafkaTransactionEventPublisherTests(KafkaFixture kafka) : IClassFix
             MessageTimeoutMs = messageTimeoutMs
         }), _logger);
 
-    private static TransactionCompleted Approved(string? accountNo = "ACC1") => new(
+    private static TransactionCompleted Approved(long? accountNo = 1000000001) => new(
         Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"), new DateTimeOffset(2026, 3, 15, 10, 0, 0, TimeSpan.Zero),
         "0200", "Sale", "00", "0000", "411111********11", accountNo, "musteri@example.com", 10m, "840", 492.15m,
         "PAYMENT SYSTEM POS SIMULATOR", "20260315", "125959", "TERM0001", "000001");
@@ -56,7 +56,7 @@ public class KafkaTransactionEventPublisherTests(KafkaFixture kafka) : IClassFix
 
         var message = ConsumeOne(topic);
 
-        Assert.Equal("ACC1", message.Message.Key);
+        Assert.Equal("1000000001", message.Message.Key);
         using var json = JsonDocument.Parse(message.Message.Value);
         var root = json.RootElement;
         Assert.Equal("TransactionCompleted", root.GetProperty("eventType").GetString());

@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using PaymentSystem.Payment.Cards;
 using PaymentSystem.Payment.Data;
 using PaymentSystem.Payment.Events;
 using PaymentSystem.Payment.ExchangeRates;
@@ -24,6 +25,10 @@ var connectionString = new SqlConnectionStringBuilder(builder.Configuration.GetC
 }.ConnectionString;
 
 builder.Services.AddSingleton(new SqlConnectionFactory(connectionString));
+
+// CVV ve PIN DB'ye CARD_SECRET_KEY (64 hex) ile HMAC'lenerek yazılır. Anahtar appsettings'te durmaz.
+builder.Services.AddSingleton<ICardSecretHasher>(new HmacCardSecretHasher(builder.Configuration["CARD_SECRET_KEY"]
+    ?? throw new InvalidOperationException("CARD_SECRET_KEY is not configured.")));
 builder.Services.AddSingleton(TimeProvider.System);
 
 // Controller / kuyruk consumer'ı -> handler (iş kuralları, loglama) -> repository (SQL).
@@ -31,12 +36,14 @@ builder.Services.AddSingleton<IBankAccountRepository, BankAccountRepository>();
 builder.Services.AddSingleton<ICardRepository, CardRepository>();
 builder.Services.AddSingleton<ITransactionTypeRepository, TransactionTypeRepository>();
 builder.Services.AddSingleton<IMtiProcessingCodeRepository, MtiProcessingCodeRepository>();
+builder.Services.AddSingleton<IMerchantRepository, MerchantRepository>();
 builder.Services.AddSingleton<ITransactionRepository, TransactionRepository>();
 builder.Services.AddSingleton<IParameterRepository, ParameterRepository>();
 builder.Services.AddSingleton<BankAccountHandler>();
 builder.Services.AddSingleton<CardHandler>();
 builder.Services.AddSingleton<TransactionTypeHandler>();
 builder.Services.AddSingleton<MtiProcessingCodeHandler>();
+builder.Services.AddSingleton<MerchantHandler>();
 builder.Services.AddSingleton<ExchangeRateHandler>();
 builder.Services.AddSingleton<TransactionHandler>();
 
@@ -77,9 +84,11 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
+// OpenAPI şeması (/openapi/v1.json) ve Swagger UI (/swagger) Swagger:Enabled ile açılır; ortamdan (Development) bağımsız.
+if (app.Configuration.GetValue<bool>("Swagger:Enabled"))
 {
     app.MapOpenApi();
+    app.UseSwaggerUI(options => options.SwaggerEndpoint("/openapi/v1.json", "Payment v1"));
 }
 
 app.MapControllers();

@@ -13,7 +13,7 @@ public sealed class BankAccountHandler(IBankAccountRepository accounts, ILogger<
         return all;
     }
 
-    public async Task<BankAccount?> GetAsync(string accountNo)
+    public async Task<BankAccount?> GetAsync(long accountNo)
     {
         var account = await accounts.GetAsync(accountNo);
         logger.LogInformation("{Method}: account {AccountNo} {Result}", nameof(GetAsync), accountNo, account is null ? "not found" : "found");
@@ -29,7 +29,7 @@ public sealed class BankAccountHandler(IBankAccountRepository accounts, ILogger<
     }
 
     // Durum ve e-posta değişir; bakiye hesap açılırken verilir, sonra yalnızca işlemlerle değişir.
-    public async Task<WriteResult> UpdateAsync(string accountNo, string accountStatus, string? email)
+    public async Task<WriteResult> UpdateAsync(long accountNo, string accountStatus, string? email)
     {
         var result = await accounts.UpdateAsync(accountNo, accountStatus, email);
         logger.LogInformation("{Method}: account {AccountNo} status {Status} email {Email} -> {Result}",
@@ -37,7 +37,7 @@ public sealed class BankAccountHandler(IBankAccountRepository accounts, ILogger<
         return result;
     }
 
-    public async Task<bool> DeleteAsync(string accountNo)
+    public async Task<bool> DeleteAsync(long accountNo)
     {
         var deleted = await accounts.DeleteAsync(accountNo);
         logger.LogInformation("{Method}: account {AccountNo} {Result}", nameof(DeleteAsync), accountNo, deleted ? "deleted" : "not found");

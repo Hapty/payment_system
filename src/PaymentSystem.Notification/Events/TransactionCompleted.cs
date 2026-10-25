@@ -13,7 +13,7 @@ public sealed record TransactionCompleted
     public string ResponseCode { get; init; } = "";         // F39
     public string Irc { get; init; } = "";
     public string MaskedCardNumber { get; init; } = "";
-    public string? AccountNo { get; init; }
+    public long? AccountNo { get; init; }
     public string? Email { get; init; }
     public decimal Amount { get; init; }                    // işlemin kendi para biriminde
     public string CurrencyCode { get; init; } = "";         // ISO 4217 sayısal
@@ -23,4 +23,7 @@ public sealed record TransactionCompleted
     public string LocalTime { get; init; } = "";            // hhmmss
     public string? TerminalId { get; init; }
     public string? Stan { get; init; }
+    public string? RecipientMaskedCardNumber { get; init; } // sadece para transferinde
+    public long? RecipientAccountNo { get; init; }
+    public string? RecipientEmail { get; init; }
 }

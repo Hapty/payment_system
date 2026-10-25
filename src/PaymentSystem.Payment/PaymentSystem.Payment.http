@@ -1,37 +1,60 @@
 @host = http://localhost:5002
 
 ### ---------- BankAccount ----------
+# Boş kolonlu kayıt açılmaz: hesapta tüm alanlar (balance 0 olabilir, email dahil), kartta tüm alanlar zorunlu.
+# Kartta tek istisna: contactlessAllowed false ise contactlessLimit boş olmalı (true ise zorunlu).
 GET {{host}}/api/bank-accounts
 
 ###
 POST {{host}}/api/bank-accounts
 Content-Type: application/json
 
-{ "accountNo": "TR01", "accountStatus": "Active", "balance": 1000.00, "email": "musteri@example.com" }
+{ "accountNo": 1000000001, "accountStatus": "Active", "balance": 1000.00, "email": "musteri@example.com" }
 
 ###
-GET {{host}}/api/bank-accounts/TR01
+GET {{host}}/api/bank-accounts/1000000001
 
 ###
-# Bakiye değişmez, sadece durum ve e-posta güncellenir (email gönderilmezse silinir)
-PUT {{host}}/api/bank-accounts/TR01
+# Bakiye değişmez (body'de olmalı ama yok sayılır), sadece durum ve e-posta güncellenir; email zorunlu
+PUT {{host}}/api/bank-accounts/1000000001
 Content-Type: application/json
 
-{ "accountNo": "TR01", "accountStatus": "Blocked", "balance": 999999, "email": "musteri@example.com" }
+{ "accountNo": 1000000001, "accountStatus": "Blocked", "balance": 999999, "email": "musteri@example.com" }
 
 ###
-DELETE {{host}}/api/bank-accounts/TR01
+DELETE {{host}}/api/bank-accounts/1000000001
 
 ### ---------- Card ----------
 GET {{host}}/api/cards
+
+###
+# Cevapta kartın CVV2'si ("cvv") ve PIN'i ("pin") bir kez döner: not alın, sonradan hiçbir yerde görünmez (DB'de sadece hash'leri var)
+POST {{host}}/api/cards
+Content-Type: application/json
+
+{
+  "cardNumber": "4111111111111111",
+  "accountNo": 1000000001,
+  "cardType": "Debit",
+  "expiryDate": "1228",
+  "contactlessAllowed": true,
+  "contactlessLimit": 750.00
+}
+
+###
+# Para transferi için alıcı: başka bir hesap ve kart (Gate'te F48'e bu kart no yazılır)
+POST {{host}}/api/bank-accounts
+Content-Type: application/json
+
+{ "accountNo": 1000000002, "accountStatus": "Active", "balance": 0, "email": "alici@example.com" }
 
 ###
 POST {{host}}/api/cards
 Content-Type: application/json
 
 {
-  "cardNumber": "4111111111111111",
-  "accountNo": "TR01",
+  "cardNumber": "5406680000000002",
+  "accountNo": 1000000002,
   "cardType": "Debit",
   "expiryDate": "1228",
   "contactlessAllowed": true,
@@ -47,7 +70,7 @@ Content-Type: application/json
 
 {
   "cardNumber": "4111111111111111",
-  "accountNo": "TR01",
+  "accountNo": 1000000001,
   "cardType": "Credit",
   "expiryDate": "1229",
   "contactlessAllowed": false
@@ -97,6 +120,28 @@ Content-Type: application/json
 
 ###
 DELETE {{host}}/api/mti-processing-codes/0200/200000
+
+### ---------- Merchant (F42 bu tabloda olmalı ve Active olmalı) ----------
+GET {{host}}/api/merchants
+
+###
+GET {{host}}/api/merchants/TRENDYOL
+
+###
+POST {{host}}/api/merchants
+Content-Type: application/json
+
+{ "merchantId": "HEPSIBURADA", "name": "HEPSIBURADA", "merchantType": "5399", "status": "Active" }
+
+###
+# MerchantId URL'den gelir; Name, MerchantType ve Status değişir
+PUT {{host}}/api/merchants/HEPSIBURADA
+Content-Type: application/json
+
+{ "merchantId": "HEPSIBURADA", "name": "HEPSIBURADA", "merchantType": "5399", "status": "Blocked" }
+
+###
+DELETE {{host}}/api/merchants/HEPSIBURADA
 
 ### ---------- ExchangeRates (kur cache'i, salt okunur) ----------
 GET {{host}}/api/exchange-rates

@@ -48,22 +48,22 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
             catch (Exception ex) when (ex is RabbitMQClientException or IOException or SocketException or TimeoutException)
             {
                 // BrokerUnreachableException da IOException'dır.
-                logger.LogWarning("{Method}: RabbitMQ unreachable for STAN {Stan} ({Error}: {Message}) - responding 91",
-                    nameof(AuthorizeAsync), request.Stan, ex.GetType().Name, ex.Message);
+                logger.LogWarning("{Method}: RabbitMQ unreachable for {Stan} ({Error}: {Message}) - responding 91",
+                    nameof(AuthorizeAsync), IsoLog.Field(11, request.Stan), ex.GetType().Name, ex.Message);
                 return Unavailable;
             }
 
             try
             {
                 var response = await reply.Task.WaitAsync(Timeout, cancellationToken);
-                logger.LogInformation("{Method}: reply {CorrelationId} for STAN {Stan} F39 {ResponseCode}",
-                    nameof(AuthorizeAsync), correlationId, request.Stan, response.ResponseCode);
+                logger.LogInformation("{Method}: reply {CorrelationId} for {Stan} {ResponseCode}",
+                    nameof(AuthorizeAsync), correlationId, IsoLog.Field(11, request.Stan), IsoLog.Field(39, response.ResponseCode));
                 return response;
             }
             catch (TimeoutException)
             {
-                logger.LogWarning("{Method}: no reply {CorrelationId} from Payment within {Timeout}s for STAN {Stan} - responding 91",
-                    nameof(AuthorizeAsync), correlationId, options.Value.PaymentTimeoutSeconds, request.Stan);
+                logger.LogWarning("{Method}: no reply {CorrelationId} from Payment within {Timeout}s for {Stan} - responding 91",
+                    nameof(AuthorizeAsync), correlationId, options.Value.PaymentTimeoutSeconds, IsoLog.Field(11, request.Stan));
                 return Unavailable;
             }
         }
@@ -92,9 +92,9 @@ public sealed class RabbitMqPaymentClient(IOptions<GateOptions> options, ILogger
         {
             var channel = await EnsureChannelAsync(cancellationToken);
             await channel.BasicPublishAsync(string.Empty, QueueName, mandatory: false, properties, body, cancellationToken);
-            // Kuyruğa giden gövdenin aynısı, sadece kart numarası maskeli.
-            logger.LogInformation("{Method}: sent {CorrelationId} to queue {Queue}: {Body}", nameof(PublishAsync), correlationId, QueueName,
-                JsonSerializer.Serialize(request with { CardNumber = PanMask.Mask(request.CardNumber) }, Json));
+            // Gövdenin alanları bir önceki satırda (TransactionHandler: forwarding to Payment) maskeli olarak yazıldı.
+            logger.LogInformation("{Method}: sent {CorrelationId} to queue {Queue} for {Stan}", nameof(PublishAsync), correlationId, QueueName,
+                IsoLog.Field(11, request.Stan));
         }
         finally
         {
